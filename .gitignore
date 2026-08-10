@@ -1,0 +1,38 @@
+# Environment secrets
+.env
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.eggs/
+*.egg-info/
+build/
+dist/
+
+# SQLite Database storage
+data/
+*.db
+*.db-journal
+*.db-wal
+
+# Output files containing raw/analyzed alerts
+output/
+
+# Application and service logs
+logs/
+
+# IDE configs
+.vscode/
+.idea/
+.DS_Store
+
+# User exclusions
+plans/
