@@ -51,7 +51,9 @@ class Settings(BaseSettings):
     email_api_secret: str = Field("", validation_alias="EMAIL_API_SECRET")
     # full | signed | api-key-only — must match the worker's SECURITY_MODE
     email_security_mode: str = Field("full", validation_alias="EMAIL_SECURITY_MODE")
-    email_timeout_seconds: int = Field(15, validation_alias="EMAIL_TIMEOUT_SECONDS")
+    # Default is intentionally higher than the previous 15s window so a slow worker
+    # cold-start / SMTP handoff is less likely to trigger an ambiguous retry.
+    email_timeout_seconds: int = Field(60, validation_alias="EMAIL_TIMEOUT_SECONDS")
     email_max_attempts: int = Field(3, validation_alias="EMAIL_MAX_ATTEMPTS")
     email_dispatch_interval_seconds: int = Field(60, validation_alias="EMAIL_DISPATCH_INTERVAL_SECONDS")
 

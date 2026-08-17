@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from src.config import settings
 from src.models.ai_output import (
@@ -152,3 +154,51 @@ async def test_corrupt_outbox_file_is_recovered(all_recipients, temp_outbox):
 
     await email_outbox.add_emails(await email_composer.compose_emails(_result()))
     assert len(await email_outbox.list_emails()) == 4
+
+
+def test_mail_handoff_includes_email_id_for_idempotency():
+    from src.models.email_message import EmailMessage
+    from src.services.email_delivery.eset_mail import EsetMailProvider
+
+    message = EmailMessage(
+        email_id="cid-123-CLIENT_JA",
+        correlation_id="cid-123",
+        notification_type="CLIENT_JA",
+        to=["client@example.com"],
+        subject="[HIGH] Win32/Example.A — HOST-01",
+        body="body",
+        risk_level="HIGH",
+        endpoint_name="HOST-01",
+        detection_name="Win32/Example.A",
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    payload = {
+        "to": message.to,
+        "subject": message.subject,
+        "body": message.body,
+        "email_id": message.email_id,
+    }
+    body_bytes, headers = EsetMailProvider(
+        url="https://example.test/api/send",
+        api_key="key",
+        api_secret="secret",
+        security_mode="api-key-only",
+        timeout=15,
+    ).build_request(payload)
+
+    assert json.loads(body_bytes.decode("utf-8"))["email_id"] == "cid-123-CLIENT_JA"
+    assert headers["X-API-Key"] == "key"
+
+
+def test_default_email_timeout_is_longer_than_the_flaky_15s_window():
+    from src.services.email_delivery.eset_mail import EsetMailProvider
+
+    provider = EsetMailProvider(
+        url="https://example.test/api/send",
+        api_key="key",
+        api_secret="secret",
+        security_mode="api-key-only",
+    )
+
+    assert provider.timeout > 15

@@ -225,9 +225,13 @@ EMAIL_API_URL=https://eset-mail.villdesign.workers.dev/api/send
 EMAIL_API_KEY=...
 EMAIL_API_SECRET=...          # HMAC signing secret, never transmitted
 EMAIL_SECURITY_MODE=full      # must match the worker's SECURITY_MODE
+EMAIL_TIMEOUT_SECONDS=60       # avoid ambiguous retry windows after slow worker starts
 EMAIL_MAX_ATTEMPTS=3          # handoff attempts, not delivery retries
 EMAIL_DISPATCH_INTERVAL_SECONDS=60
 ```
+
+The request body includes the outbound `email_id` as an idempotency key so the worker
+can reject a duplicate retry if a timeout makes the first send ambiguous.
 
 Requests are signed exactly as the API reference specifies:
 `HMAC-SHA256(secret, timestamp + "\n" + nonce + "\n" + SHA256(body))`, with the

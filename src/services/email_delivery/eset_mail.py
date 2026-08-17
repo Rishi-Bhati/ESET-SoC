@@ -115,6 +115,10 @@ class EsetMailProvider(EmailDeliveryProvider):
             "to": message.to,
             "subject": message.subject,
             "body": message.body,
+            # Idempotency key for the worker: when a timeout makes the outcome
+            # ambiguous, the worker can reject a repeat of the same email_id
+            # instead of enqueuing a duplicate again.
+            "email_id": message.email_id,
         }
 
         body_bytes, headers = self.build_request(payload)
