@@ -1,5 +1,6 @@
 import os
-from fastapi import APIRouter
+from typing import Any
+from fastapi import APIRouter, Request
 import aiosqlite
 import structlog
 from src.config import settings
@@ -8,7 +9,7 @@ router = APIRouter(prefix="/health", tags=["Health"])
 logger = structlog.get_logger(__name__)
 
 @router.get("")
-async def health_check() -> dict[str, Any]:
+async def health_check(request: Request) -> dict[str, Any]:
     """
     Consolidated health check endpoint for database, storage, and configuration.
     """
@@ -41,6 +42,11 @@ async def health_check() -> dict[str, Any]:
     # 3. Gemini Config Check
     gemini_configured = bool(settings.gemini_api_key)
 
+    # 4. Syslog Listener Check (embedded in this process, see src.services.syslog_runtime)
+    syslog_handles = getattr(request.app.state, "syslog_handles", None)
+    udp_ok = bool(syslog_handles and syslog_handles.udp_transport)
+    tcp_ok = bool(syslog_handles and syslog_handles.tcp_server)
+
     is_healthy = db_ok and dir_ok and gemini_configured
     status = "ok" if is_healthy else "degraded"
 
@@ -56,5 +62,9 @@ async def health_check() -> dict[str, Any]:
         },
         "gemini_api": {
             "status": "configured" if gemini_configured else "missing"
+        },
+        "syslog_listener": {
+            "udp": "ok" if udp_ok else "down",
+            "tcp": "ok" if tcp_ok else "down"
         }
     }

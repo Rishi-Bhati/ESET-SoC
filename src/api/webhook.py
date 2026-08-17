@@ -40,12 +40,53 @@ async def run_pipeline_task(correlation_id: str, raw_payload: dict[str, Any], so
     """
     set_correlation_id(correlation_id)
     logger.info("background_pipeline_start", correlation_id=correlation_id)
-    
+
     try:
         from src.pipeline.orchestrator import process_alert_pipeline
         await process_alert_pipeline(correlation_id, raw_payload, source)
     except Exception as e:
         logger.error("background_pipeline_uncaught_error", error=str(e), correlation_id=correlation_id)
+
+async def ingest_alert(
+    raw_json: dict[str, Any],
+    handler: WebhookIngestionHandler | SyslogIngestionHandler,
+    source: str,
+    background_tasks: BackgroundTasks
+) -> dict[str, Any]:
+    """
+    Shared ingestion path used by both the public /webhook/eset and /webhook/syslog
+    routes below, and by the dashboard's "Send Test Alert"/"Send Test Syslog Event"
+    controls (src/api/dashboard.py) — same parse -> dedup -> job -> pipeline flow either way.
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        raw_payload = handler.parse(raw_json)
+    except ValueError as e:
+        logger.error("ingest_invalid_payload", error=str(e), source=source)
+        return {"status": "error", "message": str(e), "correlation_id": correlation_id}
+
+    dedup_key = compute_dedup_key(raw_payload)
+    if await deduplication.is_duplicate(dedup_key):
+        logger.info("ingest_duplicate_dropped", dedup_key=dedup_key, source=source)
+        return {
+            "status": "duplicate",
+            "message": "Alert already processed",
+            "correlation_id": correlation_id
+        }
+
+    await deduplication.record_seen(dedup_key, settings.dedup_ttl_seconds)
+
+    payload_dict = raw_payload.model_dump()
+    await job_store.create_job(correlation_id, source, payload_dict)
+
+    background_tasks.add_task(run_pipeline_task, correlation_id, payload_dict, source)
+
+    return {
+        "status": "queued",
+        "correlation_id": correlation_id
+    }
 
 @router.post("/eset", dependencies=[Depends(validate_eset_token)])
 async def receive_eset_webhook(
@@ -56,46 +97,9 @@ async def receive_eset_webhook(
     Endpoint for ESET webhooks. Parses payload, performs deduplication,
     creates a job record, and fires the pipeline task in the background.
     """
-    # 1. Generate correlation ID
-    correlation_id = generate_correlation_id()
-    set_correlation_id(correlation_id)
-    
     raw_json = await request.json()
     logger.info("webhook_received", payload_size=len(request.headers.get("content-length", "0")))
-    
-    # 2. Parse payload
-    try:
-        raw_payload = webhook_handler.parse(raw_json)
-    except ValueError as e:
-        logger.error("webhook_invalid_payload", error=str(e))
-        return {"status": "error", "message": str(e), "correlation_id": correlation_id}
-        
-    # 3. Deduplication check
-    dedup_key = compute_dedup_key(raw_payload)
-    if await deduplication.is_duplicate(dedup_key):
-        logger.info("webhook_duplicate_dropped", dedup_key=dedup_key)
-        return {
-            "status": "duplicate",
-            "message": "Alert already processed",
-            "correlation_id": correlation_id
-        }
-        
-    # Record seen fingerprint in DB
-    await deduplication.record_seen(dedup_key, settings.dedup_ttl_seconds)
-    
-    # 4. Create SQLite job record
-    # We serialize the model back to dict to store in DB
-    payload_dict = raw_payload.model_dump()
-    await job_store.create_job(correlation_id, "WEBHOOK", payload_dict)
-    
-    # 5. Enqueue background task
-    background_tasks.add_task(run_pipeline_task, correlation_id, payload_dict, "WEBHOOK")
-    
-    # 6. Return 202 Accepted style response immediately
-    return {
-        "status": "queued",
-        "correlation_id": correlation_id
-    }
+    return await ingest_alert(raw_json, webhook_handler, "WEBHOOK", background_tasks)
 
 @router.post("/syslog", dependencies=[Depends(validate_eset_token)])
 async def receive_syslog_payload(
@@ -106,35 +110,6 @@ async def receive_syslog_payload(
     Endpoint for incoming Syslog events forwarded by our Syslog server.
     Parses payload, performs deduplication, creates a job record, and fires background task.
     """
-    correlation_id = generate_correlation_id()
-    set_correlation_id(correlation_id)
-    
     raw_json = await request.json()
     logger.info("syslog_http_received", payload_size=len(request.headers.get("content-length", "0")))
-    
-    try:
-        raw_payload = syslog_handler.parse(raw_json)
-    except ValueError as e:
-        logger.error("syslog_http_invalid_payload", error=str(e))
-        return {"status": "error", "message": str(e), "correlation_id": correlation_id}
-        
-    dedup_key = compute_dedup_key(raw_payload)
-    if await deduplication.is_duplicate(dedup_key):
-        logger.info("syslog_http_duplicate_dropped", dedup_key=dedup_key)
-        return {
-            "status": "duplicate",
-            "message": "Alert already processed",
-            "correlation_id": correlation_id
-        }
-        
-    await deduplication.record_seen(dedup_key, settings.dedup_ttl_seconds)
-    
-    payload_dict = raw_payload.model_dump()
-    await job_store.create_job(correlation_id, "SYSLOG", payload_dict)
-    
-    background_tasks.add_task(run_pipeline_task, correlation_id, payload_dict, "SYSLOG")
-    
-    return {
-        "status": "queued",
-        "correlation_id": correlation_id
-    }
+    return await ingest_alert(raw_json, syslog_handler, "SYSLOG", background_tasks)

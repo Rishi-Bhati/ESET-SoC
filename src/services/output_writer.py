@@ -2,9 +2,11 @@ import os
 import tempfile
 import json
 import asyncio
+from typing import Any
 import structlog
 from src.config import settings
 from src.models.pipeline_result import PipelineResult
+from src.utils import events
 
 logger = structlog.get_logger(__name__)
 
@@ -35,6 +37,13 @@ async def write_result(result: PipelineResult) -> None:
         # Atomic file rename (overwrites if target exists)
         os.replace(temp_path, target_path)
         logger.info("output_write_success", path=target_path)
+        # Stage event first, then the terminal event — the flow graph relies on
+        # OUTPUT lighting up before the run is marked complete.
+        await events.emit_stage(
+            result.correlation_id, "OUTPUT", "ok",
+            detail=f"{result.pipeline_status} result written",
+        )
+        await events.emit("alert_completed", result.model_dump())
     except Exception as e:
         logger.error("output_write_failed", error=str(e))
         if os.path.exists(temp_path):

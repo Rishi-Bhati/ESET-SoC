@@ -8,6 +8,7 @@ from src.models.normalized_alert import NormalizedAlert
 from src.models.threat_intel import ThreatIntelResult
 from src.models.ai_output import AIOutput
 from src.prompts.system_prompts import SYSTEM_PROMPT
+from src.services.ai.schema_builder import build_gemini_schema
 from src.utils.retry import retry_api_call
 
 logger = structlog.get_logger(__name__)
@@ -21,8 +22,8 @@ class GeminiAIService(BaseAIProvider):
     def __init__(self) -> None:
         # Configure the Google AI Generative client using provided API key
         genai.configure(api_key=settings.gemini_api_key)
-        # Using gemini-3.5-flash for high speed, low latency, and cost-effectiveness
-        self.model = genai.GenerativeModel("gemini-3.5-flash")
+        # Using gemini-3.1-flash-lite for high speed, low latency, and cost-effectiveness
+        self.model = genai.GenerativeModel("gemini-3.1-flash-lite")
         
     @retry_api_call(max_attempts=3, min_delay=1.0, max_delay=10.0)
     async def _call_gemini_with_retry(
@@ -76,11 +77,14 @@ class GeminiAIService(BaseAIProvider):
             f"Please generate the Japanese and English notifications as specified by the system prompt."
         )
         
-        # Enforce strict compliance via native Pydantic schema enforcement in Gemini
+        # Enforce strict compliance via an explicit Gemini schema. We do NOT pass the
+        # Pydantic class directly: the SDK's converter drops every `required` array,
+        # which lets the model return a near-empty object (see schema_builder docstring).
         generation_config = genai.types.GenerationConfig(
             response_mime_type="application/json",
-            response_schema=AIOutput,
+            response_schema=build_gemini_schema(AIOutput),
             temperature=0.1,  # Keep temperature low for high determinism and schema fidelity
+            max_output_tokens=8192,  # 4 bilingual notifications; Japanese is token-dense
         )
         
         try:

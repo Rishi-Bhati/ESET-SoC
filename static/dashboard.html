@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESET SOC Lite — Control Dashboard</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#12181f; --panel2:#171f28; --panel3:#1d2731;
+    --border:#232c37; --border2:#2e3a47;
+    --text:#e6edf3; --muted:#8b98a5; --dim:#5b6672;
+    --accent:#3987e5;
+
+    /* Status palette — always paired with a text label, never colour alone */
+    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+
+    /* Risk = ordinal magnitude: single-hue blue ramp, identity from labels */
+    --risk-1:#9ec5f4; --risk-2:#6da7ec; --risk-3:#3987e5; --risk-4:#256abf;
+
+    /* Categorical (2 series: ingest source split) */
+    --cat-1:#3987e5; --cat-2:#d95926;
+
+    --grid:#2c2c2a; --axis:#383835;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  a{color:var(--accent)}
+  button{
+    cursor:pointer;border:1px solid var(--border2);background:var(--panel2);color:var(--text);
+    border-radius:8px;padding:7px 13px;font:inherit;font-size:12.5px;font-weight:600;transition:.15s;
+  }
+  button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#04121f}
+  button.primary:hover:not(:disabled){filter:brightness(1.12);color:#04121f}
+  button.danger:hover:not(:disabled){border-color:var(--critical);color:#f08a8a}
+  button.small{padding:4px 9px;font-size:11px;border-radius:6px}
+  button:disabled{opacity:.45;cursor:default}
+  input,select,textarea{
+    background:var(--panel2);border:1px solid var(--border2);border-radius:8px;
+    color:var(--text);padding:8px 11px;font:inherit;font-size:13px;width:100%;
+  }
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px}
+  .muted{color:var(--muted)} .dim{color:var(--dim)}
+
+  /* ---------- Login ---------- */
+  #login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
+  #login.hidden{display:none}
+  #login .box{width:340px;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:26px}
+  #login h1{margin:0 0 4px;font-size:17px}
+  #login p{margin:0 0 18px;font-size:12.5px;color:var(--muted)}
+  #login .err{color:#f08a8a;font-size:12.5px;margin-top:10px;display:none}
+  #login .err.show{display:block}
+
+  /* ---------- Shell ---------- */
+  #app{display:none;grid-template-columns:210px 1fr;min-height:100vh}
+  #app.ready{display:grid}
+  nav{background:var(--panel);border-right:1px solid var(--border);padding:16px 12px;position:sticky;top:0;height:100vh;overflow:auto}
+  nav .brand{padding:0 8px 14px;border-bottom:1px solid var(--border);margin-bottom:12px}
+  nav .brand h1{margin:0;font-size:14px;letter-spacing:.2px}
+  nav .brand span{font-size:11px;color:var(--muted)}
+  nav a.tab{
+    display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
+    color:var(--muted);text-decoration:none;font-size:13px;font-weight:500;margin-bottom:2px;cursor:pointer;
+  }
+  nav a.tab:hover{background:var(--panel2);color:var(--text)}
+  nav a.tab.active{background:var(--accent);color:#04121f;font-weight:600}
+  nav a.tab .ic{width:16px;text-align:center;font-size:13px}
+  nav a.tab .count{margin-left:auto;font-size:10.5px;background:rgba(255,255,255,.12);padding:1px 6px;border-radius:999px}
+  nav a.tab.active .count{background:rgba(0,0,0,.22)}
+  nav .navfoot{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+
+  main{overflow:hidden}
+  header.top{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+    padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:8;
+  }
+  header.top h2{margin:0;font-size:15px}
+  header.top .sub{font-size:12px;color:var(--muted);margin-top:1px}
+  .health{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .pill{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);padding:4px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel2)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+  .dot.ok{background:var(--good)} .dot.bad{background:var(--critical)} .dot.warn{background:var(--warning)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .dot.live{animation:pulse 1.6s ease-in-out infinite}
+
+  section.view{display:none;padding:20px 22px 60px}
+  section.view.active{display:block}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:13px 15px}
+  .card .n{font-size:24px;font-weight:700;line-height:1.1}
+  .card .l{color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;margin-bottom:18px;overflow:hidden}
+  .panel > .head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .panel > .head h3{font-size:12px;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  .panel > .body{padding:16px}
+  .panel .foot{padding:9px 16px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;padding:9px 14px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:1}
+  td{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+  tbody tr.clickable{cursor:pointer}
+  tbody tr:hover{background:var(--panel2)}
+  .scroll{max-height:560px;overflow:auto}
+  .empty{color:var(--muted);padding:30px;text-align:center;font-size:12.5px}
+
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:.03em}
+  .badge .g{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+  .b-PENDING{background:#2a3038;color:#c3c2b7}
+  .b-PROCESSING{background:#16324c;color:#7cc3ff}
+  .b-SUCCESS{background:#0f2f14;color:#3ec73e}
+  .b-PARTIAL{background:#3d2f08;color:var(--warning)}
+  .b-FAILED{background:#3d1414;color:#f08a8a}
+  .b-LOW{background:#0f2f14;color:#3ec73e}
+  .b-MEDIUM{background:#3d2f08;color:var(--warning)}
+  .b-HIGH{background:#3a2213;color:var(--serious)}
+  .b-CRITICAL{background:#3d1414;color:#f08a8a}
+  .b-UNKNOWN{background:#242a31;color:var(--muted)}
+  .b-CLEAN{background:#0f2f14;color:#3ec73e}
+  .b-SUSPICIOUS{background:#3d2f08;color:var(--warning)}
+  .b-MALICIOUS{background:#3d1414;color:#f08a8a}
+  .b-CLIENT_JA{background:#16324c;color:#7cc3ff}
+  .b-CTHREE_JA{background:#221d47;color:#b39bff}
+  .b-INTERNAL_JA{background:#0d332c;color:#5fd6c9}
+  .b-ENGINEER_EN{background:#2f1d47;color:#e39bff}
+  .b-WEBHOOK{background:#16324c;color:#7cc3ff}
+  .b-SYSLOG{background:#3a2213;color:var(--serious)}
+  .b-ACCEPTED{background:#0f2f14;color:#3ec73e}
+
+  /* ---------- Flow graph ---------- */
+  #flowWrap{overflow-x:auto;background:var(--panel)}
+  #flow{display:block;min-width:960px}
+  .fnode rect{transition:fill .3s,stroke .3s}
+  .fedge{transition:stroke .3s}
+  @keyframes dash{to{stroke-dashoffset:-18}}
+  .fedge.flowing{stroke-dasharray:5 4;animation:dash .5s linear infinite}
+  @keyframes ring{0%{opacity:.5;transform:scale(.75)}100%{opacity:0;transform:scale(1.5)}}
+  .fpulse{transform-origin:center;transform-box:fill-box;animation:ring 1.3s ease-out infinite}
+
+  .legend{display:flex;gap:13px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);align-items:center}
+  .legend .k{display:flex;align-items:center;gap:6px}
+  .legend .sw{width:11px;height:11px;border-radius:3px;flex:none}
+
+  /* ---------- Charts ---------- */
+  .chart{width:100%;overflow:visible}
+  .chart text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  .axis-label{fill:var(--muted);font-size:10.5px}
+  .tick-line{stroke:var(--grid);stroke-width:1}
+  .axis-line{stroke:var(--axis);stroke-width:1}
+  .bar-val{fill:var(--text);font-size:11px;font-weight:600}
+  .chart-empty{fill:var(--muted);font-size:12px}
+
+  /* ---------- Logs ---------- */
+  .logline{display:grid;grid-template-columns:74px 58px 1fr;gap:10px;padding:5px 14px;border-bottom:1px solid var(--border);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px}
+  .logline:hover{background:var(--panel2)}
+  .lvl{font-weight:700;text-transform:uppercase;font-size:10px;padding-top:1px}
+  .lvl.info{color:#7cc3ff} .lvl.warning{color:var(--warning)}
+  .lvl.error{color:#f08a8a} .lvl.critical{color:#f08a8a} .lvl.debug{color:var(--dim)}
+  .logmsg{color:var(--text);word-break:break-word}
+  .logmsg .kvp{color:var(--muted)}
+
+  /* ---------- Modal ---------- */
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+  #overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;width:min(820px,100%);max-height:88vh;overflow:auto}
+  .modal .head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel);z-index:2}
+  .modal .head h3{margin:0;font-size:14px}
+  .modal .body{padding:16px 18px}
+  .kv{display:grid;grid-template-columns:170px 1fr;gap:7px 14px;margin-bottom:16px;font-size:12.5px}
+  .kv > div:nth-child(odd){color:var(--muted)}
+  .tabs{display:flex;gap:5px;margin-bottom:11px;flex-wrap:wrap}
+  .tabbtn{padding:5px 11px;border-radius:7px;font-size:11.5px;border:1px solid var(--border2);cursor:pointer;color:var(--muted);background:var(--panel2)}
+  .tabbtn.active{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
+  .notif{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:13px;font-size:12.5px;line-height:1.65}
+  .intel-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+  .intel-box{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:11px 13px;flex:1;min-width:190px}
+  .intel-box h4{margin:0 0 7px;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  pre.code{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:13px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.5;color:var(--text);margin:0;white-space:pre}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:5px;font-weight:600}
+  .field .hint{font-size:11px;color:var(--dim);margin-top:4px}
+  .srcbadge{font-size:9.5px;padding:1px 6px;border-radius:999px;background:var(--panel3);color:var(--muted);margin-left:6px;font-weight:600}
+  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel3);border:1px solid var(--border2);border-radius:10px;padding:11px 16px;font-size:12.5px;z-index:120;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
+  .toast.show{opacity:1;transform:none}
+  .toast.err{border-color:var(--critical);color:#f08a8a}
+  .aiitem{border-bottom:1px solid var(--border);padding:12px 16px;cursor:pointer}
+  .aiitem:hover{background:var(--panel2)}
+  .aiitem .t{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:5px}
+  .aiitem .snip{color:var(--muted);font-size:12px;line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+</style>
+</head>
+<body>
+
+<!-- ══════════════ LOGIN ══════════════ -->
+<div id="login">
+  <div class="box">
+    <h1>ESET SOC Lite</h1>
+    <p>Enter the dashboard access key to continue.</p>
+    <input id="loginKey" type="password" placeholder="Access key" autocomplete="current-password">
+    <div style="height:12px"></div>
+    <button class="primary" id="loginBtn" style="width:100%">Unlock Dashboard</button>
+    <div class="err" id="loginErr">Incorrect key — try again.</div>
+  </div>
+</div>
+
+<!-- ══════════════ APP ══════════════ -->
+<div id="app">
+  <nav>
+    <div class="brand">
+      <h1>ESET SOC Lite</h1>
+      <span>Control Dashboard</span>
+    </div>
+    <a class="tab active" data-view="overview"><span class="ic">◧</span>Overview</a>
+    <a class="tab" data-view="flow"><span class="ic">⌗</span>Pipeline Flow</a>
+    <a class="tab" data-view="alerts"><span class="ic">▤</span>Alerts<span class="count" id="cAlerts">0</span></a>
+    <a class="tab" data-view="ai"><span class="ic">✦</span>AI Content</a>
+    <a class="tab" data-view="emails"><span class="ic">✉</span>Emails<span class="count" id="cEmails">0</span></a>
+    <a class="tab" data-view="logs"><span class="ic">≡</span>Logs</a>
+    <a class="tab" data-view="settings"><span class="ic">⚙</span>Settings</a>
+    <a class="tab" data-view="api"><span class="ic">⚉</span>API Docs</a>
+    <div class="navfoot">
+      <button class="small" id="lockBtn" style="width:100%">Lock dashboard</button>
+    </div>
+  </nav>
+
+  <main>
+    <header class="top">
+      <div>
+        <h2 id="viewTitle">Overview</h2>
+        <div class="sub" id="viewSub">Live pipeline status</div>
+      </div>
+      <div class="health">
+        <span class="pill"><span class="dot" id="wsDot"></span><span id="wsLabel">connecting…</span></span>
+        <span class="pill"><span class="dot" id="dbDot"></span>DB</span>
+        <span class="pill"><span class="dot" id="geminiDot"></span>Gemini</span>
+        <span class="pill"><span class="dot" id="dirDot"></span>Storage</span>
+        <span class="pill"><span class="dot" id="udpDot"></span>UDP</span>
+        <span class="pill"><span class="dot" id="tcpDot"></span>TCP</span>
+        <button class="small" id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+
+    <!-- ─────── OVERVIEW ─────── -->
+    <section class="view active" id="view-overview">
+      <div class="cards" id="statCards"></div>
+      <div class="grid2">
+        <div class="panel">
+          <div class="head">
+            <h3>Alerts Ingested</h3>
+            <select id="seriesWindow" style="width:auto">
+              <option value="6">Last 6 hours</option>
+              <option value="24" selected>Last 24 hours</option>
+              <option value="72">Last 3 days</option>
+              <option value="168">Last 7 days</option>
+            </select>
+          </div>
+          <div class="body"><div id="chartSeries"></div></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h3>Risk Distribution</h3></div>
+          <div class="body"><div id="chartRisk"></div></div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <div class="head"><h3>Pipeline Outcomes</h3></div>
+          <div class="body"><div id="chartStatus"></div></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h3>Ingest Source</h3></div>
+          <div class="body"><div id="chartSource"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────── FLOW ─────── -->
+    <section class="view" id="view-flow">
+      <div class="panel">
+        <div class="head">
+          <h3>Live Pipeline Flow</h3>
+          <div class="legend">
+            <span class="k"><span class="sw" style="background:var(--dim)"></span>Waiting</span>
+            <span class="k"><span class="sw" style="background:var(--accent)"></span>Running</span>
+            <span class="k"><span class="sw" style="background:var(--good)"></span>Done</span>
+            <span class="k"><span class="sw" style="background:var(--warning)"></span>Skipped</span>
+            <span class="k"><span class="sw" style="background:var(--critical)"></span>Failed</span>
+            <button class="small" id="clearFlow">Clear</button>
+          </div>
+        </div>
+        <div id="flowWrap"><svg id="flow"></svg></div>
+        <div class="foot" id="flowFoot">Each incoming alert becomes a lane and advances through the pipeline in real time. Click any node for its detail.</div>
+      </div>
+    </section>
+
+    <!-- ─────── ALERTS ─────── -->
+    <section class="view" id="view-alerts">
+      <div class="panel">
+        <div class="head">
+          <h3>Alerts</h3>
+          <div class="row">
+            <select id="fStatus" style="width:auto">
+              <option value="">All statuses</option>
+              <option>PENDING</option><option>PROCESSING</option>
+              <option>SUCCESS</option><option>PARTIAL</option><option>FAILED</option>
+            </select>
+            <input id="fSearch" placeholder="Search detection / endpoint / id" style="width:250px">
+          </div>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>Status</th><th>Risk</th><th>Detection</th><th>Endpoint</th>
+              <th>Source</th><th>Updated</th><th>Correlation ID</th><th></th>
+            </tr></thead>
+            <tbody id="alertRows"></tbody>
+          </table>
+          <div class="empty" id="alertsEmpty">No alerts yet. POST one to <span class="mono">/webhook/eset</span> — see API Docs.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────── AI CONTENT ─────── -->
+    <section class="view" id="view-ai">
+      <div class="panel">
+        <div class="head"><h3>AI-Generated Notifications</h3><span class="muted mono" id="aiCount"></span></div>
+        <div class="scroll" id="aiList"></div>
+        <div class="empty" id="aiEmpty">No AI content yet — it appears once an alert completes with status SUCCESS.</div>
+      </div>
+    </section>
+
+    <!-- ─────── EMAILS ─────── -->
+    <section class="view" id="view-emails">
+      <div class="panel">
+        <div class="head">
+          <h3>Mail Delivery</h3>
+          <div class="row">
+            <span class="muted" style="font-size:11.5px" id="deliveryConfig"></span>
+            <button class="small primary" id="dispatchNow">Send queued now</button>
+          </div>
+        </div>
+        <div class="body">
+          <div class="cards" id="deliveryCards" style="margin-bottom:0"></div>
+        </div>
+        <div class="foot" id="serviceStatus">Checking mail service…</div>
+      </div>
+
+      <div class="panel">
+        <div class="head">
+          <h3>Email Outbox — Awaiting Handoff</h3>
+          <span class="muted mono" id="emailCount"></span>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>Type</th><th>To</th><th>Subject</th><th>Risk</th><th>Created</th><th></th>
+            </tr></thead>
+            <tbody id="emailRows"></tbody>
+          </table>
+          <div class="empty" id="emailsEmpty">Outbox is empty — everything composed so far has been handed to the mail service.</div>
+        </div>
+        <div class="foot">These are waiting to be handed over. Once accepted (HTTP 202) the mail service owns delivery and its own retries.</div>
+      </div>
+
+      <div class="panel">
+        <div class="head">
+          <h3>Handoff History</h3>
+          <select id="deliveryFilter" style="width:auto">
+            <option value="">All</option>
+            <option value="ACCEPTED">Accepted</option>
+            <option value="PENDING">Pending</option>
+            <option value="FAILED">Failed</option>
+          </select>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>State</th><th>Type</th><th>To</th><th>Subject</th>
+              <th>Attempts</th><th>Service ID</th><th>Updated</th>
+            </tr></thead>
+            <tbody id="deliveryRows"></tbody>
+          </table>
+          <div class="empty" id="deliveryEmpty">No emails have been handed off yet.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────── LOGS ─────── -->
+    <section class="view" id="view-logs">
+      <div class="panel">
+        <div class="head">
+          <h3>Application Logs</h3>
+          <div class="row">
+            <select id="logLevel" style="width:auto">
+              <option value="">All levels</option>
+              <option value="debug">Debug</option><option value="info">Info</option>
+              <option value="warning">Warning</option><option value="error">Error</option>
+              <option value="critical">Critical</option>
+            </select>
+            <input id="logSearch" placeholder="Filter…" style="width:190px">
+            <label class="row muted" style="font-size:11.5px;gap:5px">
+              <input type="checkbox" id="logAuto" checked style="width:auto">Auto
+            </label>
+          </div>
+        </div>
+        <div class="scroll" id="logList" style="max-height:640px"></div>
+        <div class="empty" id="logsEmpty">No log entries matched.</div>
+      </div>
+    </section>
+
+    <!-- ─────── SETTINGS ─────── -->
+    <section class="view" id="view-settings">
+      <div class="panel">
+        <div class="head"><h3>Email Recipients</h3><span class="muted" style="font-size:11.5px">Saved to the database — applies to the next alert, no restart</span></div>
+        <div class="body">
+          <div class="grid2">
+            <div class="field">
+              <label>Client notification (JA)<span class="srcbadge" id="src-client">env</span></label>
+              <input id="in-client" placeholder="client@example.com, other@example.com">
+              <div class="hint">Customer-facing summary and required confirmations.</div>
+            </div>
+            <div class="field">
+              <label>C-Three front office (JA)<span class="srcbadge" id="src-cthree">env</span></label>
+              <input id="in-cthree" placeholder="frontoffice@example.com">
+              <div class="hint">Coordination notes plus a drafted client reply.</div>
+            </div>
+            <div class="field">
+              <label>Internal team (JA)<span class="srcbadge" id="src-internal">env</span></label>
+              <input id="in-internal" placeholder="soc-internal@example.com">
+              <div class="hint">Detailed assessment and recommended actions.</div>
+            </div>
+            <div class="field">
+              <label>Engineer (EN)<span class="srcbadge" id="src-engineer">env</span></label>
+              <input id="in-engineer" placeholder="engineering@example.com">
+              <div class="hint">Technical breakdown, unknowns, investigation items.</div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="primary" id="saveRecipients">Save recipients</button>
+            <button id="reloadRecipients">Reset</button>
+            <span class="muted" style="font-size:11.5px">Comma-separated. Leave blank to skip that notification type.</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>Runtime Configuration</h3><span class="muted" style="font-size:11.5px">Read-only — set in .env</span></div>
+        <div class="body"><div class="kv" id="runtimeKv"></div></div>
+      </div>
+    </section>
+
+    <!-- ─────── API DOCS ─────── -->
+    <section class="view" id="view-api">
+      <div class="panel">
+        <div class="head"><h3>Sending Alerts</h3><a href="/docs" target="_blank" style="font-size:12px">Open OpenAPI explorer ↗</a></div>
+        <div class="body">
+          <p class="muted" style="margin-top:0">Both ingest routes require the bearer token from <span class="mono">ESET_WEBHOOK_AUTH_TOKEN</span> and return a <span class="mono">correlation_id</span> immediately; the pipeline then runs in the background and appears live in Pipeline Flow.</p>
+          <div class="kv">
+            <div>Webhook</div><div class="mono" id="ep-eset"></div>
+            <div>Syslog over HTTP</div><div class="mono" id="ep-syslog"></div>
+            <div>Syslog UDP / TCP</div><div class="mono">RFC 5424 frame containing a JSON object</div>
+            <div>Job status</div><div class="mono" id="ep-status"></div>
+            <div>Health</div><div class="mono" id="ep-health"></div>
+          </div>
+          <h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Example request</h4>
+          <pre class="code" id="curlExample"></pre>
+          <div class="row" style="margin-top:10px">
+            <button class="small" id="copyCurl">Copy</button>
+            <span class="muted" style="font-size:11.5px">Replace <span class="mono">$ESET_WEBHOOK_AUTH_TOKEN</span> with your configured token.</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>Fields That Drive Behaviour</h3></div>
+        <table>
+          <thead><tr><th>Field</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">severity</td><td>LOW / MEDIUM / HIGH / CRITICAL — primary risk-engine input</td></tr>
+            <tr><td class="mono">threat_handled</td><td>Downgrades risk when true</td></tr>
+            <tr><td class="mono">isolation_status</td><td>Downgrades a HIGH alert further when true</td></tr>
+            <tr><td class="mono">alert_id + occurred_at</td><td>Deduplication key (falls back to a hash of the payload)</td></tr>
+            <tr><td class="mono">file_hash / ip_address / url</td><td>Threat-intel lookups (VirusTotal, AbuseIPDB)</td></tr>
+          </tbody>
+        </table>
+        <div class="foot">Anything omitted normalizes to <span class="mono">UNKNOWN</span> rather than being invented.</div>
+      </div>
+      <div class="panel">
+        <div class="head"><h3>Dashboard API</h3></div>
+        <table>
+          <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+          <tbody id="apiRows"></tbody>
+        </table>
+        <div class="foot">All dashboard routes require the <span class="mono">X-Dashboard-Key</span> header while an access key is configured.</div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="overlay"><div class="modal" id="modalBox"></div></div>
+<div class="toast" id="toast"></div>
+
+<!-- viz first: it only binds DOM at load time, while dashboard.js's boot path calls into it -->
+<script src="/static/dashboard-viz.js"></script>
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

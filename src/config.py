@@ -34,6 +34,27 @@ class Settings(BaseSettings):
     # --- Feature Flags for Testing ---
     use_mock_threat_intel: bool = True  # Defaults to True for prototype
 
+    # --- Email Outbox Recipients (comma-separated addresses, blank = skip that type) ---
+    client_notification_emails: str = Field("", validation_alias="CLIENT_NOTIFICATION_EMAILS")
+    cthree_notification_emails: str = Field("", validation_alias="CTHREE_NOTIFICATION_EMAILS")
+    internal_notification_emails: str = Field("", validation_alias="INTERNAL_NOTIFICATION_EMAILS")
+    engineer_notification_emails: str = Field("", validation_alias="ENGINEER_NOTIFICATION_EMAILS")
+
+    # --- Dashboard ---
+    dashboard_access_key: str = Field("", validation_alias="DASHBOARD_ACCESS_KEY")
+
+    # --- Email Delivery (ESET Mail worker; see src/services/email_delivery/) ---
+    email_delivery_enabled: bool = Field(False, validation_alias="EMAIL_DELIVERY_ENABLED")
+    email_provider: str = Field("eset_mail", validation_alias="EMAIL_PROVIDER")
+    email_api_url: str = Field("", validation_alias="EMAIL_API_URL")
+    email_api_key: str = Field("", validation_alias="EMAIL_API_KEY")
+    email_api_secret: str = Field("", validation_alias="EMAIL_API_SECRET")
+    # full | signed | api-key-only — must match the worker's SECURITY_MODE
+    email_security_mode: str = Field("full", validation_alias="EMAIL_SECURITY_MODE")
+    email_timeout_seconds: int = Field(15, validation_alias="EMAIL_TIMEOUT_SECONDS")
+    email_max_attempts: int = Field(3, validation_alias="EMAIL_MAX_ATTEMPTS")
+    email_dispatch_interval_seconds: int = Field(60, validation_alias="EMAIL_DISPATCH_INTERVAL_SECONDS")
+
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
         env_file_encoding="utf-8",

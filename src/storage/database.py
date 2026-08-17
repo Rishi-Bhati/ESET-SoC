@@ -55,7 +55,36 @@ async def init_db() -> None:
                 expires_at REAL NOT NULL
             )
         """)
-        
+
+        # Dashboard-editable configuration overriding .env (see storage/settings_store.py)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
+        # Outbound email delivery history (see storage/delivery_store.py).
+        # outbox.json only holds what still needs sending; outcomes live here.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS email_deliveries (
+                email_id TEXT PRIMARY KEY,
+                correlation_id TEXT NOT NULL,
+                notification_type TEXT NOT NULL,
+                recipients TEXT NOT NULL,      -- JSON array
+                subject TEXT NOT NULL,
+                status TEXT NOT NULL,          -- PENDING, SENT, FAILED
+                attempts INTEGER NOT NULL DEFAULT 0,
+                remote_id TEXT,                -- id returned by the mail service
+                error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_email_deliveries_status ON email_deliveries(status)"
+        )
+
         await conn.commit()
         
     logger.info("database_init_success")
