@@ -32,7 +32,7 @@ async def write_result(result: PipelineResult) -> None:
     # Create a temp file in the same directory to guarantee atomic rename (on same mount point)
     temp_fd, temp_path = tempfile.mkstemp(dir=settings.output_dir, prefix=f"{result.correlation_id}_", suffix=".tmp")
     try:
-        with os.fdopen(temp_fd, "w") as f:
+        with os.fdopen(temp_fd, "w",encoding="utf-8") as f:
             f.write(json_data)
         # Atomic file rename (overwrites if target exists)
         os.replace(temp_path, target_path)
@@ -76,7 +76,7 @@ async def write_result(result: PipelineResult) -> None:
         # Write index.json atomically
         temp_idx_fd, temp_idx_path = tempfile.mkstemp(dir=settings.output_dir, prefix="index_", suffix=".tmp")
         try:
-            with os.fdopen(temp_idx_fd, "w") as f:
+            with os.fdopen(temp_idx_fd, "w",encoding="utf-8") as f:
                 json.dump(records, f, indent=2)
             os.replace(temp_idx_path, index_path)
             logger.info("index_write_success")
