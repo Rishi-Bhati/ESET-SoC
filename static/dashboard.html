@@ -212,11 +212,11 @@
 <div id="login">
   <div class="box">
     <h1>ESET SOC Lite</h1>
-    <p>Enter the dashboard access key to continue.</p>
-    <input id="loginKey" type="password" placeholder="Access key" autocomplete="current-password">
+    <p data-i18n="login_sub">Enter the dashboard access key to continue.</p>
+    <input id="loginKey" type="password" data-i18n-placeholder="login_placeholder" placeholder="Access key" autocomplete="current-password">
     <div style="height:12px"></div>
-    <button class="primary" id="loginBtn" style="width:100%">Unlock Dashboard</button>
-    <div class="err" id="loginErr">Incorrect key — try again.</div>
+    <button class="primary" id="loginBtn" style="width:100%" data-i18n="login_unlock">Unlock Dashboard</button>
+    <div class="err" id="loginErr" data-i18n="login_err">Incorrect key — try again.</div>
   </div>
 </div>
 
@@ -225,19 +225,20 @@
   <nav>
     <div class="brand">
       <h1>ESET SOC Lite</h1>
-      <span>Control Dashboard</span>
+      <span data-i18n="brand_sub">Control Dashboard</span>
     </div>
-    <a class="tab active" data-view="overview"><span class="ic">◧</span>Overview</a>
-    <a class="tab" data-view="flow"><span class="ic">⌗</span>Pipeline Flow</a>
-    <a class="tab" data-view="alerts"><span class="ic">▤</span>Alerts<span class="count" id="cAlerts">0</span></a>
-    <a class="tab" data-view="ai"><span class="ic">✦</span>AI Content</a>
-    <a class="tab" data-view="ai-visibility"><span class="ic">◎</span>AI Visibility<span class="count" id="cAiAlerts">0</span></a>
+    <a class="tab active" data-view="overview"><span class="ic">◧</span><span data-i18n="nav_overview">Overview</span></a>
+    <a class="tab" data-view="flow"><span class="ic">⌗</span><span data-i18n="nav_flow">Pipeline Flow</span></a>
+    <a class="tab" data-view="alerts"><span class="ic">▤</span><span data-i18n="nav_alerts">Alerts</span><span class="count" id="cAlerts">0</span></a>
+    <a class="tab" data-view="ai"><span class="ic">✦</span><span data-i18n="nav_ai">AI Content</span></a>
+    <a class="tab" data-view="ai-visibility"><span class="ic">◎</span><span data-i18n="nav_ai_visibility">AI Visibility</span><span class="count" id="cAiAlerts">0</span></a>
+    <!-- Emails: label intentionally NOT translated — the Emails section/content must not change with the language toggle. -->
     <a class="tab" data-view="emails"><span class="ic">✉</span>Emails<span class="count" id="cEmails">0</span></a>
-    <a class="tab" data-view="logs"><span class="ic">≡</span>Logs</a>
-    <a class="tab" data-view="settings"><span class="ic">⚙</span>Settings</a>
-    <a class="tab" data-view="api"><span class="ic">⚉</span>API Docs</a>
+    <a class="tab" data-view="logs"><span class="ic">≡</span><span data-i18n="nav_logs">Logs</span></a>
+    <a class="tab" data-view="settings"><span class="ic">⚙</span><span data-i18n="nav_settings">Settings</span></a>
+    <a class="tab" data-view="api"><span class="ic">⚉</span><span data-i18n="nav_api">API Docs</span></a>
     <div class="navfoot">
-      <button class="small" id="lockBtn" style="width:100%">Lock dashboard</button>
+      <button class="small" id="lockBtn" style="width:100%" data-i18n="nav_lock">Lock dashboard</button>
     </div>
   </nav>
 
@@ -248,13 +249,17 @@
         <div class="sub" id="viewSub">Live pipeline status</div>
       </div>
       <div class="health">
-        <span class="pill"><span class="dot" id="wsDot"></span><span id="wsLabel">connecting…</span></span>
+        <span class="pill"><span class="dot" id="wsDot"></span><span id="wsLabel" data-i18n="ws_connecting">connecting…</span></span>
         <span class="pill"><span class="dot" id="dbDot"></span>DB</span>
         <span class="pill"><span class="dot" id="geminiDot"></span>Gemini</span>
-        <span class="pill"><span class="dot" id="dirDot"></span>Storage</span>
+        <span class="pill"><span class="dot" id="dirDot"></span><span data-i18n="pill_storage">Storage</span></span>
         <span class="pill"><span class="dot" id="udpDot"></span>UDP</span>
         <span class="pill"><span class="dot" id="tcpDot"></span>TCP</span>
-        <button class="small" id="refreshBtn">Refresh</button>
+        <button class="small" id="refreshBtn" data-i18n="btn_refresh">Refresh</button>
+        <div class="row" style="gap:4px;margin-left:2px">
+          <button class="small primary" id="langBtnJa">日本語</button>
+          <button class="small" id="langBtnEn">EN</button>
+        </div>
       </div>
     </header>
 
@@ -264,28 +269,28 @@
       <div class="grid2">
         <div class="panel">
           <div class="head">
-            <h3>Alerts Ingested</h3>
+            <h3 data-i18n="panel_alerts_ingested">Alerts Ingested</h3>
             <select id="seriesWindow" style="width:auto">
-              <option value="6">Last 6 hours</option>
-              <option value="24" selected>Last 24 hours</option>
-              <option value="72">Last 3 days</option>
-              <option value="168">Last 7 days</option>
+              <option value="6" data-i18n="opt_last_6h">Last 6 hours</option>
+              <option value="24" selected data-i18n="opt_last_24h">Last 24 hours</option>
+              <option value="72" data-i18n="opt_last_3d">Last 3 days</option>
+              <option value="168" data-i18n="opt_last_7d">Last 7 days</option>
             </select>
           </div>
           <div class="body"><div id="chartSeries"></div></div>
         </div>
         <div class="panel">
-          <div class="head"><h3>Risk Distribution</h3></div>
+          <div class="head"><h3 data-i18n="panel_risk_distribution">Risk Distribution</h3></div>
           <div class="body"><div id="chartRisk"></div></div>
         </div>
       </div>
       <div class="grid2">
         <div class="panel">
-          <div class="head"><h3>Pipeline Outcomes</h3></div>
+          <div class="head"><h3 data-i18n="panel_pipeline_outcomes">Pipeline Outcomes</h3></div>
           <div class="body"><div id="chartStatus"></div></div>
         </div>
         <div class="panel">
-          <div class="head"><h3>Ingest Source</h3></div>
+          <div class="head"><h3 data-i18n="panel_ingest_source">Ingest Source</h3></div>
           <div class="body"><div id="chartSource"></div></div>
         </div>
       </div>
@@ -295,18 +300,18 @@
     <section class="view" id="view-flow">
       <div class="panel">
         <div class="head">
-          <h3>Live Pipeline Flow</h3>
+          <h3 data-i18n="panel_live_flow">Live Pipeline Flow</h3>
           <div class="legend">
-            <span class="k"><span class="sw" style="background:var(--dim)"></span>Waiting</span>
-            <span class="k"><span class="sw" style="background:var(--accent)"></span>Running</span>
-            <span class="k"><span class="sw" style="background:var(--good)"></span>Done</span>
-            <span class="k"><span class="sw" style="background:var(--warning)"></span>Skipped</span>
-            <span class="k"><span class="sw" style="background:var(--critical)"></span>Failed</span>
-            <button class="small" id="clearFlow">Clear</button>
+            <span class="k"><span class="sw" style="background:var(--dim)"></span><span data-i18n="legend_waiting">Waiting</span></span>
+            <span class="k"><span class="sw" style="background:var(--accent)"></span><span data-i18n="legend_running">Running</span></span>
+            <span class="k"><span class="sw" style="background:var(--good)"></span><span data-i18n="legend_done">Done</span></span>
+            <span class="k"><span class="sw" style="background:var(--warning)"></span><span data-i18n="legend_skipped">Skipped</span></span>
+            <span class="k"><span class="sw" style="background:var(--critical)"></span><span data-i18n="legend_failed">Failed</span></span>
+            <button class="small" id="clearFlow" data-i18n="btn_clear">Clear</button>
           </div>
         </div>
         <div id="flowWrap"><svg id="flow"></svg></div>
-        <div class="foot" id="flowFoot">Each incoming alert becomes a lane and advances through the pipeline in real time. Click any node for its detail.</div>
+        <div class="foot" id="flowFoot" data-i18n="flow_foot_empty">Each incoming alert becomes a lane and advances through the pipeline in real time. Click any node for its detail.</div>
       </div>
     </section>
 
@@ -314,21 +319,24 @@
     <section class="view" id="view-alerts">
       <div class="panel">
         <div class="head">
-          <h3>Alerts</h3>
+          <h3 data-i18n="panel_alerts">Alerts</h3>
           <div class="row">
             <select id="fStatus" style="width:auto">
-              <option value="">All statuses</option>
-              <option>PENDING</option><option>PROCESSING</option>
-              <option>SUCCESS</option><option>PARTIAL</option><option>FAILED</option>
+              <option value="" data-i18n="opt_all_statuses">All statuses</option>
+              <option value="PENDING" data-i18n="status_pending">PENDING</option>
+              <option value="PROCESSING" data-i18n="status_processing">PROCESSING</option>
+              <option value="SUCCESS" data-i18n="status_success">SUCCESS</option>
+              <option value="PARTIAL" data-i18n="status_partial">PARTIAL</option>
+              <option value="FAILED" data-i18n="status_failed">FAILED</option>
             </select>
-            <input id="fSearch" placeholder="Search detection / endpoint / id" style="width:250px">
+            <input id="fSearch" data-i18n-placeholder="placeholder_search_alerts" placeholder="Search detection / endpoint / id" style="width:250px">
           </div>
         </div>
         <div class="scroll">
           <table>
             <thead><tr>
-              <th>Status</th><th>Risk</th><th>Detection</th><th>Endpoint</th>
-              <th>Source</th><th>Updated</th><th>Correlation ID</th><th></th>
+              <th data-i18n="th_status">Status</th><th data-i18n="th_risk">Risk</th><th data-i18n="th_detection">Detection</th><th data-i18n="th_endpoint">Endpoint</th>
+              <th data-i18n="th_source">Source</th><th data-i18n="th_updated">Updated</th><th data-i18n="th_correlation_id">Correlation ID</th><th></th>
             </tr></thead>
             <tbody id="alertRows"></tbody>
           </table>
@@ -340,58 +348,58 @@
     <!-- ─────── AI CONTENT ─────── -->
     <section class="view" id="view-ai">
       <div class="panel">
-        <div class="head"><h3>AI-Generated Notifications</h3><span class="muted mono" id="aiCount"></span></div>
+        <div class="head"><h3 data-i18n="panel_ai_notifications">AI-Generated Notifications</h3><span class="muted mono" id="aiCount"></span></div>
         <div class="scroll" id="aiList"></div>
-        <div class="empty" id="aiEmpty">No AI content yet — it appears once an alert completes with status SUCCESS.</div>
+        <div class="empty" id="aiEmpty" data-i18n="ai_content_empty">No AI content yet — it appears once an alert completes with status SUCCESS.</div>
       </div>
     </section>
 
     <!-- ─────── AI VISIBILITY ─────── -->
     <section class="view" id="view-ai-visibility">
-      <p class="muted" style="margin:0 0 16px">Monitor AI activity, data sent to models, external interactions, model outputs, and potential information exposure in real time.</p>
+      <p class="muted" style="margin:0 0 16px" data-i18n="aivis_intro">Monitor AI activity, data sent to models, external interactions, model outputs, and potential information exposure in real time.</p>
 
       <div class="cards" id="aiVisCards"></div>
 
       <div class="grid2">
         <div class="panel">
-          <div class="head"><h3>AI Risk Breakdown</h3></div>
+          <div class="head"><h3 data-i18n="panel_ai_risk_breakdown">AI Risk Breakdown</h3></div>
           <div class="body"><div id="aiRiskChart"></div></div>
         </div>
         <div class="panel">
           <div class="head">
-            <h3>Live AI Activity</h3>
-            <span class="muted" style="font-size:11.5px">Same WebSocket as Pipeline Flow</span>
+            <h3 data-i18n="panel_live_ai_activity">Live AI Activity</h3>
+            <span class="muted" style="font-size:11.5px" data-i18n="sub_same_ws">Same WebSocket as Pipeline Flow</span>
           </div>
           <div class="scroll" id="aiLiveFeed" style="max-height:230px"></div>
-          <div class="empty" id="aiLiveEmpty">No AI activity yet — it appears the moment an alert reaches the AI stage.</div>
+          <div class="empty" id="aiLiveEmpty" data-i18n="ai_live_empty">No AI activity yet — it appears the moment an alert reaches the AI stage.</div>
         </div>
       </div>
 
       <div class="panel">
         <div class="head">
-          <h3>Recent AI Traces</h3>
+          <h3 data-i18n="panel_recent_ai_traces">Recent AI Traces</h3>
           <select id="aiTraceRisk" style="width:auto">
-            <option value="">All risk levels</option>
-            <option value="SAFE">Safe</option>
-            <option value="REVIEW">Review</option>
-            <option value="SENSITIVE_DATA_DETECTED">Sensitive Data Detected</option>
-            <option value="SECRET_DETECTED">Secret Detected</option>
-            <option value="FAILED_SECURITY_CHECK">Failed Security Check</option>
-            <option value="BLOCKED">Blocked</option>
-            <option value="ERROR">Error</option>
+            <option value="" data-i18n="opt_all_risk_levels">All risk levels</option>
+            <option value="SAFE" data-i18n="risk_safe">Safe</option>
+            <option value="REVIEW" data-i18n="risk_review">Review</option>
+            <option value="SENSITIVE_DATA_DETECTED" data-i18n="risk_sensitive">Sensitive Data Detected</option>
+            <option value="SECRET_DETECTED" data-i18n="risk_secret">Secret Detected</option>
+            <option value="FAILED_SECURITY_CHECK" data-i18n="risk_failed_check">Failed Security Check</option>
+            <option value="BLOCKED" data-i18n="risk_blocked">Blocked</option>
+            <option value="ERROR" data-i18n="risk_error">Error</option>
           </select>
         </div>
         <div class="scroll">
           <table>
             <thead><tr>
-              <th>Trace ID</th><th>Time</th><th>Component</th><th>Model</th>
-              <th>Duration</th><th>Status</th><th>Risk</th>
+              <th data-i18n="th_trace_id">Trace ID</th><th data-i18n="th_time">Time</th><th data-i18n="th_component">Component</th><th data-i18n="th_model">Model</th>
+              <th data-i18n="th_duration">Duration</th><th data-i18n="th_status">Status</th><th data-i18n="th_risk">Risk</th>
             </tr></thead>
             <tbody id="aiTraceRows"></tbody>
           </table>
-          <div class="empty" id="aiTracesEmpty">No AI traces yet — a trace is created every time an alert reaches the AI stage.</div>
+          <div class="empty" id="aiTracesEmpty" data-i18n="ai_traces_empty">No AI traces yet — a trace is created every time an alert reaches the AI stage.</div>
         </div>
-        <div class="foot">Every AI call in this application goes through here — see Trace Detail for the full input/output/security breakdown. Click a row to open it.</div>
+        <div class="foot" data-i18n="ai_traces_foot">Every AI call in this application goes through here — see Trace Detail for the full input/output/security breakdown. Click a row to open it.</div>
       </div>
     </section>
 
@@ -455,61 +463,61 @@
     <section class="view" id="view-logs">
       <div class="panel">
         <div class="head">
-          <h3>Application Logs</h3>
+          <h3 data-i18n="panel_app_logs">Application Logs</h3>
           <div class="row">
             <select id="logLevel" style="width:auto">
-              <option value="">All levels</option>
-              <option value="debug">Debug</option><option value="info">Info</option>
-              <option value="warning">Warning</option><option value="error">Error</option>
-              <option value="critical">Critical</option>
+              <option value="" data-i18n="opt_all_levels">All levels</option>
+              <option value="debug" data-i18n="lvl_debug">Debug</option><option value="info" data-i18n="lvl_info">Info</option>
+              <option value="warning" data-i18n="lvl_warning">Warning</option><option value="error" data-i18n="lvl_error">Error</option>
+              <option value="critical" data-i18n="lvl_critical">Critical</option>
             </select>
-            <input id="logSearch" placeholder="Filter…" style="width:190px">
+            <input id="logSearch" data-i18n-placeholder="placeholder_filter" placeholder="Filter…" style="width:190px">
             <label class="row muted" style="font-size:11.5px;gap:5px">
-              <input type="checkbox" id="logAuto" checked style="width:auto">Auto
+              <input type="checkbox" id="logAuto" checked style="width:auto"><span data-i18n="label_auto">Auto</span>
             </label>
           </div>
         </div>
         <div class="scroll" id="logList" style="max-height:640px"></div>
-        <div class="empty" id="logsEmpty">No log entries matched.</div>
+        <div class="empty" id="logsEmpty" data-i18n="logs_empty">No log entries matched.</div>
       </div>
     </section>
 
     <!-- ─────── SETTINGS ─────── -->
     <section class="view" id="view-settings">
       <div class="panel">
-        <div class="head"><h3>Email Recipients</h3><span class="muted" style="font-size:11.5px">Saved to the database — applies to the next alert, no restart</span></div>
+        <div class="head"><h3 data-i18n="panel_email_recipients">Email Recipients</h3><span class="muted" style="font-size:11.5px" data-i18n="sub_saved_db">Saved to the database — applies to the next alert, no restart</span></div>
         <div class="body">
           <div class="grid2">
             <div class="field">
-              <label>Client notification (JA)<span class="srcbadge" id="src-client">env</span></label>
+              <label><span data-i18n="label_client">Client notification (JA)</span><span class="srcbadge" id="src-client">env</span></label>
               <input id="in-client" placeholder="client@example.com, other@example.com">
-              <div class="hint">Customer-facing summary and required confirmations.</div>
+              <div class="hint" data-i18n="hint_client">Customer-facing summary and required confirmations.</div>
             </div>
             <div class="field">
-              <label>C-Three front office (JA)<span class="srcbadge" id="src-cthree">env</span></label>
+              <label><span data-i18n="label_cthree">C-Three front office (JA)</span><span class="srcbadge" id="src-cthree">env</span></label>
               <input id="in-cthree" placeholder="frontoffice@example.com">
-              <div class="hint">Coordination notes plus a drafted client reply.</div>
+              <div class="hint" data-i18n="hint_cthree">Coordination notes plus a drafted client reply.</div>
             </div>
             <div class="field">
-              <label>Internal team (JA)<span class="srcbadge" id="src-internal">env</span></label>
+              <label><span data-i18n="label_internal">Internal team (JA)</span><span class="srcbadge" id="src-internal">env</span></label>
               <input id="in-internal" placeholder="soc-internal@example.com">
-              <div class="hint">Detailed assessment and recommended actions.</div>
+              <div class="hint" data-i18n="hint_internal">Detailed assessment and recommended actions.</div>
             </div>
             <div class="field">
-              <label>Engineer (EN)<span class="srcbadge" id="src-engineer">env</span></label>
+              <label><span data-i18n="label_engineer">Engineer (EN)</span><span class="srcbadge" id="src-engineer">env</span></label>
               <input id="in-engineer" placeholder="engineering@example.com">
-              <div class="hint">Technical breakdown, unknowns, investigation items.</div>
+              <div class="hint" data-i18n="hint_engineer">Technical breakdown, unknowns, investigation items.</div>
             </div>
           </div>
           <div class="row">
-            <button class="primary" id="saveRecipients">Save recipients</button>
-            <button id="reloadRecipients">Reset</button>
-            <span class="muted" style="font-size:11.5px">Comma-separated. Leave blank to skip that notification type.</span>
+            <button class="primary" id="saveRecipients" data-i18n="btn_save_recipients">Save recipients</button>
+            <button id="reloadRecipients" data-i18n="btn_reset">Reset</button>
+            <span class="muted" style="font-size:11.5px" data-i18n="hint_comma_separated">Comma-separated. Leave blank to skip that notification type.</span>
           </div>
         </div>
       </div>
       <div class="panel">
-        <div class="head"><h3>Runtime Configuration</h3><span class="muted" style="font-size:11.5px">Read-only — set in .env</span></div>
+        <div class="head"><h3 data-i18n="panel_runtime_config">Runtime Configuration</h3><span class="muted" style="font-size:11.5px" data-i18n="sub_readonly_env">Read-only — set in .env</span></div>
         <div class="body"><div class="kv" id="runtimeKv"></div></div>
       </div>
     </section>
@@ -517,45 +525,45 @@
     <!-- ─────── API DOCS ─────── -->
     <section class="view" id="view-api">
       <div class="panel">
-        <div class="head"><h3>Sending Alerts</h3><a href="/docs" target="_blank" style="font-size:12px">Open OpenAPI explorer ↗</a></div>
+        <div class="head"><h3 data-i18n="panel_sending_alerts">Sending Alerts</h3><a href="/docs" target="_blank" style="font-size:12px" data-i18n="link_openapi">Open OpenAPI explorer ↗</a></div>
         <div class="body">
-          <p class="muted" style="margin-top:0">Both ingest routes require the bearer token from <span class="mono">ESET_WEBHOOK_AUTH_TOKEN</span> and return a <span class="mono">correlation_id</span> immediately; the pipeline then runs in the background and appears live in Pipeline Flow.</p>
+          <p class="muted" style="margin-top:0"><span data-i18n="api_intro_1">Both ingest routes require the bearer token from</span> <span class="mono">ESET_WEBHOOK_AUTH_TOKEN</span> <span data-i18n="api_intro_2">and return a</span> <span class="mono">correlation_id</span> <span data-i18n="api_intro_3">immediately; the pipeline then runs in the background and appears live in Pipeline Flow.</span></p>
           <div class="kv">
-            <div>Webhook</div><div class="mono" id="ep-eset"></div>
-            <div>Syslog over HTTP</div><div class="mono" id="ep-syslog"></div>
-            <div>Syslog UDP / TCP</div><div class="mono">RFC 5424 frame containing a JSON object</div>
-            <div>Job status</div><div class="mono" id="ep-status"></div>
-            <div>Health</div><div class="mono" id="ep-health"></div>
+            <div data-i18n="kv_webhook">Webhook</div><div class="mono" id="ep-eset"></div>
+            <div data-i18n="kv_syslog_http">Syslog over HTTP</div><div class="mono" id="ep-syslog"></div>
+            <div data-i18n="kv_syslog_udptcp">Syslog UDP / TCP</div><div class="mono" data-i18n="syslog_desc">RFC 5424 frame containing a JSON object</div>
+            <div data-i18n="kv_job_status">Job status</div><div class="mono" id="ep-status"></div>
+            <div data-i18n="kv_health">Health</div><div class="mono" id="ep-health"></div>
           </div>
-          <h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Example request</h4>
+          <h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em" data-i18n="h_example_request">Example request</h4>
           <pre class="code" id="curlExample"></pre>
           <div class="row" style="margin-top:10px">
-            <button class="small" id="copyCurl">Copy</button>
-            <span class="muted" style="font-size:11.5px">Replace <span class="mono">$ESET_WEBHOOK_AUTH_TOKEN</span> with your configured token.</span>
+            <button class="small" id="copyCurl" data-i18n="btn_copy">Copy</button>
+            <span class="muted" style="font-size:11.5px"><span data-i18n="hint_replace_prefix">Replace</span> <span class="mono">$ESET_WEBHOOK_AUTH_TOKEN</span> <span data-i18n="hint_replace_token">with your configured token.</span></span>
           </div>
         </div>
       </div>
       <div class="panel">
-        <div class="head"><h3>Fields That Drive Behaviour</h3></div>
+        <div class="head"><h3 data-i18n="panel_fields_behaviour">Fields That Drive Behaviour</h3></div>
         <table>
-          <thead><tr><th>Field</th><th>Effect</th></tr></thead>
+          <thead><tr><th data-i18n="th_field2">Field</th><th data-i18n="th_effect">Effect</th></tr></thead>
           <tbody>
-            <tr><td class="mono">severity</td><td>LOW / MEDIUM / HIGH / CRITICAL — primary risk-engine input</td></tr>
-            <tr><td class="mono">threat_handled</td><td>Downgrades risk when true</td></tr>
-            <tr><td class="mono">isolation_status</td><td>Downgrades a HIGH alert further when true</td></tr>
-            <tr><td class="mono">alert_id + occurred_at</td><td>Deduplication key (falls back to a hash of the payload)</td></tr>
-            <tr><td class="mono">file_hash / ip_address / url</td><td>Threat-intel lookups (VirusTotal, AbuseIPDB)</td></tr>
+            <tr><td class="mono">severity</td><td data-i18n="eff_severity">LOW / MEDIUM / HIGH / CRITICAL — primary risk-engine input</td></tr>
+            <tr><td class="mono">threat_handled</td><td data-i18n="eff_threat_handled">Downgrades risk when true</td></tr>
+            <tr><td class="mono">isolation_status</td><td data-i18n="eff_isolation_status">Downgrades a HIGH alert further when true</td></tr>
+            <tr><td class="mono">alert_id + occurred_at</td><td data-i18n="eff_dedup_key">Deduplication key (falls back to a hash of the payload)</td></tr>
+            <tr><td class="mono">file_hash / ip_address / url</td><td data-i18n="eff_intel_fields">Threat-intel lookups (VirusTotal, AbuseIPDB)</td></tr>
           </tbody>
         </table>
-        <div class="foot">Anything omitted normalizes to <span class="mono">UNKNOWN</span> rather than being invented.</div>
+        <div class="foot"><span data-i18n="foot_unknown">Anything omitted normalizes to</span> <span class="mono">UNKNOWN</span> <span data-i18n="foot_unknown_2">rather than being invented.</span></div>
       </div>
       <div class="panel">
-        <div class="head"><h3>Dashboard API</h3></div>
+        <div class="head"><h3 data-i18n="panel_dashboard_api">Dashboard API</h3></div>
         <table>
-          <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+          <thead><tr><th data-i18n="th_method">Method</th><th data-i18n="th_endpoint2">Endpoint</th><th data-i18n="th_purpose">Purpose</th></tr></thead>
           <tbody id="apiRows"></tbody>
         </table>
-        <div class="foot">All dashboard routes require the <span class="mono">X-Dashboard-Key</span> header while an access key is configured.</div>
+        <div class="foot"><span data-i18n="foot_dashboard_key">All dashboard routes require the</span> <span class="mono">X-Dashboard-Key</span> <span data-i18n="foot_dashboard_key_2">header while an access key is configured.</span></div>
       </div>
     </section>
   </main>
@@ -564,7 +572,10 @@
 <div id="overlay"><div class="modal" id="modalBox"></div></div>
 <div class="toast" id="toast"></div>
 
-<!-- viz first: it only binds DOM at load time, while dashboard.js's boot path calls into it -->
+<!-- i18n first: dashboard-viz.js and dashboard.js both call t()/tBadgeLabel() at their
+     own load/render time. viz next: it only binds DOM at load time, while
+     dashboard.js's boot path calls into it. -->
+<script src="/static/i18n.js"></script>
 <script src="/static/dashboard-viz.js"></script>
 <script src="/static/dashboard.js"></script>
 </body>

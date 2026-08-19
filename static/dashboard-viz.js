@@ -88,9 +88,8 @@ function renderFlow() {
     svg.appendChild(el("text", {
       x: width / 2, y: FLOW.padT + 40, "text-anchor": "middle",
       fill: "var(--muted)", "font-size": "13",
-    }, "Waiting for alerts — send one to /webhook/eset and it will appear here live."));
-    document.getElementById("flowFoot").textContent =
-      "Each incoming alert becomes a lane and advances through the pipeline in real time.";
+    }, t("flow_empty_svg")));
+    document.getElementById("flowFoot").textContent = t("flow_foot_empty");
     return;
   }
 
@@ -104,7 +103,8 @@ function renderFlow() {
       "font-family": "ui-monospace,SFMono-Regular,Menlo,monospace",
     });
     head.textContent =
-      `${run.correlation_id.slice(0, 8)}  ${run.source || ""}${run.risk_level ? "  · " + run.risk_level : ""}`;
+      `${run.correlation_id.slice(0, 8)}  ${run.source ? tBadgeLabel(run.source) : ""}` +
+      `${run.risk_level ? "  · " + tBadgeLabel(run.risk_level) : ""}`;
     svg.appendChild(head);
 
     STAGES.forEach((stage, i) => {
@@ -147,9 +147,10 @@ function renderFlow() {
       }, STAGE_LABEL[stage]));
 
       // Second line: short state or detail
-      let sub = st === "waiting" ? "—" : st;
+      let sub = st === "waiting" ? "—" : tPipelineState(st);
       if (info && info.detail) {
-        sub = info.detail.length > 15 ? info.detail.slice(0, 14) + "…" : info.detail;
+        const detailJa = tBackendText(info.detail);
+        sub = detailJa.length > 15 ? detailJa.slice(0, 14) + "…" : detailJa;
       }
       g.appendChild(el("text", {
         x: x + FLOW.nodeW / 2, y: yTop + 31, "text-anchor": "middle",
@@ -158,7 +159,7 @@ function renderFlow() {
 
       if (info) {
         const title = el("title");
-        title.textContent = `${STAGE_LABEL[stage]} — ${info.state}${info.detail ? "\n" + info.detail : ""}`;
+        title.textContent = `${STAGE_LABEL[stage]} — ${tPipelineState(info.state)}${info.detail ? "\n" + tBackendText(info.detail) : ""}`;
         g.appendChild(title);
       }
       g.addEventListener("click", () => openStageDetail(run, stage));
@@ -167,8 +168,7 @@ function renderFlow() {
   });
 
   const done = runs.filter((r) => r.stages.has("OUTPUT")).length;
-  document.getElementById("flowFoot").textContent =
-    `${runs.length} recent run${runs.length === 1 ? "" : "s"} · ${done} reached output. Click a node for stage detail.`;
+  document.getElementById("flowFoot").textContent = t("flow_foot", runs.length, done);
 }
 
 function openStageDetail(run, stage) {
@@ -176,20 +176,20 @@ function openStageDetail(run, stage) {
   const rows = STAGES.map((s) => {
     const i = run.stages.get(s);
     return `<div>${esc(STAGE_LABEL[s])}</div><div>${
-      i ? `${badge(i.state === "ok" ? "SUCCESS" : i.state === "failed" ? "FAILED" : i.state === "skipped" ? "PARTIAL" : "PROCESSING")} <span class="muted">${esc(i.detail || "")}</span>`
-        : '<span class="dim">not reached</span>'}</div>`;
+      i ? `${badge(i.state === "ok" ? "SUCCESS" : i.state === "failed" ? "FAILED" : i.state === "skipped" ? "PARTIAL" : "PROCESSING")} <span class="muted">${esc(tBackendText(i.detail || ""))}</span>`
+        : `<span class="dim">${esc(t("stage_not_reached"))}</span>`}</div>`;
   }).join("");
 
   showModal(`${STAGE_LABEL[stage]} — ${run.correlation_id.slice(0, 8)}`, `
     <div class="kv">
-      <div>Correlation ID</div><div class="mono">${esc(run.correlation_id)}</div>
-      <div>Stage</div><div>${esc(STAGE_LABEL[stage])}</div>
-      <div>State</div><div>${info ? esc(info.state) : '<span class="dim">not reached</span>'}</div>
-      ${info && info.detail ? `<div>Detail</div><div>${esc(info.detail)}</div>` : ""}
+      <div>${esc(t("kv_correlation_id2"))}</div><div class="mono">${esc(run.correlation_id)}</div>
+      <div>${esc(t("kv_stage"))}</div><div>${esc(STAGE_LABEL[stage])}</div>
+      <div>${esc(t("kv_state"))}</div><div>${info ? esc(tPipelineState(info.state)) : `<span class="dim">${esc(t("stage_not_reached"))}</span>`}</div>
+      ${info && info.detail ? `<div>${esc(t("kv_detail"))}</div><div>${esc(tBackendText(info.detail))}</div>` : ""}
     </div>
-    <h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Full run</h4>
+    <h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("stage_full_run"))}</h4>
     <div class="kv">${rows}</div>
-    <button class="small" id="openFullAlert">Open full alert detail</button>`);
+    <button class="small" id="openFullAlert">${esc(t("stage_open_alert"))}</button>`);
 
   const btn = document.getElementById("openFullAlert");
   if (btn) btn.onclick = () => openAlert(run.correlation_id);
@@ -216,7 +216,7 @@ function emptyChart(host, msg) {
 /* ---- Alerts over time: single series, so no legend needed ---- */
 function drawSeries(series) {
   const host = document.getElementById("chartSeries");
-  if (!series || !series.length) return emptyChart(host, "No alerts in this window yet");
+  if (!series || !series.length) return emptyChart(host, t("chart_empty_window"));
 
   const W = 560, H = 210, mL = 34, mR = 12, mT = 14, mB = 30;
   const iw = W - mL - mR, ih = H - mT - mB;
@@ -251,14 +251,15 @@ function drawSeries(series) {
         x, y: H - 9, "text-anchor": "middle", class: "axis-label",
       }, new Date(d.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })));
     }
-    const t = el("title");
-    t.textContent = `${new Date(d.t).toLocaleString()} — ${d.count} alert(s)`;
-    s.appendChild(t);
+    // Named to avoid shadowing the global t() translation function used above/below.
+    const titleEl = el("title");
+    titleEl.textContent = `${new Date(d.t).toLocaleString()} — ${t("chart_tooltip_alerts", d.count)}`;
+    s.appendChild(titleEl);
     // Invisible wide hit target for hover
     const hit = el("rect", { x: x - iw / series.length / 2, y: mT, width: iw / series.length, height: ih, fill: "transparent" });
-    const ht = el("title");
-    ht.textContent = `${new Date(d.t).toLocaleString()} — ${d.count} alert(s)`;
-    hit.appendChild(ht);
+    const hitTitleEl = el("title");
+    hitTitleEl.textContent = `${new Date(d.t).toLocaleString()} — ${t("chart_tooltip_alerts", d.count)}`;
+    hit.appendChild(hitTitleEl);
     s.appendChild(hit);
   });
 
@@ -291,9 +292,10 @@ function drawBars(host, rows, opts) {
     // Direct value label — identity never rests on colour alone
     s.appendChild(el("text", { x: mL + w + 9, y: y + bh / 2 + 4, class: "bar-val" }, String(r.value)));
 
-    const t = el("title");
-    t.textContent = `${r.label}: ${r.value}`;
-    s.appendChild(t);
+    // Named to avoid shadowing the global t() translation function.
+    const titleEl = el("title");
+    titleEl.textContent = `${r.label}: ${r.value}`;
+    s.appendChild(titleEl);
   });
 }
 
@@ -304,8 +306,8 @@ function drawRisk(byRisk) {
     ["HIGH", "var(--risk-3)"], ["CRITICAL", "var(--risk-4)"],
   ];
   drawBars(document.getElementById("chartRisk"),
-    order.map(([k, color]) => ({ label: k, value: (byRisk || {})[k] || 0, color })),
-    { empty: "No completed alerts yet" });
+    order.map(([k, color]) => ({ label: tBadgeLabel(k), value: (byRisk || {})[k] || 0, color })),
+    { empty: t("chart_empty_completed") });
 }
 
 function drawStatus(byStatus) {
@@ -315,9 +317,9 @@ function drawStatus(byStatus) {
     ["FAILED", "var(--critical)"], ["PROCESSING", "var(--accent)"], ["PENDING", "var(--dim)"],
   ];
   drawBars(document.getElementById("chartStatus"),
-    order.map(([k, color]) => ({ label: k, value: (byStatus || {})[k] || 0, color }))
-         .filter((r) => r.value > 0 || ["SUCCESS", "PARTIAL", "FAILED"].includes(r.label)),
-    { empty: "No alerts yet" });
+    order.map(([k, color]) => ({ label: tBadgeLabel(k), value: (byStatus || {})[k] || 0, color, _key: k }))
+         .filter((r) => r.value > 0 || ["SUCCESS", "PARTIAL", "FAILED"].includes(r._key)),
+    { empty: t("chart_empty_alerts") });
 }
 
 /* ---- AI Visibility risk breakdown — reuses drawBars(), same pattern as drawRisk() ---- */
@@ -328,15 +330,15 @@ function drawAiRisk(byRisk) {
     ["FAILED_SECURITY_CHECK", "var(--critical)"], ["BLOCKED", "var(--critical)"], ["ERROR", "var(--critical)"],
   ];
   const rows = order
-    .map(([k, color]) => ({ label: k, value: (byRisk || {})[k] || 0, color }))
-    .filter((r) => r.value > 0 || ["SAFE", "REVIEW"].includes(r.label));
-  drawBars(document.getElementById("aiRiskChart"), rows, { empty: "No AI traces yet" });
+    .map(([k, color]) => ({ label: tBadgeLabel(k), value: (byRisk || {})[k] || 0, color, _key: k }))
+    .filter((r) => r.value > 0 || ["SAFE", "REVIEW"].includes(r._key));
+  drawBars(document.getElementById("aiRiskChart"), rows, { empty: t("chart_empty_ai_traces") });
 }
 
 function drawSource(bySource) {
   const order = [["WEBHOOK", "var(--cat-1)"], ["SYSLOG", "var(--cat-2)"]];
-  const rows = order.map(([k, color]) => ({ label: k, value: (bySource || {})[k] || 0, color }));
+  const rows = order.map(([k, color]) => ({ label: tBadgeLabel(k), value: (bySource || {})[k] || 0, color }));
   const extra = Object.keys(bySource || {}).filter((k) => !["WEBHOOK", "SYSLOG"].includes(k));
-  for (const k of extra) rows.push({ label: k, value: bySource[k], color: "var(--dim)" });
-  drawBars(document.getElementById("chartSource"), rows, { empty: "No alerts yet" });
+  for (const k of extra) rows.push({ label: tBadgeLabel(k), value: bySource[k], color: "var(--dim)" });
+  drawBars(document.getElementById("chartSource"), rows, { empty: t("chart_empty_alerts") });
 }

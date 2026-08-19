@@ -20,11 +20,13 @@ const state = {
 };
 
 const STAGES = ["INGEST", "NORMALIZE", "RISK", "INTEL", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"];
-const STAGE_LABEL = {
-  INGEST: "Ingest", NORMALIZE: "Normalize", RISK: "Risk Engine", INTEL: "Threat Intel",
-  AI: "AI Generate", LINT: "Safety Lint", OUTPUT: "Write Output", EMAIL: "Queue Email",
-  SEND: "Send Mail",
+// Looked up live (not a static object) so it always reflects the current language —
+// see i18n.js. Keys match src/utils/events.py: STAGES exactly.
+const STAGE_KEY = {
+  INGEST: "stage_ingest", NORMALIZE: "stage_normalize", RISK: "stage_risk", INTEL: "stage_intel",
+  AI: "stage_ai", LINT: "stage_lint", OUTPUT: "stage_output", EMAIL: "stage_email", SEND: "stage_send",
 };
+const STAGE_LABEL = new Proxy({}, { get: (_t, stage) => t(STAGE_KEY[stage] || stage) });
 
 /* ══════════════ helpers ══════════════ */
 
@@ -44,19 +46,29 @@ const BADGES = new Set([
   "OK","STARTED","BLOCKED","ERROR",
   "SAFE","REVIEW","SENSITIVE_DATA_DETECTED","SECRET_DETECTED","FAILED_SECURITY_CHECK",
 ]);
-function badge(value) {
+/** noTranslate=true is used by the Emails section's own rendering, which must keep
+ * its current wording regardless of the dashboard language toggle. */
+function badge(value, noTranslate) {
   const v = value && BADGES.has(value) ? value : "UNKNOWN";
-  return `<span class="badge b-${v}"><span class="g"></span>${esc(value || "UNKNOWN")}</span>`;
+  return `<span class="badge b-${v}"><span class="g"></span>${esc(tBadgeLabel(value || "UNKNOWN", noTranslate))}</span>`;
 }
 const DASH = '<span class="dim">—</span>';
 
-function timeAgo(ts) {
+/** noTranslate=true is used by the Emails section's own rendering (Handoff
+ * History), which must keep its current English wording regardless of language. */
+function timeAgo(ts, noTranslate) {
   if (!ts) return "—";
   const s = Math.max(0, Date.now() / 1000 - ts);
-  if (s < 60) return Math.floor(s) + "s ago";
-  if (s < 3600) return Math.floor(s / 60) + "m ago";
-  if (s < 86400) return Math.floor(s / 3600) + "h ago";
-  return Math.floor(s / 86400) + "d ago";
+  if (noTranslate) {
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+  if (s < 60) return t("timeago_seconds", Math.floor(s));
+  if (s < 3600) return t("timeago_minutes", Math.floor(s / 60));
+  if (s < 86400) return t("timeago_hours", Math.floor(s / 3600));
+  return t("timeago_days", Math.floor(s / 86400));
 }
 const shortId = (id) => (id ? esc(String(id).slice(0, 8)) : "—");
 
@@ -127,17 +139,27 @@ document.getElementById("lockBtn").onclick = lock;
 
 /* ══════════════ navigation ══════════════ */
 
+// Translation-key pairs, looked up live at render time — Emails is deliberately
+// literal English (not keys), since that section's wording must never change.
 const VIEW_META = {
-  overview: ["Overview", "Live pipeline status and trends"],
-  flow:     ["Pipeline Flow", "Every alert advancing through the pipeline, live"],
-  alerts:   ["Alerts", "All ingested alerts and their outcomes"],
-  ai:       ["AI Content", "Generated bilingual notifications"],
-  "ai-visibility": ["AI Visibility", "What the AI received, contacted, returned, and whether anything sensitive was exposed"],
-  emails:   ["Emails", "Pending outbox awaiting delivery"],
-  logs:     ["Logs", "Structured application log"],
-  settings: ["Settings", "Notification recipients and runtime configuration"],
-  api:      ["API Docs", "How to send alerts into the platform"],
+  overview: ["view_overview_title", "view_overview_sub"],
+  flow:     ["view_flow_title", "view_flow_sub"],
+  alerts:   ["view_alerts_title", "view_alerts_sub"],
+  ai:       ["view_ai_title", "view_ai_sub"],
+  "ai-visibility": ["view_aivis_title", "view_aivis_sub"],
+  emails:   null,   // rendered literally below — see updateViewHeader()
+  logs:     ["view_logs_title", "view_logs_sub"],
+  settings: ["view_settings_title", "view_settings_sub"],
+  api:      ["view_api_title", "view_api_sub"],
 };
+const EMAILS_VIEW_HEADER = ["Emails", "Pending outbox awaiting delivery"];
+
+function updateViewHeader(name) {
+  const meta = VIEW_META[name];
+  const [title, sub] = meta ? [t(meta[0]), t(meta[1])] : EMAILS_VIEW_HEADER;
+  document.getElementById("viewTitle").textContent = title;
+  document.getElementById("viewSub").textContent = sub;
+}
 
 function showView(name) {
   state.view = name;
@@ -145,9 +167,7 @@ function showView(name) {
     a.classList.toggle("active", a.dataset.view === name));
   document.querySelectorAll("section.view").forEach((s) =>
     s.classList.toggle("active", s.id === "view-" + name));
-  const [title, sub] = VIEW_META[name] || ["", ""];
-  document.getElementById("viewTitle").textContent = title;
-  document.getElementById("viewSub").textContent = sub;
+  updateViewHeader(name);
 
   if (name === "flow") renderFlow();
   if (name === "overview") loadStats();
@@ -156,6 +176,32 @@ function showView(name) {
   if (name === "ai-visibility") loadAiVisibility();
   if (name === "settings") loadSettings();
   if (name === "emails") loadDelivery();
+}
+
+/** Called by i18n.js's setLang() after the language changes. Re-renders whatever
+ * the current tab already has cached, WITHOUT re-fetching from the network, except
+ * where a fetch is cheap and already the normal render path (settings, api docs).
+ * The Emails tab is deliberately excluded — its content never changes with language. */
+function refreshCurrentViewTranslations() {
+  updateViewHeader(state.view);
+  renderCards();
+  renderAlerts();
+  if (state.view === "flow") renderFlow();
+  if (state.view === "overview" && state.stats) {
+    drawSeries(state.stats.series);
+    drawRisk(state.stats.by_risk);
+    drawStatus(state.stats.by_status);
+    drawSource(state.stats.by_source);
+  }
+  if (state.view === "ai") renderAiContent();
+  if (state.view === "ai-visibility") {
+    if (state.aiOverview) renderAiOverview(state.aiOverview);
+    renderAiTraces();
+    renderAiLiveFeed();
+  }
+  if (state.view === "settings") loadSettings();
+  if (state.view === "api") renderApiDocs();
+  // state.view === "emails": intentionally does nothing.
 }
 document.querySelectorAll("nav a.tab").forEach((a) => (a.onclick = () => showView(a.dataset.view)));
 
@@ -168,12 +214,12 @@ function renderCards() {
   const active = (byStatus.PENDING || 0) + (byStatus.PROCESSING || 0);
 
   const cards = [
-    ["Total Alerts", jobs.length],
-    ["In Flight", active],
-    ["Success", byStatus.SUCCESS || 0],
-    ["Partial", byStatus.PARTIAL || 0],
-    ["Failed", byStatus.FAILED || 0],
-    ["Emails Pending", state.emails.length],
+    [t("card_total_alerts"), jobs.length],
+    [t("card_in_flight"), active],
+    [t("card_success"), byStatus.SUCCESS || 0],
+    [t("card_partial"), byStatus.PARTIAL || 0],
+    [t("card_failed"), byStatus.FAILED || 0],
+    [t("card_emails_pending"), state.emails.length],
   ];
   document.getElementById("statCards").innerHTML = cards
     .map(([l, n]) => `<div class="card"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`)
@@ -240,7 +286,7 @@ function renderAlerts() {
       <td class="muted">${timeAgo(j.updated_at)}</td>
       <td class="mono muted">${shortId(j.correlation_id)}</td>
       <td>${["FAILED","PARTIAL"].includes(j.status)
-            ? `<button class="small" data-retry="${esc(j.correlation_id)}">Retry</button>` : ""}</td>
+            ? `<button class="small" data-retry="${esc(j.correlation_id)}">${esc(t("btn_retry"))}</button>` : ""}</td>
     </tr>`).join("");
 
   renderCards();
@@ -253,8 +299,8 @@ document.getElementById("alertRows").addEventListener("click", async (e) => {
   if (retry) {
     e.stopPropagation();
     e.target.disabled = true;
-    try { await api(`/jobs/${encodeURIComponent(retry)}/retry`, { method: "POST" }); toast("Retry queued"); }
-    catch (err) { toast("Retry failed: " + err.message, true); e.target.disabled = false; }
+    try { await api(`/jobs/${encodeURIComponent(retry)}/retry`, { method: "POST" }); toast(t("toast_retry_queued")); }
+    catch (err) { toast(t("toast_retry_failed") + tBackendText(err.message), true); e.target.disabled = false; }
     return;
   }
   const tr = e.target.closest("tr[data-id]");
@@ -269,10 +315,10 @@ function renderEmails() {
   document.getElementById("emailsEmpty").style.display = es.length ? "none" : "block";
   document.getElementById("emailRows").innerHTML = es.map((m) => `
     <tr class="clickable" data-email="${esc(m.email_id)}">
-      <td>${badge(m.notification_type)}</td>
+      <td>${badge(m.notification_type, true)}</td>
       <td>${(m.to || []).length ? esc((m.to || []).join(", ")) : DASH}</td>
       <td>${esc(m.subject)}</td>
-      <td>${badge(m.risk_level)}</td>
+      <td>${badge(m.risk_level, true)}</td>
       <td class="muted">${m.created_at ? esc(new Date(m.created_at).toLocaleString()) : "—"}</td>
       <td><button class="small danger" data-del="${esc(m.email_id)}">Discard</button></td>
     </tr>`).join("");
@@ -300,14 +346,14 @@ function openEmail(id) {
   if (!m) return;
   showModal("Queued Email", `
     <div class="kv">
-      <div>Type</div><div>${badge(m.notification_type)}</div>
+      <div>Type</div><div>${badge(m.notification_type, true)}</div>
       <div>To</div><div>${esc((m.to || []).join(", "))}</div>
       <div>Subject</div><div>${esc(m.subject)}</div>
-      <div>Risk</div><div>${badge(m.risk_level)}</div>
+      <div>Risk</div><div>${badge(m.risk_level, true)}</div>
       <div>Endpoint</div><div>${esc(m.endpoint_name)}</div>
       <div>Detection</div><div>${esc(m.detection_name)}</div>
       <div>Correlation ID</div><div class="mono">${esc(m.correlation_id)}</div>
-      <div>Status</div><div>${badge(m.status)}</div>
+      <div>Status</div><div>${badge(m.status, true)}</div>
     </div>
     <div class="notif">${esc(m.body)}</div>`);
 }
@@ -360,13 +406,13 @@ function renderDelivery(d) {
   document.getElementById("deliveryEmpty").style.display = rows.length ? "none" : "block";
   document.getElementById("deliveryRows").innerHTML = rows.map((r) => `
     <tr>
-      <td>${badge(r.status)}</td>
-      <td>${badge(r.notification_type)}</td>
+      <td>${badge(r.status, true)}</td>
+      <td>${badge(r.notification_type, true)}</td>
       <td>${esc((r.recipients || []).join(", "))}</td>
       <td>${esc(r.subject)}</td>
       <td class="muted">${esc(r.attempts)}</td>
       <td class="mono muted">${r.remote_id ? "#" + esc(r.remote_id) : DASH}</td>
-      <td class="muted">${r.updated_at ? timeAgo(r.updated_at) : "—"}</td>
+      <td class="muted">${r.updated_at ? timeAgo(r.updated_at, true) : "—"}</td>
     </tr>`).join("");
 }
 
@@ -396,14 +442,14 @@ async function loadAiContent() {
 
 function renderAiContent() {
   const items = state.ai;
-  document.getElementById("aiCount").textContent = items.length ? `${items.length} alerts` : "";
+  document.getElementById("aiCount").textContent = items.length ? t("ai_count", items.length) : "";
   document.getElementById("aiEmpty").style.display = items.length ? "none" : "block";
   document.getElementById("aiList").innerHTML = items.map((it, i) => `
     <div class="aiitem" data-ai="${i}">
       <div class="t">
         ${badge(it.risk_level)}
         <strong>${esc(it.detection_name)}</strong>
-        <span class="muted">on ${esc(it.endpoint_name)}</span>
+        <span class="muted">${esc(t("ai_on_endpoint", it.endpoint_name))}</span>
         <span class="muted mono" style="margin-left:auto">${esc(new Date(it.processed_at).toLocaleString())}</span>
       </div>
       <div class="snip">${esc(it.ai_output.client_notification_ja.summary)}</div>
@@ -414,26 +460,31 @@ document.getElementById("aiList").addEventListener("click", (e) => {
   const el = e.target.closest("[data-ai]");
   if (!el) return;
   const it = state.ai[Number(el.dataset.ai)];
-  if (it) showModal("AI Notifications", notificationTabs(it.ai_output), true);
+  if (it) showModal(t("modal_ai_notifications"), notificationTabs(it.ai_output), true);
 });
 
+// Tab labels ("Client (JA)" etc.) are dashboard chrome and follow the language
+// toggle. The notification BODIES (including their embedded 【...】/ALL-CAPS
+// section headers) are real AI-generated content — always shown exactly as
+// generated, in whichever language that particular notification is written in,
+// regardless of the dashboard's own language setting.
 function notificationTabs(ai) {
   const bullets = (a) => (a || []).map((x) => `- ${x}`).join("\n");
   const tabs = [
-    ["client", "Client (JA)",
+    ["client", t("tab_client"),
       `${ai.client_notification_ja.summary}\n\n【現在の状況】\n${ai.client_notification_ja.current_status}\n\n【確認事項】\n${ai.client_notification_ja.required_confirmation}`],
-    ["cthree", "C-Three (JA)",
+    ["cthree", t("tab_cthree"),
       `${ai.cthree_notification_ja.summary}\n\n【評価】\n${ai.cthree_notification_ja.assessment}\n\n【フロントオフィス】\n${ai.cthree_notification_ja.front_office_notes}\n\n【クライアント返信案】\n${ai.cthree_notification_ja.draft_client_response}`],
-    ["internal", "Internal (JA)",
+    ["internal", t("tab_internal"),
       `${ai.internal_notification_ja.summary}\n\n【評価】\n${ai.internal_notification_ja.assessment}\n\n【推奨アクション】\n${bullets(ai.internal_notification_ja.recommended_actions)}\n\n【返信案】\n${ai.internal_notification_ja.draft_client_response}`],
-    ["engineer", "Engineer (EN)",
+    ["engineer", t("tab_engineer"),
       `${ai.engineer_notification_en.alert_summary}\n\nASSESSMENT\n${ai.engineer_notification_en.assessment}\n\nCONFIRMED\n${bullets(ai.engineer_notification_en.confirmed_information)}\n\nUNKNOWN\n${bullets(ai.engineer_notification_en.unknown_information)}\n\nINVESTIGATE\n${bullets(ai.engineer_notification_en.investigation_items)}\n\nRECOMMENDED ACTIONS\n${bullets(ai.engineer_notification_en.recommended_actions)}\n\nDRAFT CLIENT RESPONSE\n${ai.engineer_notification_en.draft_client_response}`],
   ];
   return `
-    <div class="tabs">${tabs.map((t, i) =>
-      `<div class="tabbtn ${i === 0 ? "active" : ""}" data-tab="${esc(t[0])}">${esc(t[1])}</div>`).join("")}</div>
-    ${tabs.map((t, i) =>
-      `<div class="notif" data-panel="${esc(t[0])}" style="${i === 0 ? "" : "display:none"}">${esc(t[2])}</div>`).join("")}`;
+    <div class="tabs">${tabs.map((tb, i) =>
+      `<div class="tabbtn ${i === 0 ? "active" : ""}" data-tab="${esc(tb[0])}">${esc(tb[1])}</div>`).join("")}</div>
+    ${tabs.map((tb, i) =>
+      `<div class="notif" data-panel="${esc(tb[0])}" style="${i === 0 ? "" : "display:none"}">${esc(tb[2])}</div>`).join("")}`;
 }
 
 /* ══════════════ AI visibility ══════════════
@@ -467,12 +518,12 @@ document.getElementById("aiTraceRisk").onchange = loadAiVisibility;
 
 function renderAiOverview(o) {
   const cards = [
-    ["AI Status", o.active_requests > 0 ? "Active" : "Idle"],
-    ["Active Requests", o.active_requests],
-    ["Requests Today", o.requests_today],
-    ["Models / Providers", (o.providers || []).length],
-    ["External Calls (24h)", o.external_calls_today],
-    ["Security Alerts", o.security_alerts],
+    [t("card_ai_status"), o.active_requests > 0 ? t("status_active") : t("status_idle")],
+    [t("card_active_requests"), o.active_requests],
+    [t("card_requests_today"), o.requests_today],
+    [t("card_models_providers"), (o.providers || []).length],
+    [t("card_external_calls"), o.external_calls_today],
+    [t("card_security_alerts"), o.security_alerts],
   ];
   document.getElementById("aiVisCards").innerHTML = cards
     .map(([l, n]) => `<div class="card"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`)
@@ -484,15 +535,15 @@ function renderAiOverview(o) {
 function renderAiTraces() {
   const rows = [...state.aiTraces.values()].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
   document.getElementById("aiTracesEmpty").style.display = rows.length ? "none" : "block";
-  document.getElementById("aiTraceRows").innerHTML = rows.map((t) => `
-    <tr class="clickable" data-trace="${esc(t.trace_id)}">
-      <td class="mono muted">${esc(t.trace_id)}</td>
-      <td class="muted">${timeAgo(t.started_at)}</td>
-      <td>${esc(t.component)}</td>
-      <td class="mono">${esc(t.provider)}/${esc(t.model)}</td>
-      <td class="muted">${fmtMs(t.duration_ms)}</td>
-      <td>${badge(t.status)}</td>
-      <td>${badge(t.risk)}</td>
+  document.getElementById("aiTraceRows").innerHTML = rows.map((row) => `
+    <tr class="clickable" data-trace="${esc(row.trace_id)}">
+      <td class="mono muted">${esc(row.trace_id)}</td>
+      <td class="muted">${timeAgo(row.started_at)}</td>
+      <td>${esc(row.component)}</td>
+      <td class="mono">${esc(row.provider)}/${esc(row.model)}</td>
+      <td class="muted">${fmtMs(row.duration_ms)}</td>
+      <td>${badge(row.status)}</td>
+      <td>${badge(row.risk)}</td>
     </tr>`).join("");
 }
 
@@ -516,7 +567,7 @@ function renderAiLiveFeed() {
     <div class="logline" style="grid-template-columns:20px 68px 1fr">
       <span>${esc(aiLiveIcon(ev.type))}</span>
       <span class="dim">${esc(new Date(ev.ts * 1000).toLocaleTimeString())}</span>
-      <span class="logmsg"><strong>${esc(ev.label)}</strong>${ev.detail ? ` <span class="muted">— ${esc(ev.detail)}</span>` : ""}
+      <span class="logmsg"><strong>${esc(tBackendText(ev.label))}</strong>${ev.detail ? ` <span class="muted">— ${esc(tBackendText(ev.detail))}</span>` : ""}
         <span class="muted mono" style="margin-left:6px">${esc((ev.trace_id || "").slice(0, 10))}</span></span>
     </div>`).join("");
 }
@@ -528,12 +579,12 @@ function pushAiLiveEvent(ev) {
 }
 
 function aiFindingsList(findings) {
-  if (!findings || !findings.length) return '<p class="muted">No sensitive-data findings for this trace.</p>';
+  if (!findings || !findings.length) return `<p class="muted">${esc(t("findings_empty"))}</p>`;
   return findings.map((f) => `
     <div class="intel-box" style="min-width:0;margin-bottom:8px">
       <div class="row" style="justify-content:space-between">
-        <strong>${esc(f.category)}</strong>
-        <span class="srcbadge">${esc(f.method)}</span>
+        <strong>${esc(tSecurityCategory(f.category))}</strong>
+        <span class="srcbadge">${esc(f.method === "automatic" ? t("method_automatic") : f.method === "manual" ? t("method_manual") : f.method)}</span>
       </div>
       <div class="mono muted" style="margin-top:5px;word-break:break-all">${esc(f.masked_preview)}</div>
       <div class="dim" style="margin-top:4px;font-size:10.5px">${esc(f.field_path)}</div>
@@ -541,39 +592,39 @@ function aiFindingsList(findings) {
 }
 
 function aiDataCategoriesTable(cats) {
-  if (!cats || !cats.length) return '<p class="muted">No categorized input data recorded.</p>';
-  return `<table><thead><tr><th>Category</th><th>Field</th><th>Origin</th><th>Preview</th></tr></thead><tbody>
+  if (!cats || !cats.length) return `<p class="muted">${esc(t("field_categories_empty"))}</p>`;
+  return `<table><thead><tr><th>${esc(t("th_category"))}</th><th>${esc(t("th_field"))}</th><th>${esc(t("th_origin"))}</th><th>${esc(t("th_preview"))}</th></tr></thead><tbody>
     ${cats.map((c) => `<tr>
-      <td>${esc(c.category)}</td>
+      <td>${esc(tDataCategory(c.category))}</td>
       <td class="mono">${esc(c.field)}</td>
-      <td class="muted">${esc(c.origin)}</td>
+      <td class="muted">${esc(tBackendText(c.origin))}</td>
       <td class="mono">${esc(c.value_preview)}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
 
 function aiExternalCallsTable(calls) {
-  if (!calls || !calls.length) return '<p class="muted">No external calls recorded for this trace.</p>';
-  return `<table><thead><tr><th>Service</th><th>Domain</th><th>Purpose</th><th>When</th><th>Status</th><th>Latency</th><th>Sent</th><th>Returned</th></tr></thead><tbody>
+  if (!calls || !calls.length) return `<p class="muted">${esc(t("external_calls_empty"))}</p>`;
+  return `<table><thead><tr><th>${esc(t("th_service"))}</th><th>${esc(t("th_domain"))}</th><th>${esc(t("th_purpose"))}</th><th>${esc(t("th_when"))}</th><th>${esc(t("th_status"))}</th><th>${esc(t("th_latency"))}</th><th>${esc(t("th_sent"))}</th><th>${esc(t("th_returned"))}</th></tr></thead><tbody>
     ${calls.map((c) => `<tr>
       <td>${esc(c.service)}</td>
       <td class="mono">${esc(c.domain)}</td>
-      <td class="muted">${esc(c.purpose)}</td>
+      <td class="muted">${esc(tBackendText(c.purpose))}</td>
       <td class="muted">${esc(new Date(c.requested_at * 1000).toLocaleTimeString())}</td>
       <td>${badge(c.status)}</td>
       <td class="muted">${fmtMs(c.latency_ms)}</td>
-      <td class="muted">${esc(c.data_sent_category)}</td>
-      <td class="muted">${esc(c.data_returned_category)}</td>
+      <td class="muted">${esc(tBackendText(c.data_sent_category))}</td>
+      <td class="muted">${esc(tBackendText(c.data_returned_category))}</td>
     </tr>`).join("")}
   </tbody></table>`;
 }
 
 function aiTimelineList(events_) {
-  if (!events_ || !events_.length) return '<p class="muted">No timeline events recorded.</p>';
+  if (!events_ || !events_.length) return `<p class="muted">${esc(t("timeline_empty"))}</p>`;
   return events_.map((ev) => `
     <div class="logline" style="grid-template-columns:74px 1fr">
       <span class="dim">${esc(new Date(ev.ts * 1000).toLocaleTimeString())}</span>
-      <span class="logmsg"><strong>${esc(ev.label)}</strong>${ev.detail ? `<br><span class="muted">${esc(ev.detail)}</span>` : ""}</span>
+      <span class="logmsg"><strong>${esc(tBackendText(ev.label))}</strong>${ev.detail ? `<br><span class="muted">${esc(tBackendText(ev.detail))}</span>` : ""}</span>
     </div>`).join("");
 }
 
@@ -600,87 +651,92 @@ function aiRedactionFields(trace) {
   const fields = [];
   collectRedactableFields(trace.input_redacted, "input_redacted", fields);
   collectRedactableFields(trace.output_redacted, "output_redacted", fields);
-  if (!fields.length) return '<p class="muted">No text fields available to redact.</p>';
+  if (!fields.length) return `<p class="muted">${esc(t("field_categories_empty"))}</p>`;
   return fields.map(([path, value], i) => `
     <div class="field">
       <label>${esc(path)}</label>
       <textarea readonly rows="2" id="redact-ta-${i}">${esc(value)}</textarea>
-      <div class="hint">Select text above, then click Redact. This permanently overwrites it — it cannot be undone.</div>
-      <button class="small danger" style="margin-top:6px" data-redact-btn="${i}" data-path="${esc(path)}">Redact Selected Text</button>
+      <div class="hint">${esc(t("redact_hint"))}</div>
+      <button class="small danger" style="margin-top:6px" data-redact-btn="${i}" data-path="${esc(path)}">${esc(t("btn_redact"))}</button>
     </div>`).join("");
 }
 
 async function openAiTrace(id) {
-  showModal("Loading…", '<p class="muted">Fetching trace detail…</p>');
+  showModal(t("modal_loading"), `<p class="muted">${esc(t("modal_fetching_alert"))}</p>`);
   let data;
   try { data = await api(`/ai/traces/${encodeURIComponent(id)}`); }
-  catch (e) { showModal("Error", `<p class="muted">${esc(e.message)}</p>`); return; }
+  catch (e) { showModal(t("modal_error"), `<p class="muted">${esc(tBackendText(e.message))}</p>`); return; }
   renderAiTraceModal(data.trace);
 }
 
-function renderAiTraceModal(t) {
-  const ds = t.decision_summary || {};
-  const cfg = t.config || {};
-  const hasTools = t.tool_calls && t.tool_calls.length;
+function renderAiTraceModal(tr) {
+  const ds = tr.decision_summary || {};
+  const cfg = tr.config || {};
+  const hasTools = tr.tool_calls && tr.tool_calls.length;
 
   let html = `<div class="kv">
-      <div>Trace ID</div><div class="mono">${esc(t.trace_id)}</div>
-      <div>Correlation ID</div><div class="mono">${esc(t.correlation_id)}</div>
-      <div>Component</div><div>${esc(t.component)} <span class="muted">(${esc(t.action)})</span></div>
-      <div>Provider / Model</div><div class="mono">${esc(t.provider)} / ${esc(t.model)}</div>
-      <div>Status</div><div>${badge(t.status)}</div>
-      <div>Risk</div><div>${badge(t.risk)}</div>
-      <div>Started</div><div class="muted">${esc(new Date(t.started_at * 1000).toLocaleString())}</div>
-      <div>Duration</div><div class="muted">${esc(fmtMs(t.duration_ms))}</div>
-      <div>External data transfer</div><div>${t.external_data_transfer
-        ? '<span style="color:var(--warning)">Yes — alert data left this application</span>'
-        : '<span class="muted">No</span>'}</div>
-      ${t.usage
-        ? kvRow("Token usage", `prompt ${t.usage.prompt_tokens ?? "—"} · output ${t.usage.output_tokens ?? "—"} · total ${t.usage.total_tokens ?? "—"}`)
-        : kvRow("Token usage", "Not reported by provider")}
-      ${t.error ? `<div>Error</div><div style="color:#f08a8a">${esc(t.error)}</div>` : ""}
+      <div>${esc(t("kv_trace_id"))}</div><div class="mono">${esc(tr.trace_id)}</div>
+      <div>${esc(t("kv_correlation_id"))}</div><div class="mono">${esc(tr.correlation_id)}</div>
+      <div>${esc(t("kv_component"))}</div><div>${esc(tr.component)} <span class="muted">(${esc(tr.action)})</span></div>
+      <div>${esc(t("kv_provider_model"))}</div><div class="mono">${esc(tr.provider)} / ${esc(tr.model)}</div>
+      <div>${esc(t("kv_status"))}</div><div>${badge(tr.status)}</div>
+      <div>${esc(t("kv_risk"))}</div><div>${badge(tr.risk)}</div>
+      <div>${esc(t("kv_started"))}</div><div class="muted">${esc(new Date(tr.started_at * 1000).toLocaleString())}</div>
+      <div>${esc(t("kv_duration"))}</div><div class="muted">${esc(fmtMs(tr.duration_ms))}</div>
+      <div>${esc(t("kv_external_transfer"))}</div><div>${tr.external_data_transfer
+        ? `<span style="color:var(--warning)">${esc(t("external_transfer_yes"))}</span>`
+        : `<span class="muted">${esc(t("external_transfer_no"))}</span>`}</div>
+      ${tr.usage
+        ? kvRow(t("kv_token_usage"), `${t("token_prompt")} ${tr.usage.prompt_tokens ?? "—"} · ${t("token_output")} ${tr.usage.output_tokens ?? "—"} · ${t("token_total")} ${tr.usage.total_tokens ?? "—"}`)
+        : kvRow(t("kv_token_usage"), t("token_usage_not_reported"))}
+      ${tr.error ? `<div>${esc(t("kv_error"))}</div><div style="color:#f08a8a">${esc(tr.error)}</div>` : ""}
     </div>`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Reasoning / Decision Summary</h4>
-    <div class="notif">Task: ${esc(ds.task || t.objective || "—")}
-Context used: ${esc((ds.context_used || []).join(", ") || "—")}
-Decision: ${esc(ds.decision || "—")}
-Confidence: ${esc(ds.confidence || "Not available")}
-Policy checks: ${esc((ds.policy_checks || []).join(", ") || "—")}
+  // ds.task/decision/confidence/note/policy_checks and system_instructions_text are
+  // backend-authored diagnostic text with a small known vocabulary — translated via
+  // tBackendText() (exact/template match, safe fallback to English if unmatched).
+  // ds.context_used lists raw pipeline field names (technical identifiers) and stays
+  // as-is, same as any other field-name value shown elsewhere in this modal.
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_decision_summary"))}</h4>
+    <div class="notif">${esc(t("ds_task"))}: ${esc(tBackendText(ds.task) || tr.objective || "—")}
+${esc(t("ds_context"))}: ${esc((ds.context_used || []).join(", ") || "—")}
+${esc(t("ds_decision"))}: ${esc(tBackendText(ds.decision) || "—")}
+${esc(t("ds_confidence"))}: ${esc(tBackendText(ds.confidence) || t("fallback_not_available"))}
+${esc(t("ds_policy"))}: ${esc((ds.policy_checks || []).map((p) => tBackendText(p)).join(", ") || "—")}
 
-<span class="dim">${esc(ds.note || "This is a reasoning/decision summary reconstructed from observable application signals, not the model's raw internal chain-of-thought.")}</span></div>`;
+<span class="dim">${esc(tBackendText(ds.note) || t("fallback_decision_note"))}</span></div>`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Data Sent to the Model</h4>
-    ${aiDataCategoriesTable(t.data_categories)}
-    ${(t.context_notes || []).length ? `<ul class="muted" style="font-size:12px;margin-top:10px">${t.context_notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}`;
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_data_sent"))}</h4>
+    ${aiDataCategoriesTable(tr.data_categories)}
+    ${(tr.context_notes || []).length ? `<ul class="muted" style="font-size:12px;margin-top:10px">${tr.context_notes.map((n) => `<li>${esc(tBackendText(n))}</li>`).join("")}</ul>` : ""}`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Model Configuration &amp; System Instructions</h4>
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_model_config"))}</h4>
     <div class="kv">
-      ${kvRow("Temperature", cfg.temperature ?? "—")}
-      ${kvRow("Max output tokens", cfg.max_output_tokens ?? "—")}
-      ${kvRow("Response format", cfg.response_mime_type ?? "—")}
-      ${kvRow("Schema required fields", (cfg.response_schema_required_fields || []).join(", ") || "—")}
-      ${kvRow("Instructions version", cfg.system_instructions_version ?? "—")}
+      ${kvRow(t("cfg_temperature"), cfg.temperature ?? "—")}
+      ${kvRow(t("cfg_max_tokens"), cfg.max_output_tokens ?? "—")}
+      ${kvRow(t("cfg_response_format"), cfg.response_mime_type ?? "—")}
+      ${kvRow(t("cfg_schema_required"), (cfg.response_schema_required_fields || []).join(", ") || "—")}
+      ${kvRow(t("cfg_instructions_version"), cfg.system_instructions_version ?? "—")}
     </div>
-    ${cfg.system_instructions_text ? `<pre class="code">${esc(cfg.system_instructions_text)}</pre>` : ""}`;
+    ${cfg.system_instructions_text ? `<pre class="code">${esc(tBackendText(cfg.system_instructions_text))}</pre>` : ""}`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Tool / Function Calls</h4>
-    ${hasTools ? "" : '<p class="muted">None — this integration uses a single-shot structured generation call with no function calling. Threat-intel context (VirusTotal / AbuseIPDB) was pre-fetched by the pipeline before this request, not fetched by the model itself — see External Contacts below.</p>'}`;
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_tool_calls"))}</h4>
+    ${hasTools ? "" : `<p class="muted">${esc(t("tool_calls_none"))}</p>`}`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">External Contacts</h4>
-    ${aiExternalCallsTable(t.external_calls)}`;
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_external_contacts"))}</h4>
+    ${aiExternalCallsTable(tr.external_calls)}`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Security Findings</h4>
-    ${aiFindingsList(t.security_findings)}`;
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_security_findings"))}</h4>
+    ${aiFindingsList(tr.security_findings)}`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Timeline</h4>
-    <div class="scroll" style="max-height:260px">${aiTimelineList(t.events)}</div>`;
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_timeline"))}</h4>
+    <div class="scroll" style="max-height:260px">${aiTimelineList(tr.events)}</div>`;
 
-  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Manual Redaction</h4>
-    <p class="muted" style="font-size:12px;margin-top:0">Select text in a field below and redact it permanently. Automatically-detected sensitive data above is already masked and cannot be un-redacted here — this can only add more redaction, never remove it.</p>
-    ${aiRedactionFields(t)}`;
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_manual_redaction"))}</h4>
+    <p class="muted" style="font-size:12px;margin-top:0">${esc(t("redact_hint_intro"))}</p>
+    ${aiRedactionFields(tr)}`;
 
-  showModal(`AI Trace — ${t.trace_id}`, html);
+  showModal(`AI Trace — ${tr.trace_id}`, html);
 
   document.querySelectorAll("[data-redact-btn]").forEach((btn) => {
     btn.onclick = async () => {
@@ -688,18 +744,18 @@ Policy checks: ${esc((ds.policy_checks || []).join(", ") || "—")}
       const path = btn.getAttribute("data-path");
       const ta = document.getElementById(`redact-ta-${idx}`);
       const start = ta.selectionStart, end = ta.selectionEnd;
-      if (start === end) { toast("Select the text to redact first", true); return; }
+      if (start === end) { toast(t("toast_select_text_first"), true); return; }
       btn.disabled = true;
       try {
-        const res = await api(`/ai/traces/${encodeURIComponent(t.trace_id)}/redact`, {
+        const res = await api(`/ai/traces/${encodeURIComponent(tr.trace_id)}/redact`, {
           method: "POST",
           body: JSON.stringify({ field_path: path, start, end }),
         });
-        toast("Text redacted permanently");
+        toast(t("toast_redacted"));
         renderAiTraceModal(res.trace);
         loadAiVisibility();
       } catch (err) {
-        toast("Redact failed: " + err.message, true);
+        toast(t("toast_redact_failed") + tBackendText(err.message), true);
         btn.disabled = false;
       }
     };
@@ -711,7 +767,7 @@ Policy checks: ${esc((ds.policy_checks || []).join(", ") || "—")}
 function showModal(title, bodyHtml) {
   const box = document.getElementById("modalBox");
   box.innerHTML = `
-    <div class="head"><h3>${esc(title)}</h3><button class="small" id="closeModal">Close</button></div>
+    <div class="head"><h3>${esc(title)}</h3><button class="small" id="closeModal">${esc(t("btn_close"))}</button></div>
     <div class="body">${bodyHtml}</div>`;
   document.getElementById("overlay").classList.add("show");
   document.getElementById("closeModal").onclick = () =>
@@ -721,7 +777,7 @@ function showModal(title, bodyHtml) {
 
 function wireTabs(box) {
   box.querySelectorAll(".tabbtn").forEach((tab) => (tab.onclick = () => {
-    box.querySelectorAll(".tabbtn").forEach((t) => t.classList.remove("active"));
+    box.querySelectorAll(".tabbtn").forEach((btn) => btn.classList.remove("active"));
     box.querySelectorAll("[data-panel]").forEach((p) => (p.style.display = "none"));
     tab.classList.add("active");
     const panel = box.querySelector(`[data-panel="${CSS.escape(tab.dataset.tab)}"]`);
@@ -739,37 +795,37 @@ document.addEventListener("keydown", (e) => {
 const kvRow = (k, v) => `<div>${esc(k)}</div><div>${esc(v)}</div>`;
 
 async function openAlert(id) {
-  showModal("Loading…", '<p class="muted">Fetching alert detail…</p>');
+  showModal(t("modal_loading"), `<p class="muted">${esc(t("modal_fetching_alert"))}</p>`);
   let data;
   try { data = await api(`/jobs/${encodeURIComponent(id)}`); }
-  catch (e) { showModal("Error", `<p class="muted">${esc(e.message)}</p>`); return; }
+  catch (e) { showModal(t("modal_error"), `<p class="muted">${esc(tBackendText(e.message))}</p>`); return; }
 
   const job = data.job, r = data.result;
   const a = r && r.normalized_alert;
 
   let html = `<div class="kv">
-      <div>Correlation ID</div><div class="mono">${esc(job.correlation_id)}</div>
-      <div>Status</div><div>${badge(job.status)}</div>
-      <div>Source</div><div>${badge(job.source)}</div>
-      ${kvRow("Created", new Date(job.created_at * 1000).toLocaleString())}
-      ${kvRow("Updated", new Date(job.updated_at * 1000).toLocaleString())}
-      ${job.error ? `<div>Error</div><div style="color:#f08a8a">${esc(job.error)}</div>` : ""}
+      <div>${esc(t("kv_correlation_id2"))}</div><div class="mono">${esc(job.correlation_id)}</div>
+      <div>${esc(t("kv_status2"))}</div><div>${badge(job.status)}</div>
+      <div>${esc(t("kv_source"))}</div><div>${badge(job.source)}</div>
+      ${kvRow(t("kv_created"), new Date(job.created_at * 1000).toLocaleString())}
+      ${kvRow(t("kv_updated"), new Date(job.updated_at * 1000).toLocaleString())}
+      ${job.error ? `<div>${esc(t("kv_error2"))}</div><div style="color:#f08a8a">${esc(job.error)}</div>` : ""}
     </div>`;
 
   if (a) {
     html += `<div class="kv">
-      ${kvRow("Detection", a.detection_name)}
-      ${kvRow("Endpoint", `${a.endpoint_name} (${a.endpoint_type})`)}
-      ${kvRow("Severity (reported)", a.severity)}
-      <div>Risk (computed)</div><div>${badge(r.risk_level)}</div>
-      ${kvRow("Rationale", r.risk_rationale)}
-      ${kvRow("User", a.user_name)}
-      ${kvRow("OS", a.os_name)}
-      ${kvRow("Action Taken", a.action_taken)}
-      ${kvRow("Handled / Isolated", `${a.threat_handled} / ${a.isolation_status}`)}
-      <div>Object URI</div><div class="mono">${esc(a.object_uri)}</div>
-      <div>File Hash</div><div class="mono">${esc(a.file_hash)}</div>
-      <div>IP / Domain</div><div class="mono">${esc(a.ip_address)} / ${esc(a.domain)}</div>
+      ${kvRow(t("kv_detection"), a.detection_name)}
+      ${kvRow(t("kv_endpoint"), `${a.endpoint_name} (${a.endpoint_type})`)}
+      ${kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity))}
+      <div>${esc(t("kv_risk_computed"))}</div><div>${badge(r.risk_level)}</div>
+      ${kvRow(t("kv_rationale"), tBackendText(r.risk_rationale))}
+      ${kvRow(t("kv_user"), a.user_name)}
+      ${kvRow(t("kv_os"), a.os_name)}
+      ${kvRow(t("kv_action_taken"), a.action_taken)}
+      ${kvRow(t("kv_handled_isolated"), `${tBadgeLabel(a.threat_handled)} / ${tBadgeLabel(a.isolation_status)}`)}
+      <div>${esc(t("kv_object_uri"))}</div><div class="mono">${esc(a.object_uri)}</div>
+      <div>${esc(t("kv_file_hash"))}</div><div class="mono">${esc(a.file_hash)}</div>
+      <div>${esc(t("kv_ip_domain"))}</div><div class="mono">${esc(a.ip_address)} / ${esc(a.domain)}</div>
     </div>`;
   }
 
@@ -777,17 +833,17 @@ async function openAlert(id) {
     const ti = r.threat_intel;
     html += `<div class="intel-row">
       <div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} engines flagged</div></div>
+        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>
       <div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}% confidence · ${esc(ti.abuseipdb.total_reports)} reports</div></div>
+        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>
     </div>`;
   }
 
   html += r && r.ai_output
     ? notificationTabs(r.ai_output)
-    : '<p class="muted">No AI output for this alert.</p>';
+    : `<p class="muted">${esc(t("no_ai_output"))}</p>`;
 
-  showModal("Alert Detail", html);
+  showModal(t("modal_alert_detail"), html);
 }
 
 /* ══════════════ logs ══════════════ */
@@ -824,7 +880,7 @@ function renderLogs(lines) {
       .join("  ");
     return `<div class="logline">
       <span class="dim">${esc(ts)}</span>
-      <span class="lvl ${esc(lvl)}">${esc(lvl)}</span>
+      <span class="lvl ${esc(lvl)}">${esc(tLogLevel(lvl))}</span>
       <span class="logmsg"><strong>${esc(e.event || "")}</strong> ${extras}</span>
     </div>`;
   }).join("");
@@ -848,11 +904,11 @@ async function loadSettings() {
     for (const [ui, key] of RECIPIENT_FIELDS) {
       document.getElementById("in-" + ui).value = s.recipients[key].value || "";
       const src = document.getElementById("src-" + ui);
-      src.textContent = s.recipients[key].source === "dashboard" ? "saved here" : "from .env";
+      src.textContent = s.recipients[key].source === "dashboard" ? t("src_saved_here") : t("src_from_env");
     }
     document.getElementById("runtimeKv").innerHTML =
       Object.entries(s.runtime).map(([k, v]) =>
-        `<div>${esc(k.replace(/_/g, " "))}</div><div class="mono">${esc(v)}</div>`).join("");
+        `<div>${esc(RUNTIME_KEY_I18N[k] ? t(RUNTIME_KEY_I18N[k]) : k.replace(/_/g, " "))}</div><div class="mono">${esc(v)}</div>`).join("");
   } catch (e) { /* handled */ }
 }
 
@@ -863,9 +919,9 @@ document.getElementById("saveRecipients").onclick = async () => {
   for (const [ui, key] of RECIPIENT_FIELDS) body[key] = document.getElementById("in-" + ui).value.trim();
   try {
     await api("/settings/recipients", { method: "PUT", body: JSON.stringify(body) });
-    toast("Recipients saved — applies to the next alert");
+    toast(t("toast_recipients_saved"));
     loadSettings();
-  } catch (e) { toast("Save failed: " + e.message, true); }
+  } catch (e) { toast(t("toast_save_failed") + tBackendText(e.message), true); }
   btn.disabled = false;
 };
 document.getElementById("reloadRecipients").onclick = loadSettings;
@@ -906,27 +962,27 @@ function renderApiDocs() {
   document.getElementById("curlExample").textContent = curl;
   document.getElementById("copyCurl").onclick = () => {
     navigator.clipboard.writeText(curl).then(
-      () => toast("curl copied"),
-      () => toast("Copy blocked by browser", true));
+      () => toast(t("toast_curl_copied")),
+      () => toast(t("toast_copy_blocked"), true));
   };
 
   const routes = [
-    ["GET", "/dashboard/api/jobs", "List alerts (limit, offset, status)"],
-    ["GET", "/dashboard/api/jobs/{id}", "Alert detail with full pipeline result"],
-    ["POST", "/dashboard/api/jobs/{id}/retry", "Re-run a FAILED or PARTIAL alert"],
-    ["GET", "/dashboard/api/alerts", "Alert index summary"],
-    ["GET", "/dashboard/api/ai-content", "Generated notifications"],
-    ["GET", "/dashboard/api/emails", "Pending email outbox"],
-    ["DELETE", "/dashboard/api/emails/{id}", "Discard a pending email"],
-    ["GET", "/dashboard/api/stats", "Aggregates and time series"],
-    ["GET", "/dashboard/api/logs", "Tail structured logs"],
-    ["GET", "/dashboard/api/settings", "Recipients and runtime config"],
-    ["PUT", "/dashboard/api/settings/recipients", "Update notification recipients"],
-    ["GET", "/dashboard/api/ai/overview", "AI Visibility status counters"],
-    ["GET", "/dashboard/api/ai/traces", "List recent AI traces"],
-    ["GET", "/dashboard/api/ai/traces/{id}", "Full AI trace detail"],
-    ["POST", "/dashboard/api/ai/traces/{id}/redact", "Permanently redact part of a trace"],
-    ["WS", "/dashboard/api/ws", "Live pipeline + AI trace event stream"],
+    ["GET", "/dashboard/api/jobs", t("route_list_jobs")],
+    ["GET", "/dashboard/api/jobs/{id}", t("route_job_detail")],
+    ["POST", "/dashboard/api/jobs/{id}/retry", t("route_retry")],
+    ["GET", "/dashboard/api/alerts", t("route_alerts_index")],
+    ["GET", "/dashboard/api/ai-content", t("route_ai_content")],
+    ["GET", "/dashboard/api/emails", t("route_emails")],
+    ["DELETE", "/dashboard/api/emails/{id}", t("route_delete_email")],
+    ["GET", "/dashboard/api/stats", t("route_stats")],
+    ["GET", "/dashboard/api/logs", t("route_logs")],
+    ["GET", "/dashboard/api/settings", t("route_settings")],
+    ["PUT", "/dashboard/api/settings/recipients", t("route_settings_update")],
+    ["GET", "/dashboard/api/ai/overview", t("route_ai_overview")],
+    ["GET", "/dashboard/api/ai/traces", t("route_ai_traces_list")],
+    ["GET", "/dashboard/api/ai/traces/{id}", t("route_ai_trace_detail")],
+    ["POST", "/dashboard/api/ai/traces/{id}/redact", t("route_ai_redact")],
+    ["WS", "/dashboard/api/ws", t("route_ws")],
   ];
   document.getElementById("apiRows").innerHTML = routes.map(([m, p, d]) =>
     `<tr><td class="mono"><strong>${esc(m)}</strong></td><td class="mono">${esc(p)}</td><td class="muted">${esc(d)}</td></tr>`).join("");
@@ -957,11 +1013,11 @@ function connectWs() {
 
   ws.onopen = () => {
     document.getElementById("wsDot").className = "dot ok live";
-    document.getElementById("wsLabel").textContent = "live";
+    document.getElementById("wsLabel").textContent = t("ws_live");
   };
   ws.onclose = () => {
     document.getElementById("wsDot").className = "dot bad";
-    document.getElementById("wsLabel").textContent = "reconnecting…";
+    document.getElementById("wsLabel").textContent = t("ws_reconnecting");
     if (sessionStorage.getItem("dash_key") !== null) setTimeout(connectWs, 2000);
   };
   ws.onerror = () => ws.close();
@@ -1009,7 +1065,7 @@ function handleEvent(msg) {
     toast(`Email handoff failed: ${d.error || "unknown error"}`, true);
 
   } else if (msg.type === "ai_trace_started") {
-    pushAiLiveEvent({ ts: d.started_at, type: "request_started", label: "AI request started",
+    pushAiLiveEvent({ ts: d.started_at, type: "request_started", label: t("live_ai_request_started"),
                        detail: `${d.component} → ${d.provider}/${d.model}`, trace_id: d.trace_id });
     if (state.view === "ai-visibility") loadAiVisibility();
 
@@ -1019,12 +1075,12 @@ function handleEvent(msg) {
   } else if (msg.type === "ai_trace_completed") {
     pushAiLiveEvent({
       ts: Date.now() / 1000, type: "trace_completed",
-      label: `AI trace ${(d.status || "").toLowerCase()}`,
-      detail: `risk: ${d.risk}` + (d.security_findings ? ` · ${d.security_findings} finding(s)` : ""),
+      label: t("live_ai_trace_label", d.status),
+      detail: t("live_risk_detail", d.risk, d.security_findings),
       trace_id: d.trace_id,
     });
     if (d.risk && ["SENSITIVE_DATA_DETECTED", "SECRET_DETECTED", "BLOCKED", "FAILED_SECURITY_CHECK", "ERROR"].includes(d.risk)) {
-      toast(`AI Visibility: ${d.risk.replace(/_/g, " ").toLowerCase()} on ${d.trace_id}`, true);
+      toast(t("toast_ai_visibility_alert", d.risk, d.trace_id), true);
     }
     if (state.view === "ai-visibility") loadAiVisibility();
   }
