@@ -126,6 +126,18 @@ rather than being invented. The fields that actually drive behavior:
 `DEDUP_TTL_SECONDS` (default 1h) returns `{"status": "duplicate"}` and is not
 reprocessed. Vary `alert_id` when re-sending.
 
+### Error responses
+
+| Status | When |
+|---|---|
+| `400` | Body is not valid JSON, or is valid JSON but not an object, or fails to map onto the alert model |
+| `401` | Missing or wrong `Authorization` token (checked before the body is read) |
+
+A malformed frame from a sender is answered as a client error, not a `500` —
+one bad payload never looks like a server fault and never creates a job.
+Watch out for unescaped Windows paths: `"C:\\Users\\bob"` is required in JSON,
+and a shell that eats one level of backslashes will produce an invalid escape.
+
 ### Checking a result
 
 ```bash

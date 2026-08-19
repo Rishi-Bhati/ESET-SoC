@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 from typing import Any
-from fastapi import APIRouter, Depends, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, Request, BackgroundTasks, HTTPException
 import structlog
 from src.middleware.auth import validate_eset_token
 from src.ingestion.webhook_handler import WebhookIngestionHandler
@@ -20,6 +20,13 @@ router = APIRouter(prefix="/webhook", tags=["Webhook"])
 logger = structlog.get_logger(__name__)
 webhook_handler = WebhookIngestionHandler()
 syslog_handler = SyslogIngestionHandler()
+
+def _content_length(request: Request) -> int:
+    """Body size in bytes, or -1 when the sender omitted/mangled Content-Length."""
+    try:
+        return int(request.headers.get("content-length", ""))
+    except ValueError:
+        return -1
 
 def compute_dedup_key(payload: EsetRawPayload) -> str:
     """
@@ -47,6 +54,31 @@ async def run_pipeline_task(correlation_id: str, raw_payload: dict[str, Any], so
     except Exception as e:
         logger.error("background_pipeline_uncaught_error", error=str(e), correlation_id=correlation_id)
 
+async def read_json_body(request: Request) -> dict[str, Any]:
+    """
+    Reads and validates the request body as a JSON object.
+
+    A sender that emits a malformed frame (bad escape, truncated body, wrong
+    content type) is a client error, not a server fault: answer 400 rather than
+    letting json.JSONDecodeError bubble up as a 500 with a stack trace that
+    leaks internal paths.
+    """
+    body = await request.body()
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning("ingest_malformed_json", error=str(e), byte_length=len(body))
+        raise HTTPException(status_code=400, detail=f"Request body is not valid JSON: {e}")
+
+    if not isinstance(parsed, dict):
+        logger.warning("ingest_non_object_body", type=type(parsed).__name__)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Request body must be a JSON object, got {type(parsed).__name__}",
+        )
+    return parsed
+
+
 async def ingest_alert(
     raw_json: dict[str, Any],
     handler: WebhookIngestionHandler | SyslogIngestionHandler,
@@ -64,8 +96,8 @@ async def ingest_alert(
     try:
         raw_payload = handler.parse(raw_json)
     except ValueError as e:
-        logger.error("ingest_invalid_payload", error=str(e), source=source)
-        return {"status": "error", "message": str(e), "correlation_id": correlation_id}
+        logger.warning("ingest_invalid_payload", error=str(e), source=source)
+        raise HTTPException(status_code=400, detail=str(e))
 
     dedup_key = compute_dedup_key(raw_payload)
     if await deduplication.is_duplicate(dedup_key):
@@ -97,8 +129,8 @@ async def receive_eset_webhook(
     Endpoint for ESET webhooks. Parses payload, performs deduplication,
     creates a job record, and fires the pipeline task in the background.
     """
-    raw_json = await request.json()
-    logger.info("webhook_received", payload_size=len(request.headers.get("content-length", "0")))
+    raw_json = await read_json_body(request)
+    logger.info("webhook_received", payload_size=_content_length(request))
     return await ingest_alert(raw_json, webhook_handler, "WEBHOOK", background_tasks)
 
 @router.post("/syslog", dependencies=[Depends(validate_eset_token)])
@@ -110,6 +142,6 @@ async def receive_syslog_payload(
     Endpoint for incoming Syslog events forwarded by our Syslog server.
     Parses payload, performs deduplication, creates a job record, and fires background task.
     """
-    raw_json = await request.json()
-    logger.info("syslog_http_received", payload_size=len(request.headers.get("content-length", "0")))
+    raw_json = await read_json_body(request)
+    logger.info("syslog_http_received", payload_size=_content_length(request))
     return await ingest_alert(raw_json, syslog_handler, "SYSLOG", background_tasks)
