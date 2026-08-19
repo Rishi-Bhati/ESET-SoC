@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 import structlog
 from tenacity import (
     retry,
@@ -8,6 +9,27 @@ from tenacity import (
 
 logger = structlog.get_logger(__name__)
 
+# Per-call-chain log of retry attempts, populated by _log_retry_attempt() below.
+# Exists so AI-call instrumentation (src/services/ai/trace_recorder.py) can surface
+# retry/backoff activity in an AI trace's timeline without this decorator needing to
+# know anything about tracing — callers that don't care can simply ignore it. Uses a
+# ContextVar rather than a parameter so retry_api_call()'s public signature is
+# unchanged; the same pattern is already used for correlation_id (see
+# src/utils/correlation.py).
+_retry_log: ContextVar[list | None] = ContextVar("retry_log", default=None)
+
+def get_retry_log() -> list:
+    """Returns (creating if needed) the current context's retry-attempt log."""
+    log = _retry_log.get()
+    if log is None:
+        log = []
+        _retry_log.set(log)
+    return log
+
+def reset_retry_log() -> None:
+    """Clears the current context's retry-attempt log before a fresh call."""
+    _retry_log.set(None)
+
 def _log_retry_attempt(retry_state):
     """Callback to log retry attempts with structlog."""
     exc = retry_state.outcome.exception() if retry_state.outcome.failed else None
@@ -17,6 +39,11 @@ def _log_retry_attempt(retry_state):
         next_delay=retry_state.idle_for,
         error=str(exc) if exc else None,
     )
+    get_retry_log().append({
+        "attempt": retry_state.attempt_number,
+        "next_delay": retry_state.idle_for,
+        "error": str(exc) if exc else None,
+    })
 
 def retry_api_call(
     max_attempts: int = 3,

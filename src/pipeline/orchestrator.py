@@ -10,7 +10,8 @@ from src.services import (
 )
 from src.services.threat_intel.aggregator import gather_threat_intel
 from src.services.ai.gemini_service import GeminiAIService
-from src.services.ai.lint_checker import lint_ai_output
+from src.services.ai.lint_checker import lint_ai_output, LintFailureException
+from src.services.ai import trace_recorder
 from src.storage import job_store
 from src.utils import events
 
@@ -73,9 +74,25 @@ async def process_alert_pipeline(correlation_id: str, raw_payload: dict, source:
             ai_output = await ai_service.generate(alert, risk_level, intel)
             await events.emit_stage(correlation_id, "AI", "ok", detail="4 notifications generated")
 
-            # Step 5: Post-generation lint check
+            # Step 5: Post-generation lint check. Result is attached to this alert's AI
+            # Visibility trace (src/services/ai/trace_recorder.py) as a policy check —
+            # the AI call itself already succeeded and produced valid, schema-conforming
+            # output; a lint failure means that output is BLOCKED from being used, which
+            # is a distinct, equally important fact for the AI Visibility dashboard.
             await events.emit_stage(correlation_id, "LINT", "active")
-            lint_ai_output(ai_output)
+            try:
+                lint_ai_output(ai_output)
+            except LintFailureException as lint_error:
+                await trace_recorder.attach_policy_check(
+                    correlation_id, name="Prohibited-phrase safety lint", passed=False,
+                    detail=f"Blocked: {len(lint_error.found_phrases)} prohibited phrase(s) "
+                           f"detected — {lint_error.found_phrases}",
+                )
+                raise
+            await trace_recorder.attach_policy_check(
+                correlation_id, name="Prohibited-phrase safety lint", passed=True,
+                detail="No prohibited claims found in the generated output.",
+            )
             await events.emit_stage(correlation_id, "LINT", "ok", detail="No prohibited claims")
 
             # Step 6: Assemble and write SUCCESS result

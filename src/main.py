@@ -22,6 +22,31 @@ logger = structlog.get_logger(__name__)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(PROJECT_ROOT, "static")
 
+
+def _resolved_route_paths(routes: Any) -> list[str]:
+    """
+    Recursively resolves every concrete path this app will actually answer on,
+    unwrapping include_router()'s wrapper objects along the way. FastAPI does not
+    flatten included routers into app.routes as plain APIRoute entries — it wraps
+    each one, and the wrapper's attribute name for the underlying router has changed
+    across versions (seen here: `.original_router`; older/other builds use `.router`
+    or expose the sub-routes directly via `.routes`). This tries all of them rather
+    than hard-coding one, since a diagnostic that silently reports zero routes on the
+    next FastAPI upgrade is worse than not having it.
+    """
+    paths: list[str] = []
+    for r in routes:
+        path = getattr(r, "path", None)
+        if isinstance(path, str):
+            paths.append(path)
+            continue
+        nested = getattr(r, "original_router", None) or getattr(r, "router", None)
+        if nested is not None and hasattr(nested, "routes"):
+            paths.extend(_resolved_route_paths(nested.routes))
+        elif hasattr(r, "routes"):
+            paths.extend(_resolved_route_paths(r.routes))
+    return paths
+
 def warn_on_insecure_exposure() -> None:
     """
     The dashboard exposes every ingested alert (hostnames, usernames, file paths,
@@ -66,6 +91,16 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     logger.info("app_starting", host=settings.app_host, port=settings.app_port)
     warn_on_insecure_exposure()
+
+    # Python does not hot-reload source files: this process serves exactly the code
+    # that was on disk when it started, in memory, until it is restarted. If a route
+    # module is added or changed while an older instance of this process is still
+    # running, every call into it 404s with no exception anywhere — the routes simply
+    # don't exist in that process's memory yet. Logging exactly which AI Visibility
+    # routes are live at startup turns that into a 10-second log check instead of a
+    # process/file-mtime forensic investigation.
+    ai_routes = sorted(p for p in _resolved_route_paths(app.routes) if p.startswith("/dashboard/api/ai"))
+    logger.info("ai_visibility_routes_active", count=len(ai_routes), routes=ai_routes)
 
     # Initialize SQLite database schema
     await init_db()

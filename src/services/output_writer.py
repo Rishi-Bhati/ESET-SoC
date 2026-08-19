@@ -58,7 +58,7 @@ async def write_result(result: PipelineResult) -> None:
         # Load existing index records if index.json is present
         if os.path.exists(index_path):
             try:
-                with open(index_path, "r") as f:
+                with open(index_path, "r", encoding="utf-8") as f:
                     records = json.load(f)
             except Exception as e:
                 logger.warning("index_read_failed_reinitializing", error=str(e))

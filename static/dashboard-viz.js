@@ -320,6 +320,19 @@ function drawStatus(byStatus) {
     { empty: "No alerts yet" });
 }
 
+/* ---- AI Visibility risk breakdown — reuses drawBars(), same pattern as drawRisk() ---- */
+function drawAiRisk(byRisk) {
+  const order = [
+    ["SAFE", "var(--good)"], ["REVIEW", "var(--warning)"],
+    ["SENSITIVE_DATA_DETECTED", "var(--serious)"], ["SECRET_DETECTED", "var(--critical)"],
+    ["FAILED_SECURITY_CHECK", "var(--critical)"], ["BLOCKED", "var(--critical)"], ["ERROR", "var(--critical)"],
+  ];
+  const rows = order
+    .map(([k, color]) => ({ label: k, value: (byRisk || {})[k] || 0, color }))
+    .filter((r) => r.value > 0 || ["SAFE", "REVIEW"].includes(r.label));
+  drawBars(document.getElementById("aiRiskChart"), rows, { empty: "No AI traces yet" });
+}
+
 function drawSource(bySource) {
   const order = [["WEBHOOK", "var(--cat-1)"], ["SYSLOG", "var(--cat-2)"]];
   const rows = order.map(([k, color]) => ({ label: k, value: (bySource || {})[k] || 0, color }));

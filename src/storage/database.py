@@ -85,6 +85,34 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_email_deliveries_status ON email_deliveries(status)"
         )
 
+        # AI Visibility traces (see src/models/ai_trace.py, src/services/ai/trace_recorder.py).
+        # data_json holds the full, already-redacted trace; the other columns exist only
+        # so the dashboard can list/filter/aggregate without parsing every row's JSON.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_traces (
+                trace_id TEXT PRIMARY KEY,
+                correlation_id TEXT NOT NULL,
+                component TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,              -- STARTED, SUCCESS, BLOCKED, FAILED, ERROR
+                risk TEXT NOT NULL,                 -- SAFE, REVIEW, SENSITIVE_DATA_DETECTED,
+                                                     -- SECRET_DETECTED, FAILED_SECURITY_CHECK, BLOCKED, ERROR
+                started_at REAL NOT NULL,
+                completed_at REAL,
+                duration_ms REAL,
+                security_findings_count INTEGER NOT NULL DEFAULT 0,
+                external_data_transfer INTEGER NOT NULL DEFAULT 0,
+                data_json TEXT NOT NULL             -- full AITrace, already redacted
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_traces_correlation ON ai_traces(correlation_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_traces_started ON ai_traces(started_at)"
+        )
+
         await conn.commit()
         
     logger.info("database_init_success")

@@ -134,6 +134,15 @@
   .b-WEBHOOK{background:#16324c;color:#7cc3ff}
   .b-SYSLOG{background:#3a2213;color:var(--serious)}
   .b-ACCEPTED{background:#0f2f14;color:#3ec73e}
+  .b-OK{background:#0f2f14;color:#3ec73e}
+  .b-STARTED{background:#16324c;color:#7cc3ff}
+  .b-BLOCKED{background:#3d1414;color:#f08a8a}
+  .b-ERROR{background:#3d1414;color:#f08a8a}
+  .b-SAFE{background:#0f2f14;color:#3ec73e}
+  .b-REVIEW{background:#3d2f08;color:var(--warning)}
+  .b-SENSITIVE_DATA_DETECTED{background:#3a2213;color:var(--serious)}
+  .b-SECRET_DETECTED{background:#3d1414;color:#f08a8a}
+  .b-FAILED_SECURITY_CHECK{background:#3d1414;color:#f08a8a}
 
   /* ---------- Flow graph ---------- */
   #flowWrap{overflow-x:auto;background:var(--panel)}
@@ -222,6 +231,7 @@
     <a class="tab" data-view="flow"><span class="ic">⌗</span>Pipeline Flow</a>
     <a class="tab" data-view="alerts"><span class="ic">▤</span>Alerts<span class="count" id="cAlerts">0</span></a>
     <a class="tab" data-view="ai"><span class="ic">✦</span>AI Content</a>
+    <a class="tab" data-view="ai-visibility"><span class="ic">◎</span>AI Visibility<span class="count" id="cAiAlerts">0</span></a>
     <a class="tab" data-view="emails"><span class="ic">✉</span>Emails<span class="count" id="cEmails">0</span></a>
     <a class="tab" data-view="logs"><span class="ic">≡</span>Logs</a>
     <a class="tab" data-view="settings"><span class="ic">⚙</span>Settings</a>
@@ -333,6 +343,55 @@
         <div class="head"><h3>AI-Generated Notifications</h3><span class="muted mono" id="aiCount"></span></div>
         <div class="scroll" id="aiList"></div>
         <div class="empty" id="aiEmpty">No AI content yet — it appears once an alert completes with status SUCCESS.</div>
+      </div>
+    </section>
+
+    <!-- ─────── AI VISIBILITY ─────── -->
+    <section class="view" id="view-ai-visibility">
+      <p class="muted" style="margin:0 0 16px">Monitor AI activity, data sent to models, external interactions, model outputs, and potential information exposure in real time.</p>
+
+      <div class="cards" id="aiVisCards"></div>
+
+      <div class="grid2">
+        <div class="panel">
+          <div class="head"><h3>AI Risk Breakdown</h3></div>
+          <div class="body"><div id="aiRiskChart"></div></div>
+        </div>
+        <div class="panel">
+          <div class="head">
+            <h3>Live AI Activity</h3>
+            <span class="muted" style="font-size:11.5px">Same WebSocket as Pipeline Flow</span>
+          </div>
+          <div class="scroll" id="aiLiveFeed" style="max-height:230px"></div>
+          <div class="empty" id="aiLiveEmpty">No AI activity yet — it appears the moment an alert reaches the AI stage.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="head">
+          <h3>Recent AI Traces</h3>
+          <select id="aiTraceRisk" style="width:auto">
+            <option value="">All risk levels</option>
+            <option value="SAFE">Safe</option>
+            <option value="REVIEW">Review</option>
+            <option value="SENSITIVE_DATA_DETECTED">Sensitive Data Detected</option>
+            <option value="SECRET_DETECTED">Secret Detected</option>
+            <option value="FAILED_SECURITY_CHECK">Failed Security Check</option>
+            <option value="BLOCKED">Blocked</option>
+            <option value="ERROR">Error</option>
+          </select>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>Trace ID</th><th>Time</th><th>Component</th><th>Model</th>
+              <th>Duration</th><th>Status</th><th>Risk</th>
+            </tr></thead>
+            <tbody id="aiTraceRows"></tbody>
+          </table>
+          <div class="empty" id="aiTracesEmpty">No AI traces yet — a trace is created every time an alert reaches the AI stage.</div>
+        </div>
+        <div class="foot">Every AI call in this application goes through here — see Trace Detail for the full input/output/security breakdown. Click a row to open it.</div>
       </div>
     </section>
 

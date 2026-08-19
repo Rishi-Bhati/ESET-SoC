@@ -14,6 +14,9 @@ const state = {
   runs: new Map(),      // correlation_id -> { stages: Map, started, source }
   stats: null,
   view: "overview",
+  aiTraces: new Map(),  // trace_id -> trace summary row
+  aiLive: [],           // bounded live AI activity feed
+  aiOverview: null,
 };
 
 const STAGES = ["INGEST", "NORMALIZE", "RISK", "INTEL", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"];
@@ -38,6 +41,8 @@ const BADGES = new Set([
   "CLIENT_JA","CTHREE_JA","INTERNAL_JA","ENGINEER_EN",
   "WEBHOOK","SYSLOG",
   "ACCEPTED",
+  "OK","STARTED","BLOCKED","ERROR",
+  "SAFE","REVIEW","SENSITIVE_DATA_DETECTED","SECRET_DETECTED","FAILED_SECURITY_CHECK",
 ]);
 function badge(value) {
   const v = value && BADGES.has(value) ? value : "UNKNOWN";
@@ -127,6 +132,7 @@ const VIEW_META = {
   flow:     ["Pipeline Flow", "Every alert advancing through the pipeline, live"],
   alerts:   ["Alerts", "All ingested alerts and their outcomes"],
   ai:       ["AI Content", "Generated bilingual notifications"],
+  "ai-visibility": ["AI Visibility", "What the AI received, contacted, returned, and whether anything sensitive was exposed"],
   emails:   ["Emails", "Pending outbox awaiting delivery"],
   logs:     ["Logs", "Structured application log"],
   settings: ["Settings", "Notification recipients and runtime configuration"],
@@ -147,6 +153,7 @@ function showView(name) {
   if (name === "overview") loadStats();
   if (name === "logs") loadLogs();
   if (name === "ai") loadAiContent();
+  if (name === "ai-visibility") loadAiVisibility();
   if (name === "settings") loadSettings();
   if (name === "emails") loadDelivery();
 }
@@ -429,6 +436,276 @@ function notificationTabs(ai) {
       `<div class="notif" data-panel="${esc(t[0])}" style="${i === 0 ? "" : "display:none"}">${esc(t[2])}</div>`).join("")}`;
 }
 
+/* ══════════════ AI visibility ══════════════
+ * What did the AI receive, what did it contact, what came back, was anything
+ * sensitive involved, and what did the application do with the result? Every AI
+ * call in this app (src/services/ai/gemini_service.py) produces one trace via
+ * src/services/ai/trace_recorder.py; this section is a live view over those traces.
+ */
+
+function fmtMs(ms) {
+  if (ms === null || ms === undefined) return "—";
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+async function loadAiVisibility() {
+  const riskFilter = document.getElementById("aiTraceRisk").value;
+  try {
+    const [overview, traces] = await Promise.all([
+      api("/ai/overview"),
+      api("/ai/traces?limit=50" + (riskFilter ? `&risk=${encodeURIComponent(riskFilter)}` : "")),
+    ]);
+    state.aiOverview = overview;
+    renderAiOverview(overview);
+    state.aiTraces.clear();
+    for (const t of traces.traces) state.aiTraces.set(t.trace_id, t);
+    renderAiTraces();
+  } catch (e) { /* handled */ }
+  renderAiLiveFeed();
+}
+document.getElementById("aiTraceRisk").onchange = loadAiVisibility;
+
+function renderAiOverview(o) {
+  const cards = [
+    ["AI Status", o.active_requests > 0 ? "Active" : "Idle"],
+    ["Active Requests", o.active_requests],
+    ["Requests Today", o.requests_today],
+    ["Models / Providers", (o.providers || []).length],
+    ["External Calls (24h)", o.external_calls_today],
+    ["Security Alerts", o.security_alerts],
+  ];
+  document.getElementById("aiVisCards").innerHTML = cards
+    .map(([l, n]) => `<div class="card"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`)
+    .join("");
+  document.getElementById("cAiAlerts").textContent = o.security_alerts || 0;
+  drawAiRisk(o.by_risk);
+}
+
+function renderAiTraces() {
+  const rows = [...state.aiTraces.values()].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+  document.getElementById("aiTracesEmpty").style.display = rows.length ? "none" : "block";
+  document.getElementById("aiTraceRows").innerHTML = rows.map((t) => `
+    <tr class="clickable" data-trace="${esc(t.trace_id)}">
+      <td class="mono muted">${esc(t.trace_id)}</td>
+      <td class="muted">${timeAgo(t.started_at)}</td>
+      <td>${esc(t.component)}</td>
+      <td class="mono">${esc(t.provider)}/${esc(t.model)}</td>
+      <td class="muted">${fmtMs(t.duration_ms)}</td>
+      <td>${badge(t.status)}</td>
+      <td>${badge(t.risk)}</td>
+    </tr>`).join("");
+}
+
+document.getElementById("aiTraceRows").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr[data-trace]");
+  if (tr) openAiTrace(tr.getAttribute("data-trace"));
+});
+
+function aiLiveIcon(type) {
+  if (type === "trace_completed") return "✓";
+  if (type === "sensitive_data_scan" || type === "policy_check") return "⚠";
+  if (type === "external_call_started" || type === "external_call_finished" || type === "request_sent") return "→";
+  if (type === "retry") return "↻";
+  return "●";
+}
+
+function renderAiLiveFeed() {
+  const items = state.aiLive;
+  document.getElementById("aiLiveEmpty").style.display = items.length ? "none" : "block";
+  document.getElementById("aiLiveFeed").innerHTML = items.map((ev) => `
+    <div class="logline" style="grid-template-columns:20px 68px 1fr">
+      <span>${esc(aiLiveIcon(ev.type))}</span>
+      <span class="dim">${esc(new Date(ev.ts * 1000).toLocaleTimeString())}</span>
+      <span class="logmsg"><strong>${esc(ev.label)}</strong>${ev.detail ? ` <span class="muted">— ${esc(ev.detail)}</span>` : ""}
+        <span class="muted mono" style="margin-left:6px">${esc((ev.trace_id || "").slice(0, 10))}</span></span>
+    </div>`).join("");
+}
+
+function pushAiLiveEvent(ev) {
+  state.aiLive.unshift(ev);
+  if (state.aiLive.length > 60) state.aiLive.length = 60;
+  if (state.view === "ai-visibility") renderAiLiveFeed();
+}
+
+function aiFindingsList(findings) {
+  if (!findings || !findings.length) return '<p class="muted">No sensitive-data findings for this trace.</p>';
+  return findings.map((f) => `
+    <div class="intel-box" style="min-width:0;margin-bottom:8px">
+      <div class="row" style="justify-content:space-between">
+        <strong>${esc(f.category)}</strong>
+        <span class="srcbadge">${esc(f.method)}</span>
+      </div>
+      <div class="mono muted" style="margin-top:5px;word-break:break-all">${esc(f.masked_preview)}</div>
+      <div class="dim" style="margin-top:4px;font-size:10.5px">${esc(f.field_path)}</div>
+    </div>`).join("");
+}
+
+function aiDataCategoriesTable(cats) {
+  if (!cats || !cats.length) return '<p class="muted">No categorized input data recorded.</p>';
+  return `<table><thead><tr><th>Category</th><th>Field</th><th>Origin</th><th>Preview</th></tr></thead><tbody>
+    ${cats.map((c) => `<tr>
+      <td>${esc(c.category)}</td>
+      <td class="mono">${esc(c.field)}</td>
+      <td class="muted">${esc(c.origin)}</td>
+      <td class="mono">${esc(c.value_preview)}</td>
+    </tr>`).join("")}
+  </tbody></table>`;
+}
+
+function aiExternalCallsTable(calls) {
+  if (!calls || !calls.length) return '<p class="muted">No external calls recorded for this trace.</p>';
+  return `<table><thead><tr><th>Service</th><th>Domain</th><th>Purpose</th><th>When</th><th>Status</th><th>Latency</th><th>Sent</th><th>Returned</th></tr></thead><tbody>
+    ${calls.map((c) => `<tr>
+      <td>${esc(c.service)}</td>
+      <td class="mono">${esc(c.domain)}</td>
+      <td class="muted">${esc(c.purpose)}</td>
+      <td class="muted">${esc(new Date(c.requested_at * 1000).toLocaleTimeString())}</td>
+      <td>${badge(c.status)}</td>
+      <td class="muted">${fmtMs(c.latency_ms)}</td>
+      <td class="muted">${esc(c.data_sent_category)}</td>
+      <td class="muted">${esc(c.data_returned_category)}</td>
+    </tr>`).join("")}
+  </tbody></table>`;
+}
+
+function aiTimelineList(events_) {
+  if (!events_ || !events_.length) return '<p class="muted">No timeline events recorded.</p>';
+  return events_.map((ev) => `
+    <div class="logline" style="grid-template-columns:74px 1fr">
+      <span class="dim">${esc(new Date(ev.ts * 1000).toLocaleTimeString())}</span>
+      <span class="logmsg"><strong>${esc(ev.label)}</strong>${ev.detail ? `<br><span class="muted">${esc(ev.detail)}</span>` : ""}</span>
+    </div>`).join("");
+}
+
+// Walks a redacted-trace sub-object collecting (path, text) for every non-empty string
+// leaf, so the manual-redaction UI operates on EXACTLY the text stored server-side —
+// never on a truncated preview — so character offsets always line up with what the
+// backend will actually overwrite (see src/storage/ai_trace_store.py: apply_manual_redaction).
+function collectRedactableFields(obj, prefix, out) {
+  if (obj === null || obj === undefined) return;
+  if (typeof obj === "string") {
+    if (obj.trim()) out.push([prefix, obj]);
+    return;
+  }
+  if (Array.isArray(obj)) {
+    obj.forEach((v, i) => collectRedactableFields(v, `${prefix}[${i}]`, out));
+    return;
+  }
+  if (typeof obj === "object") {
+    for (const [k, v] of Object.entries(obj)) collectRedactableFields(v, prefix ? `${prefix}.${k}` : k, out);
+  }
+}
+
+function aiRedactionFields(trace) {
+  const fields = [];
+  collectRedactableFields(trace.input_redacted, "input_redacted", fields);
+  collectRedactableFields(trace.output_redacted, "output_redacted", fields);
+  if (!fields.length) return '<p class="muted">No text fields available to redact.</p>';
+  return fields.map(([path, value], i) => `
+    <div class="field">
+      <label>${esc(path)}</label>
+      <textarea readonly rows="2" id="redact-ta-${i}">${esc(value)}</textarea>
+      <div class="hint">Select text above, then click Redact. This permanently overwrites it — it cannot be undone.</div>
+      <button class="small danger" style="margin-top:6px" data-redact-btn="${i}" data-path="${esc(path)}">Redact Selected Text</button>
+    </div>`).join("");
+}
+
+async function openAiTrace(id) {
+  showModal("Loading…", '<p class="muted">Fetching trace detail…</p>');
+  let data;
+  try { data = await api(`/ai/traces/${encodeURIComponent(id)}`); }
+  catch (e) { showModal("Error", `<p class="muted">${esc(e.message)}</p>`); return; }
+  renderAiTraceModal(data.trace);
+}
+
+function renderAiTraceModal(t) {
+  const ds = t.decision_summary || {};
+  const cfg = t.config || {};
+  const hasTools = t.tool_calls && t.tool_calls.length;
+
+  let html = `<div class="kv">
+      <div>Trace ID</div><div class="mono">${esc(t.trace_id)}</div>
+      <div>Correlation ID</div><div class="mono">${esc(t.correlation_id)}</div>
+      <div>Component</div><div>${esc(t.component)} <span class="muted">(${esc(t.action)})</span></div>
+      <div>Provider / Model</div><div class="mono">${esc(t.provider)} / ${esc(t.model)}</div>
+      <div>Status</div><div>${badge(t.status)}</div>
+      <div>Risk</div><div>${badge(t.risk)}</div>
+      <div>Started</div><div class="muted">${esc(new Date(t.started_at * 1000).toLocaleString())}</div>
+      <div>Duration</div><div class="muted">${esc(fmtMs(t.duration_ms))}</div>
+      <div>External data transfer</div><div>${t.external_data_transfer
+        ? '<span style="color:var(--warning)">Yes — alert data left this application</span>'
+        : '<span class="muted">No</span>'}</div>
+      ${t.usage
+        ? kvRow("Token usage", `prompt ${t.usage.prompt_tokens ?? "—"} · output ${t.usage.output_tokens ?? "—"} · total ${t.usage.total_tokens ?? "—"}`)
+        : kvRow("Token usage", "Not reported by provider")}
+      ${t.error ? `<div>Error</div><div style="color:#f08a8a">${esc(t.error)}</div>` : ""}
+    </div>`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Reasoning / Decision Summary</h4>
+    <div class="notif">Task: ${esc(ds.task || t.objective || "—")}
+Context used: ${esc((ds.context_used || []).join(", ") || "—")}
+Decision: ${esc(ds.decision || "—")}
+Confidence: ${esc(ds.confidence || "Not available")}
+Policy checks: ${esc((ds.policy_checks || []).join(", ") || "—")}
+
+<span class="dim">${esc(ds.note || "This is a reasoning/decision summary reconstructed from observable application signals, not the model's raw internal chain-of-thought.")}</span></div>`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Data Sent to the Model</h4>
+    ${aiDataCategoriesTable(t.data_categories)}
+    ${(t.context_notes || []).length ? `<ul class="muted" style="font-size:12px;margin-top:10px">${t.context_notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Model Configuration &amp; System Instructions</h4>
+    <div class="kv">
+      ${kvRow("Temperature", cfg.temperature ?? "—")}
+      ${kvRow("Max output tokens", cfg.max_output_tokens ?? "—")}
+      ${kvRow("Response format", cfg.response_mime_type ?? "—")}
+      ${kvRow("Schema required fields", (cfg.response_schema_required_fields || []).join(", ") || "—")}
+      ${kvRow("Instructions version", cfg.system_instructions_version ?? "—")}
+    </div>
+    ${cfg.system_instructions_text ? `<pre class="code">${esc(cfg.system_instructions_text)}</pre>` : ""}`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Tool / Function Calls</h4>
+    ${hasTools ? "" : '<p class="muted">None — this integration uses a single-shot structured generation call with no function calling. Threat-intel context (VirusTotal / AbuseIPDB) was pre-fetched by the pipeline before this request, not fetched by the model itself — see External Contacts below.</p>'}`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">External Contacts</h4>
+    ${aiExternalCallsTable(t.external_calls)}`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Security Findings</h4>
+    ${aiFindingsList(t.security_findings)}`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Timeline</h4>
+    <div class="scroll" style="max-height:260px">${aiTimelineList(t.events)}</div>`;
+
+  html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Manual Redaction</h4>
+    <p class="muted" style="font-size:12px;margin-top:0">Select text in a field below and redact it permanently. Automatically-detected sensitive data above is already masked and cannot be un-redacted here — this can only add more redaction, never remove it.</p>
+    ${aiRedactionFields(t)}`;
+
+  showModal(`AI Trace — ${t.trace_id}`, html);
+
+  document.querySelectorAll("[data-redact-btn]").forEach((btn) => {
+    btn.onclick = async () => {
+      const idx = btn.getAttribute("data-redact-btn");
+      const path = btn.getAttribute("data-path");
+      const ta = document.getElementById(`redact-ta-${idx}`);
+      const start = ta.selectionStart, end = ta.selectionEnd;
+      if (start === end) { toast("Select the text to redact first", true); return; }
+      btn.disabled = true;
+      try {
+        const res = await api(`/ai/traces/${encodeURIComponent(t.trace_id)}/redact`, {
+          method: "POST",
+          body: JSON.stringify({ field_path: path, start, end }),
+        });
+        toast("Text redacted permanently");
+        renderAiTraceModal(res.trace);
+        loadAiVisibility();
+      } catch (err) {
+        toast("Redact failed: " + err.message, true);
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
 /* ══════════════ alert detail modal ══════════════ */
 
 function showModal(title, bodyHtml) {
@@ -645,7 +922,11 @@ function renderApiDocs() {
     ["GET", "/dashboard/api/logs", "Tail structured logs"],
     ["GET", "/dashboard/api/settings", "Recipients and runtime config"],
     ["PUT", "/dashboard/api/settings/recipients", "Update notification recipients"],
-    ["WS", "/dashboard/api/ws", "Live pipeline event stream"],
+    ["GET", "/dashboard/api/ai/overview", "AI Visibility status counters"],
+    ["GET", "/dashboard/api/ai/traces", "List recent AI traces"],
+    ["GET", "/dashboard/api/ai/traces/{id}", "Full AI trace detail"],
+    ["POST", "/dashboard/api/ai/traces/{id}/redact", "Permanently redact part of a trace"],
+    ["WS", "/dashboard/api/ws", "Live pipeline + AI trace event stream"],
   ];
   document.getElementById("apiRows").innerHTML = routes.map(([m, p, d]) =>
     `<tr><td class="mono"><strong>${esc(m)}</strong></td><td class="mono">${esc(p)}</td><td class="muted">${esc(d)}</td></tr>`).join("");
@@ -726,6 +1007,26 @@ function handleEvent(msg) {
     renderEmails();
     if (state.view === "emails") loadDelivery();
     toast(`Email handoff failed: ${d.error || "unknown error"}`, true);
+
+  } else if (msg.type === "ai_trace_started") {
+    pushAiLiveEvent({ ts: d.started_at, type: "request_started", label: "AI request started",
+                       detail: `${d.component} → ${d.provider}/${d.model}`, trace_id: d.trace_id });
+    if (state.view === "ai-visibility") loadAiVisibility();
+
+  } else if (msg.type === "ai_trace_event") {
+    pushAiLiveEvent({ ts: d.ts, type: d.type, label: d.label, detail: d.detail, trace_id: d.trace_id });
+
+  } else if (msg.type === "ai_trace_completed") {
+    pushAiLiveEvent({
+      ts: Date.now() / 1000, type: "trace_completed",
+      label: `AI trace ${(d.status || "").toLowerCase()}`,
+      detail: `risk: ${d.risk}` + (d.security_findings ? ` · ${d.security_findings} finding(s)` : ""),
+      trace_id: d.trace_id,
+    });
+    if (d.risk && ["SENSITIVE_DATA_DETECTED", "SECRET_DETECTED", "BLOCKED", "FAILED_SECURITY_CHECK", "ERROR"].includes(d.risk)) {
+      toast(`AI Visibility: ${d.risk.replace(/_/g, " ").toLowerCase()} on ${d.trace_id}`, true);
+    }
+    if (state.view === "ai-visibility") loadAiVisibility();
   }
 }
 
@@ -753,6 +1054,7 @@ document.getElementById("refreshBtn").onclick = () => {
   boot();
   if (state.view === "logs") loadLogs();
   if (state.view === "ai") loadAiContent();
+  if (state.view === "ai-visibility") loadAiVisibility();
   if (state.view === "settings") loadSettings();
 };
 

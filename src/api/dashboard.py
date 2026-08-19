@@ -59,7 +59,7 @@ async def get_job_detail(request: Request, correlation_id: str) -> dict[str, Any
     output_path = os.path.join(settings.output_dir, f"{correlation_id}.json")
     if os.path.exists(output_path):
         try:
-            with open(output_path, "r") as f:
+            with open(output_path, "r", encoding="utf-8") as f:
                 result = json.load(f)
         except Exception as e:
             logger.warning("dashboard_job_detail_output_read_failed", error=str(e))
@@ -74,7 +74,7 @@ async def get_alerts(request: Request) -> dict[str, Any]:
     if not os.path.exists(index_path):
         return {"alerts": []}
     try:
-        with open(index_path, "r") as f:
+        with open(index_path, "r", encoding="utf-8") as f:
             records = json.load(f)
     except Exception as e:
         logger.warning("dashboard_alerts_read_failed", error=str(e))
@@ -98,7 +98,7 @@ def _read_results(limit: int) -> list[dict[str, Any]]:
     if not os.path.exists(index_path):
         return []
     try:
-        with open(index_path, "r") as f:
+        with open(index_path, "r", encoding="utf-8") as f:
             records = json.load(f)
     except Exception:
         return []
@@ -111,7 +111,7 @@ def _read_results(limit: int) -> list[dict[str, Any]]:
         if not os.path.exists(path):
             continue
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 results.append(json.load(f))
         except Exception:
             continue

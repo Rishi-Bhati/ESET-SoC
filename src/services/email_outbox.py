@@ -21,7 +21,7 @@ def _read_outbox() -> list[dict[str, Any]]:
     if not os.path.exists(OUTBOX_PATH):
         return []
     try:
-        with open(OUTBOX_PATH, "r") as f:
+        with open(OUTBOX_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.warning("outbox_read_failed_reinitializing", error=str(e))
@@ -32,7 +32,7 @@ def _write_outbox(records: list[dict[str, Any]]) -> None:
     os.makedirs(OUTBOX_DIR, exist_ok=True)
     temp_fd, temp_path = tempfile.mkstemp(dir=OUTBOX_DIR, prefix="outbox_", suffix=".tmp")
     try:
-        with os.fdopen(temp_fd, "w") as f:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
             json.dump(records, f, indent=2)
         os.replace(temp_path, OUTBOX_PATH)
     except Exception:
