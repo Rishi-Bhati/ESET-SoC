@@ -193,7 +193,7 @@ def test_dashboard_scripts_are_served(client: TestClient):
 def test_dashboard_js_escapes_rendered_data():
     """Guards the stored-XSS fix across the rebuilt frontend."""
     base = os.path.join(os.path.dirname(__file__), "..", "..", "static")
-    js = open(os.path.join(base, "dashboard.js")).read()
+    js = open(os.path.join(base, "dashboard.js"), encoding="utf-8").read()
     assert "function esc(" in js
     for token in ["${j.detection_name}", "${j.endpoint_name}", "${m.subject}",
                   "${job.error}", "${a.detection_name}", "${it.detection_name}"]:

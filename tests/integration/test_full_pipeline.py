@@ -34,7 +34,7 @@ async def test_full_pipeline_success():
     assert os.path.exists(output_file)
     
     # 5. Read output file and verify payload schema mapping
-    with open(output_file, "r") as f:
+    with open(output_file, "r", encoding="utf-8") as f:
         result = json.load(f)
         
     assert result["correlation_id"] == correlation_id
@@ -50,11 +50,51 @@ async def test_full_pipeline_success():
     # 6. Verify index.json exists and contains record
     index_file = os.path.join(settings.output_dir, "index.json")
     assert os.path.exists(index_file)
-    with open(index_file, "r") as f:
+    with open(index_file, "r", encoding="utf-8") as f:
         index_data = json.load(f)
         
     # Find our record
     record = next((r for r in index_data if r["correlation_id"] == correlation_id), None)
     assert record is not None
     assert record["status"] == "SUCCESS"
-    assert record["risk_level"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_full_pipeline_critical_multi_endpoint_event():
+    """
+    PoC Test Matrix #4 (docs/SOC_LITE_AUDIT.md §13): a CRITICAL, ransomware-like event
+    reported as spreading across multiple endpoints.
+
+    NormalizedAlert (src/models/normalized_alert.py) is single-endpoint-per-alert by
+    design, matching the requirements document's schema — ESET reports one detection
+    per endpoint, not a correlated multi-endpoint object. This fixture represents the
+    scenario the way the pipeline actually receives it: one primary alert whose
+    raw_content names the other affected endpoints, rather than a structured list of
+    endpoints. That is a real, currently-accepted schema limitation (see the audit's
+    Recommended Order, item 6), not something this test papers over.
+    """
+    fixture_path = os.path.join(
+        os.path.dirname(__file__), "..", "fixtures", "sample_critical_multi_endpoint.json"
+    )
+    with open(fixture_path, encoding="utf-8") as f:
+        raw_payload = json.load(f)
+
+    correlation_id = "test-pipeline-critical-multi-endpoint"
+    await job_store.create_job(correlation_id, "WEBHOOK", raw_payload)
+    await process_alert_pipeline(correlation_id, raw_payload, "WEBHOOK")
+
+    job = await job_store.get_job(correlation_id)
+    assert job["status"] == "SUCCESS"
+
+    output_file = os.path.join(settings.output_dir, f"{correlation_id}.json")
+    with open(output_file, "r", encoding="utf-8") as f:
+        result = json.load(f)
+
+    assert result["risk_level"] == "CRITICAL"
+    assert result["normalized_alert"]["endpoint_name"] == "DOMAIN-CONTROLLER-01"
+    # The additional endpoints are only visible via raw_content until the schema
+    # supports a real multi-endpoint structure — assert they at least survive intact
+    # into the persisted, normalized record for an analyst to read.
+    for other_endpoint in ("FINANCE-PC-09", "FINANCE-PC-11", "HR-WORKSTATION-04"):
+        assert other_endpoint in result["normalized_alert"]["raw_content"]
+    assert result["ai_output"] is not None

@@ -10,6 +10,7 @@ from src.models.threat_intel import ThreatIntelResult
 from src.models.ai_output import AIOutput
 from src.prompts.system_prompts import SYSTEM_PROMPT, PROMPT_VERSION
 from src.services.ai.schema_builder import build_gemini_schema
+from src.services.ai.prompt_masking import mask_alert_for_prompt
 from src.services.ai import trace_recorder
 from src.utils.correlation import get_correlation_id
 from src.utils.retry import get_retry_log, reset_retry_log, retry_api_call
@@ -72,26 +73,31 @@ class GeminiAIService(BaseAIProvider):
         # Using gemini-3.1-flash-lite for high speed, low latency, and cost-effectiveness
         self.model = genai.GenerativeModel(MODEL_NAME)
 
-    @retry_api_call(max_attempts=3, min_delay=1.0, max_delay=10.0)
+    @retry_api_call(max_attempts=settings.max_retries, min_delay=1.0, max_delay=10.0)
     async def _call_gemini_with_retry(
         self,
         prompt: str,
         generation_config: genai.types.GenerationConfig
     ) -> Any:
         """
-        Executes the blocking model content generation in a separate executor thread.
-        Decorated with exponential backoff retries. Returns the full SDK response
-        object (not just .text) so callers can also read usage_metadata.
+        Executes the blocking model content generation in a separate executor thread,
+        bounded by AI_TIMEOUT_SECONDS so a hung call cannot block this alert's pipeline
+        run forever. Decorated with exponential backoff retries (MAX_RETRIES attempts;
+        a timeout counts as a failed attempt like any other exception). Returns the
+        full SDK response object (not just .text) so callers can also read usage_metadata.
         """
         loop = asyncio.get_running_loop()
 
-        # Run blocking SDK call in threadpool
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.model.generate_content(
-                contents=[SYSTEM_PROMPT, prompt],
-                generation_config=generation_config
-            )
+        # Run blocking SDK call in threadpool, bounded by AI_TIMEOUT_SECONDS
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: self.model.generate_content(
+                    contents=[SYSTEM_PROMPT, prompt],
+                    generation_config=generation_config
+                )
+            ),
+            timeout=settings.ai_timeout_seconds,
         )
 
         if not response.text:
@@ -126,17 +132,35 @@ class GeminiAIService(BaseAIProvider):
         )
 
         # Exclude raw_payload from data sent to prompt to keep context clean
+        normalized_alert_data = alert.model_dump(exclude={"raw_payload"})
+        masked_fields: list[str] = []
+        if settings.ai_masking_enabled:
+            normalized_alert_data, masked_fields = mask_alert_for_prompt(normalized_alert_data)
+
         prompt_data = {
-            "normalized_alert": alert.model_dump(exclude={"raw_payload"}),
+            "normalized_alert": normalized_alert_data,
             "calculated_risk_level": risk_level,
             "threat_intelligence": threat_intel.model_dump()
         }
+
+        context_notes = list(CONTEXT_NOTES)
+        if settings.ai_masking_enabled:
+            context_notes.append(
+                f"Pre-AI masking is enabled (AI_MASKING_ENABLED=true). "
+                f"Field(s) masked before this prompt was built: {masked_fields or 'none for this alert'} "
+                f"— see src/services/ai/prompt_masking.py for the policy."
+            )
+        else:
+            context_notes.append(
+                "Pre-AI masking is DISABLED (AI_MASKING_ENABLED=false) — normalized_alert fields "
+                "below were sent to the model unmasked."
+            )
 
         await trace_recorder.record_input(
             trace,
             data_categories=trace_recorder.build_alert_data_categories(alert, risk_level, threat_intel),
             raw_input=prompt_data,
-            context_notes=CONTEXT_NOTES,
+            context_notes=context_notes,
         )
 
         # Serialized input context

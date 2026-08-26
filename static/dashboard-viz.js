@@ -21,11 +21,17 @@ const FLOW = {
 
 function stageColors(st) {
   switch (st) {
-    case "active":  return { fill: "#123048", stroke: "var(--accent)",   text: "#9ec5f4" };
-    case "ok":      return { fill: "#0f2a16", stroke: "var(--good)",     text: "#5fd66a" };
-    case "failed":  return { fill: "#331213", stroke: "var(--critical)", text: "#f08a8a" };
-    case "skipped": return { fill: "#31280a", stroke: "var(--warning)",  text: "#f3c86a" };
-    default:        return { fill: "#171f28", stroke: "#2e3a47",         text: "#5b6672" };
+    // The four reached-a-stage states are drawn as small, self-contained chips
+    // (fixed dark fill + matching light text, same idea as the .b-* badges in
+    // dashboard.html) — they keep their own contrast regardless of page theme,
+    // by design, so they stay unchanged here on purpose.
+    case "active":  return { fill: "#0b2b33", stroke: "var(--accent)",   text: "#7fe6fb" };
+    case "ok":      return { fill: "#0c3320", stroke: "var(--good)",     text: "#3ee08a" };
+    case "failed":  return { fill: "#331214", stroke: "var(--critical)", text: "#ff8a8a" };
+    case "skipped": return { fill: "#332708", stroke: "var(--warning)",  text: "#ffc670" };
+    // "waiting" (not yet reached) is meant to blend into the panel, not stand
+    // out as a chip — so, unlike the four above, it must follow the theme.
+    default:        return { fill: "var(--panel2)", stroke: "var(--border2)", text: "var(--dim)" };
   }
 }
 
@@ -119,7 +125,7 @@ function renderFlow() {
         const reached = !!prev;
         const edge = el("line", {
           x1: x - FLOW.gapX + FLOW.nodeW, y1: yMid, x2: x, y2: yMid,
-          stroke: reached ? (info ? "var(--good)" : "var(--accent)") : "#2e3a47",
+          stroke: reached ? (info ? "var(--good)" : "var(--accent)") : "var(--border2)",
           "stroke-width": reached ? 2 : 1.25,
           "stroke-linecap": "round",
           class: "fedge" + (reached && !info ? " flowing" : ""),
@@ -283,8 +289,8 @@ function drawBars(host, rows, opts) {
       x: mL - 10, y: y + bh / 2 + 4, "text-anchor": "end", class: "axis-label",
     }, r.label));
 
-    // Track
-    s.appendChild(el("rect", { x: mL, y, width: iw, height: bh, rx: 4, fill: "#1a222c" }));
+    // Track (the empty/unfilled portion behind the value bar)
+    s.appendChild(el("rect", { x: mL, y, width: iw, height: bh, rx: 4, fill: "var(--track)" }));
     const w = Math.max(r.value > 0 ? 3 : 0, (r.value / max) * iw);
     if (w > 0) {
       s.appendChild(el("rect", { x: mL, y, width: w, height: bh, rx: 4, fill: r.color }));

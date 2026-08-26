@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 from typing import Any
-from fastapi import APIRouter, Depends, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 import structlog
 from src.middleware.auth import validate_eset_token
 from src.ingestion.webhook_handler import WebhookIngestionHandler
@@ -20,6 +20,32 @@ router = APIRouter(prefix="/webhook", tags=["Webhook"])
 logger = structlog.get_logger(__name__)
 webhook_handler = WebhookIngestionHandler()
 syslog_handler = SyslogIngestionHandler()
+
+def _reject_oversized_body(request: Request) -> int:
+    """
+    Defense-in-depth guard: rejects a request whose declared Content-Length exceeds
+    MAX_INGEST_BODY_BYTES before the body is parsed. This is a header check, not a
+    hard cap enforced on the wire (a sender could omit or lie about Content-Length),
+    but it stops a straightforwardly oversized payload from reaching JSON parsing
+    and the pipeline. Returns the parsed content length (0 if not provided) so
+    callers can also use it for logging without parsing the header twice.
+    """
+    raw = request.headers.get("content-length")
+    if not raw:
+        return 0
+    try:
+        content_length = int(raw)
+    except ValueError:
+        return 0
+    if content_length > settings.max_ingest_body_bytes:
+        logger.warning(
+            "ingest_payload_too_large",
+            content_length=content_length,
+            limit=settings.max_ingest_body_bytes,
+        )
+        raise HTTPException(status_code=413, detail="Payload too large")
+    return content_length
+
 
 def compute_dedup_key(payload: EsetRawPayload) -> str:
     """
@@ -55,8 +81,9 @@ async def ingest_alert(
 ) -> dict[str, Any]:
     """
     Shared ingestion path used by both the public /webhook/eset and /webhook/syslog
-    routes below, and by the dashboard's "Send Test Alert"/"Send Test Syslog Event"
-    controls (src/api/dashboard.py) — same parse -> dedup -> job -> pipeline flow either way.
+    routes below: parse -> dedup -> job -> pipeline. Simulated alerts for local/manual
+    testing go through this exact path too, via scripts/send_test_webhook.sh and
+    scripts/send_test_syslog.py (there is no dashboard "send test alert" control today).
     """
     correlation_id = generate_correlation_id()
     set_correlation_id(correlation_id)
@@ -97,8 +124,9 @@ async def receive_eset_webhook(
     Endpoint for ESET webhooks. Parses payload, performs deduplication,
     creates a job record, and fires the pipeline task in the background.
     """
+    content_length = _reject_oversized_body(request)
     raw_json = await request.json()
-    logger.info("webhook_received", payload_size=len(request.headers.get("content-length", "0")))
+    logger.info("webhook_received", payload_size=content_length)
     return await ingest_alert(raw_json, webhook_handler, "WEBHOOK", background_tasks)
 
 @router.post("/syslog", dependencies=[Depends(validate_eset_token)])
@@ -110,6 +138,7 @@ async def receive_syslog_payload(
     Endpoint for incoming Syslog events forwarded by our Syslog server.
     Parses payload, performs deduplication, creates a job record, and fires background task.
     """
+    content_length = _reject_oversized_body(request)
     raw_json = await request.json()
-    logger.info("syslog_http_received", payload_size=len(request.headers.get("content-length", "0")))
+    logger.info("syslog_http_received", payload_size=content_length)
     return await ingest_alert(raw_json, syslog_handler, "SYSLOG", background_tasks)
