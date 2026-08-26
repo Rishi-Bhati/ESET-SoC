@@ -133,7 +133,7 @@ def test_dashboard_escapes_all_rendered_data():
     base = os.path.join(os.path.dirname(__file__), "..", "..", "static")
     sources = {}
     for name in ("dashboard.js", "dashboard-viz.js"):
-        with open(os.path.join(base, name)) as f:
+        with open(os.path.join(base, name), encoding="utf-8") as f:
             sources[name] = f.read()
 
     assert "function esc(" in sources["dashboard.js"], "escaping helper is missing"
@@ -153,6 +153,6 @@ def test_dashboard_badges_use_class_allowlist():
     """A hostile status string must not be able to break out of the class attribute."""
     import os
     path = os.path.join(os.path.dirname(__file__), "..", "..", "static", "dashboard.js")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         js = f.read()
     assert "BADGES.has(value)" in js, "badge CSS class is not restricted to an allowlist"

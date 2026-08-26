@@ -1,6 +1,7 @@
 import json
 import pytest
 from fastapi.testclient import TestClient
+from src.config import settings
 from src.storage import job_store
 
 def test_webhook_unauthorized(client: TestClient):
@@ -47,3 +48,25 @@ def test_webhook_success_and_status(client: TestClient):
     assert response_dup.status_code == 200
     dup_data = response_dup.json()
     assert dup_data["status"] == "duplicate"
+
+
+def test_webhook_rejects_oversized_payload(client: TestClient, monkeypatch):
+    """MAX_INGEST_BODY_BYTES is enforced before the body is parsed (413, not 200)."""
+    monkeypatch.setattr(settings, "max_ingest_body_bytes", 10)
+    headers = {"Authorization": "Bearer test_token"}
+    payload = {"alert_id": "too-big-for-the-limit", "occurred_at": "2026-01-01T00:00:00Z", "severity": "LOW"}
+
+    response = client.post("/webhook/eset", headers=headers, json=payload)
+    assert response.status_code == 413
+
+    response = client.post("/webhook/syslog", headers=headers, json=payload)
+    assert response.status_code == 413
+
+
+def test_webhook_accepts_payload_within_default_limit(client: TestClient):
+    """The default 1 MiB limit does not interfere with a normal-sized alert."""
+    headers = {"Authorization": "Bearer test_token"}
+    payload = {"alert_id": "normal-size-1", "occurred_at": "2026-01-01T00:00:00Z", "severity": "LOW"}
+    response = client.post("/webhook/eset", headers=headers, json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"

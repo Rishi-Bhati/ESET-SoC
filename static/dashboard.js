@@ -387,9 +387,9 @@ function renderDelivery(d) {
   if (!cfg.enabled) {
     cfgEl.innerHTML = '<span style="color:var(--warning)">Delivery disabled</span> — set EMAIL_DELIVERY_ENABLED=true';
   } else if (!cfg.configured) {
-    cfgEl.innerHTML = `<span style="color:#f08a8a">Not configured</span> — ${esc(cfg.reason)}`;
+    cfgEl.innerHTML = `<span style="color:var(--text-danger)">Not configured</span> — ${esc(cfg.reason)}`;
   } else {
-    cfgEl.innerHTML = `<span style="color:#3ec73e">●</span> ${esc(cfg.provider)} · ${esc(cfg.security_mode)} mode`;
+    cfgEl.innerHTML = `<span style="color:var(--text-good)">●</span> ${esc(cfg.provider)} · ${esc(cfg.security_mode)} mode`;
   }
 
   const c = d.counts || {};
@@ -689,7 +689,7 @@ function renderAiTraceModal(tr) {
       ${tr.usage
         ? kvRow(t("kv_token_usage"), `${t("token_prompt")} ${tr.usage.prompt_tokens ?? "—"} · ${t("token_output")} ${tr.usage.output_tokens ?? "—"} · ${t("token_total")} ${tr.usage.total_tokens ?? "—"}`)
         : kvRow(t("kv_token_usage"), t("token_usage_not_reported"))}
-      ${tr.error ? `<div>${esc(t("kv_error"))}</div><div style="color:#f08a8a">${esc(tr.error)}</div>` : ""}
+      ${tr.error ? `<div>${esc(t("kv_error"))}</div><div style="color:var(--text-danger)">${esc(tr.error)}</div>` : ""}
     </div>`;
 
   // ds.task/decision/confidence/note/policy_checks and system_instructions_text are
@@ -809,7 +809,7 @@ async function openAlert(id) {
       <div>${esc(t("kv_source"))}</div><div>${badge(job.source)}</div>
       ${kvRow(t("kv_created"), new Date(job.created_at * 1000).toLocaleString())}
       ${kvRow(t("kv_updated"), new Date(job.updated_at * 1000).toLocaleString())}
-      ${job.error ? `<div>${esc(t("kv_error2"))}</div><div style="color:#f08a8a">${esc(job.error)}</div>` : ""}
+      ${job.error ? `<div>${esc(t("kv_error2"))}</div><div style="color:var(--text-danger)">${esc(job.error)}</div>` : ""}
     </div>`;
 
   if (a) {

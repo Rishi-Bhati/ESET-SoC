@@ -1,3 +1,4 @@
+import asyncio
 import time
 import structlog
 from src.storage.database import db_session
@@ -50,3 +51,23 @@ async def cleanup_expired() -> int:
     if rows_deleted > 0:
         logger.info("deduplication_cleanup", count=rows_deleted)
     return rows_deleted
+
+
+async def run_cleanup_loop(interval_seconds: int) -> None:
+    """
+    Periodically purges expired dedup_log rows so the table does not grow
+    unbounded over the service's lifetime (cleanup_expired() previously existed
+    but was never invoked anywhere — see docs/SOC_LITE_AUDIT.md §5/§17).
+    Mirrors the periodic-sweep pattern already used by
+    src/services/email_dispatcher.py: run_dispatch_loop().
+    """
+    logger.info("dedup_cleanup_loop_started", interval_seconds=interval_seconds)
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await cleanup_expired()
+        except asyncio.CancelledError:
+            logger.info("dedup_cleanup_loop_stopped")
+            raise
+        except Exception as e:
+            logger.error("dedup_cleanup_loop_error", error=str(e))

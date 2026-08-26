@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     # --- Feature Flags for Testing ---
     use_mock_threat_intel: bool = True  # Defaults to True for prototype
 
+    # --- AI Data Minimization ---
+    # Masks fields the audit (docs/SOC_LITE_AUDIT.md §9) judged unnecessary for AI
+    # reasoning (e.g. user_name) before they are sent to Gemini. Engineering default
+    # is ON; the exact field policy still needs client sign-off before production.
+    ai_masking_enabled: bool = Field(True, validation_alias="AI_MASKING_ENABLED")
+
+    # --- Ingest Limits ---
+    # Defense-in-depth cap on inbound webhook body size (bytes). A Content-Length
+    # header above this is rejected with 413 before the body is parsed.
+    max_ingest_body_bytes: int = Field(1_048_576, validation_alias="MAX_INGEST_BODY_BYTES")
+
     # --- Email Outbox Recipients (comma-separated addresses, blank = skip that type) ---
     client_notification_emails: str = Field("", validation_alias="CLIENT_NOTIFICATION_EMAILS")
     cthree_notification_emails: str = Field("", validation_alias="CTHREE_NOTIFICATION_EMAILS")

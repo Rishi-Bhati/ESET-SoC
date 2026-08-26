@@ -11,7 +11,7 @@ from src.utils.logging import setup_logging
 from src.utils.broadcaster import EventBroadcaster
 from src.utils import events
 from src.storage.database import init_db
-from src.storage import job_store
+from src.storage import job_store, deduplication
 from src.services import syslog_runtime, email_dispatcher
 from src.api.router import api_router
 
@@ -116,9 +116,16 @@ async def lifespan(app: FastAPI):
     # The service itself owns retrying actual delivery.
     app.state.dispatch_task = asyncio.create_task(email_dispatcher.run_dispatch_loop())
 
+    # Periodic purge of expired dedup_log rows (previously dead code — see
+    # docs/SOC_LITE_AUDIT.md §5/§17). Runs once per TTL window by default.
+    app.state.dedup_cleanup_task = asyncio.create_task(
+        deduplication.run_cleanup_loop(max(60, settings.dedup_ttl_seconds))
+    )
+
     yield
     # --- Shutdown ---
     app.state.dispatch_task.cancel()
+    app.state.dedup_cleanup_task.cancel()
     await syslog_runtime.stop(app.state.syslog_handles)
     logger.info("app_shutting_down")
 

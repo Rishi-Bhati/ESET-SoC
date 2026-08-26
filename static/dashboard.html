@@ -5,82 +5,176 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ESET SOC Lite — Control Dashboard</title>
 <style>
+  /* Theme tokens. Dark is the original/default palette (bare :root — always
+     applies unless overridden below), so existing dark-mode appearance is
+     byte-for-byte unchanged. Light mode is additive: an explicit choice
+     (persisted in localStorage, see theme.js) sets [data-theme] on <html> and
+     wins outright; with no explicit choice yet, prefers-color-scheme decides.
+     Every color a component uses comes from one of these tokens — nothing
+     below is redefined only inside a theme block, so neither theme can end up
+     rendering the other theme's text on its own background. */
   :root{
-    --bg:#0b0f14; --panel:#12181f; --panel2:#171f28; --panel3:#1d2731;
-    --border:#232c37; --border2:#2e3a47;
-    --text:#e6edf3; --muted:#8b98a5; --dim:#5b6672;
-    --accent:#3987e5;
+    /* Brand palette: near-black, cyan, deep teal, green, white, orange (#FFA011).
+       Dark mode is the default/base scheme below; light mode overrides follow. */
+    --bg:#060b0d; --panel:#0d1518; --panel2:#121c20; --panel3:#182428;
+    --border:#1d2c31; --border2:#294048;
+    --text:#e9f4f5; --muted:#93a8ac; --dim:#586e72;
+    --accent:#22d3ee;
+    /* Text drawn on top of a filled --accent background (buttons, active tab) */
+    --accent-text:#04181c;
 
-    /* Status palette — always paired with a text label, never colour alone */
-    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+    /* Status palette — always paired with a text label, never colour alone.
+       Used for self-contained chips/dots (own fixed fill) — unchanged by theme.
+       Green and orange come straight from the brand palette; red has no
+       equivalent in the palette so it is kept for critical/danger only, matching
+       standard security-dashboard convention. */
+    --good:#1fbf75; --warning:#ffa011; --serious:#f2751a; --critical:#e5484d;
 
-    /* Risk = ordinal magnitude: single-hue blue ramp, identity from labels */
-    --risk-1:#9ec5f4; --risk-2:#6da7ec; --risk-3:#3987e5; --risk-4:#256abf;
+    /* Same status meanings, but for text/icons drawn directly on the ambient
+       panel/page background (no chip of their own) — e.g. log levels, error
+       text, the mail-service status dot. Kept distinct from --good/--warning/
+       --critical above because those must stay bright even in light mode (their
+       chips' backgrounds never change), while plain status TEXT needs a darker,
+       higher-contrast tone once the page background turns light. */
+    --text-good:#3ee08a; --text-warn:#ffb545; --text-danger:#ff8a8a; --text-info:#67e8f9;
 
-    /* Categorical (2 series: ingest source split) */
-    --cat-1:#3987e5; --cat-2:#d95926;
+    /* Risk = ordinal magnitude: single-hue cyan ramp, identity from labels */
+    --risk-1:#a5f3fc; --risk-2:#67e8f9; --risk-3:#22d3ee; --risk-4:#0e7490;
 
-    --grid:#2c2c2a; --axis:#383835;
+    /* Categorical (2 series: ingest source split) — cyan vs. the brand orange */
+    --cat-1:#22d3ee; --cat-2:#ffa011;
+
+    --grid:#16262b; --axis:#233c44;
+    /* Empty-portion track behind a horizontal bar-chart value (dashboard-viz.js) */
+    --track:#182428;
+    --shadow:0 1px 2px rgba(0,0,0,.45), 0 10px 24px -10px rgba(0,0,0,.6);
+    --shadow-lg:0 2px 4px rgba(0,0,0,.5), 0 18px 36px -16px rgba(0,0,0,.7);
+    --shadow-modal:0 24px 64px -16px rgba(0,0,0,.65);
+  }
+
+  /* Auto light mode: only when the visitor hasn't made an explicit choice yet
+     (theme.js stamps [data-theme] as soon as one is made or restored). */
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#f5f9fa; --panel:#ffffff; --panel2:#eef5f6; --panel3:#e2edee;
+      --border:#d7e3e5; --border2:#bdd0d3;
+      --text:#0a1c1f; --muted:#4a6267; --dim:#7c9498;
+      --accent:#0e7490; --accent-text:#ffffff;
+      --text-good:#12793a; --text-warn:#8a5a00; --text-danger:#b42318; --text-info:#0e7490;
+      --grid:#d9e6e8; --axis:#aec7ca;
+      --track:#e2edee;
+      --shadow:0 1px 2px rgba(16,38,42,.05), 0 10px 24px -10px rgba(16,38,42,.12);
+      --shadow-lg:0 2px 6px rgba(16,38,42,.08), 0 18px 36px -16px rgba(16,38,42,.2);
+      --shadow-modal:0 24px 64px -16px rgba(16,38,42,.3);
+    }
+  }
+  /* Explicit choice always wins, in either direction. */
+  :root[data-theme="light"]{
+    --bg:#f5f9fa; --panel:#ffffff; --panel2:#eef5f6; --panel3:#e2edee;
+    --border:#d7e3e5; --border2:#bdd0d3;
+    --text:#0a1c1f; --muted:#4a6267; --dim:#7c9498;
+    --accent:#0e7490; --accent-text:#ffffff;
+    --text-good:#12793a; --text-warn:#8a5a00; --text-danger:#b42318; --text-info:#0e7490;
+    --grid:#d9e6e8; --axis:#aec7ca;
+    --track:#e2edee;
+    --shadow:0 1px 2px rgba(16,38,42,.05), 0 10px 24px -10px rgba(16,38,42,.12);
+    --shadow-lg:0 2px 6px rgba(16,38,42,.08), 0 18px 36px -16px rgba(16,38,42,.2);
+    --shadow-modal:0 24px 64px -16px rgba(16,38,42,.3);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
   body{
-    margin:0;background:var(--bg);color:var(--text);
-    font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+    margin:0;color:var(--text);
+    background:var(--bg) radial-gradient(ellipse 1100px 560px at 50% -12%, var(--panel) 0%, transparent 70%) no-repeat;
+    font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
   }
   a{color:var(--accent)}
+
+  /* Buttons: flat neutral surface by default; a soft top-highlight inset gives
+     a slight tactile "lit from above" feel without leaning on drop shadows.
+     Hover lifts 1px with a faint accent-tinted glow, active presses back down
+     to 0 — kept fast (≤160ms) so it reads as responsive, not decorative. */
   button{
     cursor:pointer;border:1px solid var(--border2);background:var(--panel2);color:var(--text);
-    border-radius:8px;padding:7px 13px;font:inherit;font-size:12.5px;font-weight:600;transition:.15s;
+    border-radius:9px;padding:8px 15px;font:inherit;font-size:12.5px;font-weight:600;letter-spacing:.01em;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+    transition:border-color .16s ease,color .16s ease,background-color .16s ease,box-shadow .16s ease,transform .1s ease;
   }
-  button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
-  button.primary{background:var(--accent);border-color:var(--accent);color:#04121f}
-  button.primary:hover:not(:disabled){filter:brightness(1.12);color:#04121f}
-  button.danger:hover:not(:disabled){border-color:var(--critical);color:#f08a8a}
-  button.small{padding:4px 9px;font-size:11px;border-radius:6px}
-  button:disabled{opacity:.45;cursor:default}
+  button:hover:not(:disabled){
+    border-color:var(--accent);color:var(--accent);background:var(--panel3);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 5px 14px -8px color-mix(in srgb, var(--accent) 55%, transparent);
+    transform:translateY(-1px);
+  }
+  button:active:not(:disabled){transform:translateY(0);box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}
+  button:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent)}
+  button:disabled{opacity:.45;cursor:default;box-shadow:none;transform:none}
+
+  button.primary{
+    background:linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent));
+    border-color:color-mix(in srgb, var(--accent) 85%, black 15%);
+    color:var(--accent-text);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 1px 2px rgba(0,0,0,.2);
+  }
+  button.primary:hover:not(:disabled){
+    background:linear-gradient(180deg, color-mix(in srgb, var(--accent) 94%, white 6%), color-mix(in srgb, var(--accent) 100%, white 3%));
+    border-color:var(--accent);color:var(--accent-text);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 8px 18px -8px color-mix(in srgb, var(--accent) 65%, transparent);
+  }
+  button.primary:active:not(:disabled){background:var(--accent);box-shadow:inset 0 1px 3px rgba(0,0,0,.3)}
+  button.danger:hover:not(:disabled){
+    border-color:var(--critical);color:var(--text-danger);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 5px 14px -8px color-mix(in srgb, var(--critical) 55%, transparent);
+  }
+  button.small{padding:5px 11px;font-size:11px;border-radius:7px}
+  button.small.primary{padding:5px 14px}
   input,select,textarea{
-    background:var(--panel2);border:1px solid var(--border2);border-radius:8px;
-    color:var(--text);padding:8px 11px;font:inherit;font-size:13px;width:100%;
+    background:var(--panel2);border:1px solid var(--border2);border-radius:9px;
+    color:var(--text);padding:8px 12px;font:inherit;font-size:13px;width:100%;
+    transition:border-color .15s ease,box-shadow .15s ease;
   }
-  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)}
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px}
   .muted{color:var(--muted)} .dim{color:var(--dim)}
 
   /* ---------- Login ---------- */
   #login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
   #login.hidden{display:none}
-  #login .box{width:340px;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:26px}
-  #login h1{margin:0 0 4px;font-size:17px}
-  #login p{margin:0 0 18px;font-size:12.5px;color:var(--muted)}
-  #login .err{color:#f08a8a;font-size:12.5px;margin-top:10px;display:none}
+  #login .box{width:340px;background:var(--panel);border:1px solid var(--border);border-radius:18px;padding:28px;box-shadow:var(--shadow-lg)}
+  #login h1{margin:0 0 5px;font-size:19px;font-weight:800;letter-spacing:-.015em}
+  #login p{margin:0 0 20px;font-size:12.5px;color:var(--muted)}
+  #login .err{color:var(--text-danger);font-size:12.5px;margin-top:10px;display:none}
   #login .err.show{display:block}
 
   /* ---------- Shell ---------- */
   #app{display:none;grid-template-columns:210px 1fr;min-height:100vh}
   #app.ready{display:grid}
-  nav{background:var(--panel);border-right:1px solid var(--border);padding:16px 12px;position:sticky;top:0;height:100vh;overflow:auto}
-  nav .brand{padding:0 8px 14px;border-bottom:1px solid var(--border);margin-bottom:12px}
-  nav .brand h1{margin:0;font-size:14px;letter-spacing:.2px}
-  nav .brand span{font-size:11px;color:var(--muted)}
+  nav{background:var(--panel);border-right:1px solid var(--border);padding:18px 13px;position:sticky;top:0;height:100vh;overflow:auto}
+  nav .brand{padding:0 8px 16px;border-bottom:1px solid var(--border);margin-bottom:14px}
+  nav .brand h1{margin:0;font-size:15px;letter-spacing:-.02em;font-weight:800}
+  nav .brand span{font-size:11px;color:var(--muted);letter-spacing:.03em}
   nav a.tab{
-    display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
-    color:var(--muted);text-decoration:none;font-size:13px;font-weight:500;margin-bottom:2px;cursor:pointer;
+    display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:9px;
+    color:var(--muted);text-decoration:none;font-size:13px;font-weight:500;margin-bottom:3px;cursor:pointer;
+    transition:background-color .15s ease,color .15s ease,box-shadow .15s ease;
   }
   nav a.tab:hover{background:var(--panel2);color:var(--text)}
-  nav a.tab.active{background:var(--accent);color:#04121f;font-weight:600}
+  nav a.tab.active{
+    background:color-mix(in srgb, var(--accent) 14%, transparent);
+    color:var(--accent);font-weight:700;
+    box-shadow:inset 3px 0 0 var(--accent);
+  }
   nav a.tab .ic{width:16px;text-align:center;font-size:13px}
-  nav a.tab .count{margin-left:auto;font-size:10.5px;background:rgba(255,255,255,.12);padding:1px 6px;border-radius:999px}
-  nav a.tab.active .count{background:rgba(0,0,0,.22)}
-  nav .navfoot{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+  nav a.tab .count{margin-left:auto;font-size:10.5px;background:color-mix(in srgb, currentColor 16%, transparent);padding:1px 7px;border-radius:999px;font-weight:700}
+  nav .navfoot{margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
 
   main{overflow:hidden}
   header.top{
     display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
-    padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:8;
+    padding:15px 24px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:8;
   }
-  header.top h2{margin:0;font-size:15px}
-  header.top .sub{font-size:12px;color:var(--muted);margin-top:1px}
+  header.top h2{margin:0;font-size:17px;font-weight:700;letter-spacing:-.015em}
+  header.top .sub{font-size:12px;color:var(--muted);margin-top:2px}
   .health{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .pill{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);padding:4px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel2)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
@@ -88,61 +182,71 @@
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   .dot.live{animation:pulse 1.6s ease-in-out infinite}
 
-  section.view{display:none;padding:20px 22px 60px}
+  section.view{display:none;padding:22px 24px 60px}
   section.view.active{display:block}
 
-  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:18px}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:13px 15px}
-  .card .n{font-size:24px;font-weight:700;line-height:1.1}
-  .card .l{color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+  .card{
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:15px 17px;
+    box-shadow:var(--shadow);transition:border-color .18s ease,box-shadow .18s ease;
+  }
+  .card:hover{border-color:var(--border2);box-shadow:var(--shadow-lg)}
+  .card .n{font-size:26px;font-weight:800;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .card .l{color:var(--muted);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;margin-top:5px}
 
-  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;margin-bottom:18px;overflow:hidden}
-  .panel > .head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-  .panel > .head h3{font-size:12px;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-  .panel > .body{padding:16px}
-  .panel .foot{padding:9px 16px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted)}
+  .panel{
+    background:var(--panel);border:1px solid var(--border);border-radius:16px;margin-bottom:20px;overflow:hidden;
+    box-shadow:var(--shadow);transition:border-color .18s ease,box-shadow .18s ease;
+  }
+  .panel:hover{border-color:var(--border2);box-shadow:var(--shadow-lg)}
+  .panel > .head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .panel > .head h3{font-size:11.5px;margin:0;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}
+  .panel > .body{padding:18px}
+  .panel .foot{padding:10px 18px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted)}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:18px}
 
   table{width:100%;border-collapse:collapse;font-size:12.5px}
-  th{text-align:left;color:var(--muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;padding:9px 14px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:1}
-  td{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+  th{text-align:left;color:var(--muted);font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;padding:10px 16px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:1}
+  td{padding:10px 16px;border-bottom:1px solid var(--border);vertical-align:middle}
+  tbody tr{transition:background-color .12s ease,box-shadow .12s ease}
   tbody tr.clickable{cursor:pointer}
   tbody tr:hover{background:var(--panel2)}
+  tbody tr.clickable:hover{box-shadow:inset 3px 0 0 var(--accent)}
   .scroll{max-height:560px;overflow:auto}
-  .empty{color:var(--muted);padding:30px;text-align:center;font-size:12.5px}
+  .empty{color:var(--muted);padding:34px;text-align:center;font-size:12.5px}
 
-  .badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:.03em}
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:.03em}
   .badge .g{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
-  .b-PENDING{background:#2a3038;color:#c3c2b7}
-  .b-PROCESSING{background:#16324c;color:#7cc3ff}
-  .b-SUCCESS{background:#0f2f14;color:#3ec73e}
-  .b-PARTIAL{background:#3d2f08;color:var(--warning)}
-  .b-FAILED{background:#3d1414;color:#f08a8a}
-  .b-LOW{background:#0f2f14;color:#3ec73e}
-  .b-MEDIUM{background:#3d2f08;color:var(--warning)}
-  .b-HIGH{background:#3a2213;color:var(--serious)}
-  .b-CRITICAL{background:#3d1414;color:#f08a8a}
-  .b-UNKNOWN{background:#242a31;color:var(--muted)}
-  .b-CLEAN{background:#0f2f14;color:#3ec73e}
-  .b-SUSPICIOUS{background:#3d2f08;color:var(--warning)}
-  .b-MALICIOUS{background:#3d1414;color:#f08a8a}
-  .b-CLIENT_JA{background:#16324c;color:#7cc3ff}
-  .b-CTHREE_JA{background:#221d47;color:#b39bff}
-  .b-INTERNAL_JA{background:#0d332c;color:#5fd6c9}
-  .b-ENGINEER_EN{background:#2f1d47;color:#e39bff}
-  .b-WEBHOOK{background:#16324c;color:#7cc3ff}
-  .b-SYSLOG{background:#3a2213;color:var(--serious)}
-  .b-ACCEPTED{background:#0f2f14;color:#3ec73e}
-  .b-OK{background:#0f2f14;color:#3ec73e}
-  .b-STARTED{background:#16324c;color:#7cc3ff}
-  .b-BLOCKED{background:#3d1414;color:#f08a8a}
-  .b-ERROR{background:#3d1414;color:#f08a8a}
-  .b-SAFE{background:#0f2f14;color:#3ec73e}
-  .b-REVIEW{background:#3d2f08;color:var(--warning)}
-  .b-SENSITIVE_DATA_DETECTED{background:#3a2213;color:var(--serious)}
-  .b-SECRET_DETECTED{background:#3d1414;color:#f08a8a}
-  .b-FAILED_SECURITY_CHECK{background:#3d1414;color:#f08a8a}
+  .b-PENDING{background:#1c2a2e;color:#a9bdc1}
+  .b-PROCESSING{background:#0b2b33;color:#7fe6fb}
+  .b-SUCCESS{background:#0c3320;color:#3ee08a}
+  .b-PARTIAL{background:#3d2a05;color:var(--warning)}
+  .b-FAILED{background:#3d1416;color:#ff8a8a}
+  .b-LOW{background:#0c3320;color:#3ee08a}
+  .b-MEDIUM{background:#3d2a05;color:var(--warning)}
+  .b-HIGH{background:#3a2410;color:var(--serious)}
+  .b-CRITICAL{background:#3d1416;color:#ff8a8a}
+  .b-UNKNOWN{background:#1c282c;color:var(--muted)}
+  .b-CLEAN{background:#0c3320;color:#3ee08a}
+  .b-SUSPICIOUS{background:#3d2a05;color:var(--warning)}
+  .b-MALICIOUS{background:#3d1416;color:#ff8a8a}
+  .b-CLIENT_JA{background:#0b2b33;color:#7fe6fb}
+  .b-CTHREE_JA{background:#241c3d;color:#b3a3ff}
+  .b-INTERNAL_JA{background:#0c332c;color:#5fd6c9}
+  .b-ENGINEER_EN{background:#331c33;color:#e3a3e0}
+  .b-WEBHOOK{background:#0b2b33;color:#7fe6fb}
+  .b-SYSLOG{background:#3a2410;color:var(--serious)}
+  .b-ACCEPTED{background:#0c3320;color:#3ee08a}
+  .b-OK{background:#0c3320;color:#3ee08a}
+  .b-STARTED{background:#0b2b33;color:#7fe6fb}
+  .b-BLOCKED{background:#3d1416;color:#ff8a8a}
+  .b-ERROR{background:#3d1416;color:#ff8a8a}
+  .b-SAFE{background:#0c3320;color:#3ee08a}
+  .b-REVIEW{background:#3d2a05;color:var(--warning)}
+  .b-SENSITIVE_DATA_DETECTED{background:#3a2410;color:var(--serious)}
+  .b-SECRET_DETECTED{background:#3d1416;color:#ff8a8a}
+  .b-FAILED_SECURITY_CHECK{background:#3d1416;color:#ff8a8a}
 
   /* ---------- Flow graph ---------- */
   #flowWrap{overflow-x:auto;background:var(--panel)}
@@ -168,26 +272,35 @@
   .chart-empty{fill:var(--muted);font-size:12px}
 
   /* ---------- Logs ---------- */
-  .logline{display:grid;grid-template-columns:74px 58px 1fr;gap:10px;padding:5px 14px;border-bottom:1px solid var(--border);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px}
+  .logline{display:grid;grid-template-columns:74px 58px 1fr;gap:10px;padding:5px 14px;border-bottom:1px solid var(--border);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;transition:background-color .12s ease}
   .logline:hover{background:var(--panel2)}
   .lvl{font-weight:700;text-transform:uppercase;font-size:10px;padding-top:1px}
-  .lvl.info{color:#7cc3ff} .lvl.warning{color:var(--warning)}
-  .lvl.error{color:#f08a8a} .lvl.critical{color:#f08a8a} .lvl.debug{color:var(--dim)}
+  .lvl.info{color:var(--text-info)} .lvl.warning{color:var(--text-warn)}
+  .lvl.error{color:var(--text-danger)} .lvl.critical{color:var(--text-danger)} .lvl.debug{color:var(--dim)}
   .logmsg{color:var(--text);word-break:break-word}
   .logmsg .kvp{color:var(--muted)}
 
   /* ---------- Modal ---------- */
   #overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
   #overlay.show{display:flex}
-  .modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;width:min(820px,100%);max-height:88vh;overflow:auto}
-  .modal .head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel);z-index:2}
-  .modal .head h3{margin:0;font-size:14px}
-  .modal .body{padding:16px 18px}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:18px;width:min(820px,100%);max-height:88vh;overflow:auto;box-shadow:var(--shadow-modal)}
+  .modal .head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel);z-index:2}
+  .modal .head h3{margin:0;font-size:15px;font-weight:700;letter-spacing:-.01em}
+  .modal .body{padding:18px 20px}
   .kv{display:grid;grid-template-columns:170px 1fr;gap:7px 14px;margin-bottom:16px;font-size:12.5px}
-  .kv > div:nth-child(odd){color:var(--muted)}
+  .kv > div:nth-child(odd){color:var(--muted);font-weight:500}
+  .kv > div:nth-child(even){color:var(--text);font-weight:600}
   .tabs{display:flex;gap:5px;margin-bottom:11px;flex-wrap:wrap}
-  .tabbtn{padding:5px 11px;border-radius:7px;font-size:11.5px;border:1px solid var(--border2);cursor:pointer;color:var(--muted);background:var(--panel2)}
-  .tabbtn.active{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
+  .tabbtn{
+    padding:6px 13px;border-radius:8px;font-size:11.5px;font-weight:600;border:1px solid var(--border2);
+    cursor:pointer;color:var(--muted);background:var(--panel2);
+    transition:background-color .15s ease,color .15s ease,border-color .15s ease;
+  }
+  .tabbtn:hover{color:var(--text);border-color:var(--border2)}
+  .tabbtn.active{
+    background:color-mix(in srgb, var(--accent) 14%, var(--panel2));
+    color:var(--accent);border-color:var(--accent);font-weight:700;
+  }
   .notif{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:13px;font-size:12.5px;line-height:1.65}
   .intel-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px}
   .intel-box{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:11px 13px;flex:1;min-width:190px}
@@ -197,14 +310,30 @@
   .field label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:5px;font-weight:600}
   .field .hint{font-size:11px;color:var(--dim);margin-top:4px}
   .srcbadge{font-size:9.5px;padding:1px 6px;border-radius:999px;background:var(--panel3);color:var(--muted);margin-left:6px;font-weight:600}
-  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel3);border:1px solid var(--border2);border-radius:10px;padding:11px 16px;font-size:12.5px;z-index:120;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
+  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel3);border:1px solid var(--border2);border-radius:12px;padding:11px 17px;font-size:12.5px;z-index:120;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none;box-shadow:var(--shadow-lg)}
   .toast.show{opacity:1;transform:none}
-  .toast.err{border-color:var(--critical);color:#f08a8a}
-  .aiitem{border-bottom:1px solid var(--border);padding:12px 16px;cursor:pointer}
-  .aiitem:hover{background:var(--panel2)}
+  .toast.err{border-color:var(--critical);color:var(--text-danger)}
+  .aiitem{border-bottom:1px solid var(--border);padding:12px 16px;cursor:pointer;transition:background-color .12s ease,box-shadow .12s ease}
+  .aiitem:hover{background:var(--panel2);box-shadow:inset 3px 0 0 var(--accent)}
   .aiitem .t{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:5px}
   .aiitem .snip{color:var(--muted);font-size:12px;line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 </style>
+<script>
+  /* Applies a previously-saved theme choice before first paint, so refreshing
+     never flashes the wrong theme. Full toggle logic (button wiring, saving new
+     choices) lives in /static/theme.js — this inline snippet only needs to run
+     synchronously, before CSS paints, which an external <script src> cannot
+     guarantee as reliably. No-op (falls through to the CSS's own
+     prefers-color-scheme handling) if localStorage is unavailable or empty. */
+  (function () {
+    try {
+      var saved = localStorage.getItem("soc_lite_theme");
+      if (saved === "light" || saved === "dark") {
+        document.documentElement.setAttribute("data-theme", saved);
+      }
+    } catch (e) { /* localStorage unavailable (private mode, etc.) — CSS media query still applies */ }
+  })();
+</script>
 </head>
 <body>
 
@@ -259,6 +388,10 @@
         <div class="row" style="gap:4px;margin-left:2px">
           <button class="small primary" id="langBtnJa">日本語</button>
           <button class="small" id="langBtnEn">EN</button>
+        </div>
+        <div class="row" style="gap:4px" role="group" aria-label="Theme">
+          <button class="small" id="themeBtnDark" type="button" title="Dark mode" aria-pressed="false">🌙 Dark</button>
+          <button class="small" id="themeBtnLight" type="button" title="Light mode" aria-pressed="false">☀ Light</button>
         </div>
       </div>
     </header>
@@ -574,8 +707,11 @@
 
 <!-- i18n first: dashboard-viz.js and dashboard.js both call t()/tBadgeLabel() at their
      own load/render time. viz next: it only binds DOM at load time, while
-     dashboard.js's boot path calls into it. -->
+     dashboard.js's boot path calls into it. theme.js is self-contained (only
+     touches the two #themeBtn* buttons and the <html> [data-theme] attribute),
+     so its position relative to the others doesn't matter. -->
 <script src="/static/i18n.js"></script>
+<script src="/static/theme.js"></script>
 <script src="/static/dashboard-viz.js"></script>
 <script src="/static/dashboard.js"></script>
 </body>
