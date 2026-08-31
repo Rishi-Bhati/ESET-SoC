@@ -1,0 +1,36 @@
+# Runtime dependencies for the ESET SOC Lite platform.
+#
+# Mirrors [project.dependencies] in pyproject.toml, pinned to the versions this
+# checkout is tested against. Present because Railway/Nixpacks installs from
+# requirements.txt; without it the container starts with no site-packages and
+# run.py dies on `import uvicorn`.
+#
+# Dev/test extras are deliberately not here — see [project.optional-dependencies]
+# in pyproject.toml, or install with: pip install -e ".[dev]"
+
+# --- Web framework and ASGI server ---
+# uvicorn[standard] is required, not plain uvicorn: the dashboard's live feed is
+# a WebSocket (src/api/dashboard.py: /dashboard/api/ws) and the websockets
+# implementation ships in the [standard] extra.
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+
+# --- Configuration and validation ---
+# python-dotenv is pulled in by pydantic-settings, but named explicitly because
+# the app depends on it directly: src/config.py loads settings from a .env file.
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.2
+
+# --- Storage and outbound HTTP ---
+aiosqlite==0.22.1
+httpx==0.28.1
+
+# --- AI ---
+# Deprecated upstream in favour of google-genai; pinned here until that
+# migration is done (it warns on every start but still works).
+google-generativeai==0.8.6
+
+# --- Logging and retries ---
+structlog==26.1.0
+tenacity==9.1.4
