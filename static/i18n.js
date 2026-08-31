@@ -114,7 +114,13 @@ const I18N = {
     ai_on_endpoint: (name) => `対象: ${name}`,
     ai_count: (n) => `${n} 件のアラート`,
     modal_ai_notifications: "AI通知",
+    modal_ai_analysis: "AI分析と通知",
+    tab_analysis: "分析",
     tab_client: "クライアント (JA)", tab_cthree: "シースリー (JA)", tab_internal: "社内 (JA)", tab_engineer: "エンジニア (EN)",
+    ai_alert_summary: "アラート概要", ai_assessment: "評価",
+    ai_confirmed: "確認済みの情報", ai_unknown: "不明な情報",
+    ai_investigate: "調査項目", ai_recommended: "推奨アクション",
+    ai_none_stated: "記載なし",
 
     // ---- AI visibility ----
     aivis_intro: "AIの活動、モデルへ送信されたデータ、外部との通信、モデルの出力、および情報漏えいの可能性をリアルタイムに監視します。",
@@ -365,7 +371,13 @@ const I18N = {
     ai_on_endpoint: (name) => `on ${name}`,
     ai_count: (n) => `${n} alerts`,
     modal_ai_notifications: "AI Notifications",
+    modal_ai_analysis: "AI Analysis & Notifications",
+    tab_analysis: "Analysis",
     tab_client: "Client (JA)", tab_cthree: "C-Three (JA)", tab_internal: "Internal (JA)", tab_engineer: "Engineer (EN)",
+    ai_alert_summary: "Alert summary", ai_assessment: "Assessment",
+    ai_confirmed: "Confirmed information", ai_unknown: "Unknown information",
+    ai_investigate: "Investigation items", ai_recommended: "Recommended actions",
+    ai_none_stated: "None stated",
 
     aivis_intro: "Monitor AI activity, data sent to models, external interactions, model outputs, and potential information exposure in real time.",
     card_ai_status: "AI Status", card_active_requests: "Active Requests", card_requests_today: "Requests Today",

@@ -119,6 +119,56 @@ def test_alerts_index(client: TestClient):
     assert {"correlation_id", "risk_level", "status"} <= set(alerts[0])
 
 
+# --------------------------- AI content ---------------------------
+
+def test_ai_content_carries_the_alert_the_assessment_was_made_from(client: TestClient):
+    """
+    The view must be able to show the AI's assessment against the alert it was
+    given. Returning ai_output alone leaves the reader with the drafted emails
+    and no way to judge whether they are supported by what the alert said.
+    """
+    client.post("/webhook/eset", headers=AUTH, json=_payload("dash-ai-1"))
+    items = client.get("/dashboard/api/ai-content").json()["items"]
+    assert len(items) >= 1
+
+    item = items[0]
+    assert {
+        "correlation_id", "processed_at", "pipeline_status",
+        "risk_level", "risk_rationale",
+        "detection_name", "endpoint_name",
+        "alert", "threat_intel", "ai_output",
+    } <= set(item)
+
+    # The deterministic risk call and its reasoning travel with the AI output.
+    assert item["risk_level"]
+    assert item["risk_rationale"]
+
+    # The normalized facts, not just the two summary fields.
+    assert item["alert"]["detection_name"] == "Win32/Test.Threat"
+    assert item["alert"]["endpoint_name"] == "HOST-TEST-01"
+
+
+def test_ai_content_exposes_the_assessment_not_only_the_drafted_emails(client: TestClient):
+    """The analytical fields the Analysis panel renders must actually be present."""
+    client.post("/webhook/eset", headers=AUTH, json=_payload("dash-ai-2"))
+    item = client.get("/dashboard/api/ai-content").json()["items"][0]
+
+    engineer = item["ai_output"]["engineer_notification_en"]
+    assert engineer["alert_summary"]
+    assert engineer["assessment"]
+    for field in ("confirmed_information", "unknown_information",
+                  "investigation_items", "recommended_actions"):
+        assert isinstance(engineer[field], list), field
+
+
+def test_ai_content_requires_the_dashboard_key(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_access_key", "sekret")
+    assert client.get("/dashboard/api/ai-content").status_code == 401
+    assert client.get(
+        "/dashboard/api/ai-content", headers={"X-Dashboard-Key": "sekret"}
+    ).status_code == 200
+
+
 # --------------------------- emails ---------------------------
 
 def test_emails_endpoint_shape(client: TestClient):

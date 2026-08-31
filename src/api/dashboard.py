@@ -121,8 +121,14 @@ def _read_results(limit: int) -> list[dict[str, Any]]:
 @router.get("/ai-content")
 async def get_ai_content(request: Request, limit: int = 25) -> dict[str, Any]:
     """
-    The AI-generated notifications for recent alerts — the content that becomes
-    outbound email, browsable on its own without digging through alert detail.
+    The AI's assessment of recent alerts, plus the notifications it drafted from
+    that assessment — browsable on its own without digging through alert detail.
+
+    Carries the alert context the assessment was made from (the normalized facts,
+    the deterministic risk level and its rationale, and the threat-intel
+    verdicts) alongside the AI output. Without it the view can only show the
+    drafted emails, which leaves the reader unable to judge whether what the AI
+    wrote is supported by what the alert actually said.
     """
     _check_access(request)
     limit = max(1, min(limit, 100))
@@ -135,9 +141,15 @@ async def get_ai_content(request: Request, limit: int = 25) -> dict[str, Any]:
         items.append({
             "correlation_id": result["correlation_id"],
             "processed_at": result.get("processed_at"),
+            "pipeline_status": result.get("pipeline_status"),
             "risk_level": result.get("risk_level"),
+            # Why the risk engine decided that, so the AI's summary can be read
+            # against the determination it was given rather than in isolation.
+            "risk_rationale": result.get("risk_rationale"),
             "detection_name": alert.get("detection_name"),
             "endpoint_name": alert.get("endpoint_name"),
+            "alert": alert,
+            "threat_intel": result.get("threat_intel"),
             "ai_output": result["ai_output"],
         })
         if len(items) >= limit:

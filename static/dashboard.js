@@ -452,7 +452,7 @@ function renderAiContent() {
         <span class="muted">${esc(t("ai_on_endpoint", it.endpoint_name))}</span>
         <span class="muted mono" style="margin-left:auto">${esc(new Date(it.processed_at).toLocaleString())}</span>
       </div>
-      <div class="snip">${esc(it.ai_output.client_notification_ja.summary)}</div>
+      <div class="snip">${esc((it.ai_output.engineer_notification_en && it.ai_output.engineer_notification_en.alert_summary) || it.ai_output.client_notification_ja.summary)}</div>
     </div>`).join("");
 }
 
@@ -460,7 +460,7 @@ document.getElementById("aiList").addEventListener("click", (e) => {
   const el = e.target.closest("[data-ai]");
   if (!el) return;
   const it = state.ai[Number(el.dataset.ai)];
-  if (it) showModal(t("modal_ai_notifications"), notificationTabs(it.ai_output), true);
+  if (it) showModal(t("modal_ai_analysis"), alertContext(it) + notificationTabs(it.ai_output), true);
 });
 
 // Tab labels ("Client (JA)" etc.) are dashboard chrome and follow the language
@@ -468,6 +468,80 @@ document.getElementById("aiList").addEventListener("click", (e) => {
 // section headers) are real AI-generated content — always shown exactly as
 // generated, in whichever language that particular notification is written in,
 // regardless of the dashboard's own language setting.
+/* The AI's assessment of the alert, as distinct from the notifications it drafts
+ * from that assessment. Both come out of the same Gemini call
+ * (src/models/ai_output.py), but the four notification tabs are audience-specific
+ * emails — reading only those, you see what will be *sent* and never the
+ * reasoning behind it: what the AI treated as confirmed, what it flagged as
+ * still unknown, and what it wants investigated.
+ *
+ * The engineer notification is the one audience whose email carries the full
+ * analytical breakdown, so its fields are the source here. It is rendered as
+ * analysis rather than as correspondence — no greeting, no draft reply.
+ */
+function analysisPanel(ai) {
+  const e = ai.engineer_notification_en || {};
+  const list = (arr) => (arr || []).length
+    ? `<ul class="ai-list">${(arr || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
+    : `<p class="muted">${esc(t("ai_none_stated"))}</p>`;
+
+  return `
+    <div class="ai-analysis">
+      <h4>${esc(t("ai_alert_summary"))}</h4>
+      <p class="ai-prose">${esc(e.alert_summary)}</p>
+
+      <h4>${esc(t("ai_assessment"))}</h4>
+      <p class="ai-prose">${esc(e.assessment)}</p>
+
+      <div class="ai-cols">
+        <div>
+          <h4>${esc(t("ai_confirmed"))}</h4>
+          ${list(e.confirmed_information)}
+        </div>
+        <div>
+          <h4>${esc(t("ai_unknown"))}</h4>
+          ${list(e.unknown_information)}
+        </div>
+      </div>
+
+      <h4>${esc(t("ai_investigate"))}</h4>
+      ${list(e.investigation_items)}
+
+      <h4>${esc(t("ai_recommended"))}</h4>
+      ${list(e.recommended_actions)}
+    </div>`;
+}
+
+/* The alert the assessment was made from: the deterministic risk call and its
+ * rationale (produced by src/services/risk_engine.py, NOT by the AI), the intel
+ * verdicts, and the normalized facts. Shown above the AI's own words so the two
+ * can be read against each other.
+ */
+function alertContext(it) {
+  const a = it.alert || {};
+  let html = `<div class="kv">
+      ${kvRow(t("kv_detection"), a.detection_name)}
+      ${kvRow(t("kv_endpoint"), a.endpoint_name ? `${a.endpoint_name} (${a.endpoint_type})` : "")}
+      ${kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity))}
+      <div>${esc(t("kv_risk_computed"))}</div><div>${badge(it.risk_level)}</div>
+      ${kvRow(t("kv_rationale"), tBackendText(it.risk_rationale))}
+      ${kvRow(t("kv_handled_isolated"), `${tBadgeLabel(a.threat_handled)} / ${tBadgeLabel(a.isolation_status)}`)}
+      ${a.object_uri ? `<div>${esc(t("kv_object_uri"))}</div><div class="mono">${esc(a.object_uri)}</div>` : ""}
+      ${a.file_hash ? `<div>${esc(t("kv_file_hash"))}</div><div class="mono">${esc(a.file_hash)}</div>` : ""}
+    </div>`;
+
+  const ti = it.threat_intel;
+  if (ti && ti.virustotal && ti.abuseipdb) {
+    html += `<div class="intel-row">
+      <div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
+        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>
+      <div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
+        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>
+    </div>`;
+  }
+  return html;
+}
+
 function notificationTabs(ai) {
   const bullets = (a) => (a || []).map((x) => `- ${x}`).join("\n");
   const tabs = [
@@ -480,11 +554,21 @@ function notificationTabs(ai) {
     ["engineer", t("tab_engineer"),
       `${ai.engineer_notification_en.alert_summary}\n\nASSESSMENT\n${ai.engineer_notification_en.assessment}\n\nCONFIRMED\n${bullets(ai.engineer_notification_en.confirmed_information)}\n\nUNKNOWN\n${bullets(ai.engineer_notification_en.unknown_information)}\n\nINVESTIGATE\n${bullets(ai.engineer_notification_en.investigation_items)}\n\nRECOMMENDED ACTIONS\n${bullets(ai.engineer_notification_en.recommended_actions)}\n\nDRAFT CLIENT RESPONSE\n${ai.engineer_notification_en.draft_client_response}`],
   ];
+
+  // The analysis panel leads: it is what the AI concluded, and the four
+  // notification tabs are the audience-specific drafts derived from it.
+  // Its content is markup (headings, lists), so it is emitted as HTML built
+  // from esc()'d values, while notification bodies stay escaped plain text.
+  const panels = [
+    { id: "analysis", label: t("tab_analysis"), html: analysisPanel(ai), cls: "notif-html" },
+    ...tabs.map((tb) => ({ id: tb[0], label: tb[1], html: esc(tb[2]), cls: "notif" })),
+  ];
+
   return `
-    <div class="tabs">${tabs.map((tb, i) =>
-      `<div class="tabbtn ${i === 0 ? "active" : ""}" data-tab="${esc(tb[0])}">${esc(tb[1])}</div>`).join("")}</div>
-    ${tabs.map((tb, i) =>
-      `<div class="notif" data-panel="${esc(tb[0])}" style="${i === 0 ? "" : "display:none"}">${esc(tb[2])}</div>`).join("")}`;
+    <div class="tabs">${panels.map((p, i) =>
+      `<div class="tabbtn ${i === 0 ? "active" : ""}" data-tab="${esc(p.id)}">${esc(p.label)}</div>`).join("")}</div>
+    ${panels.map((p, i) =>
+      `<div class="${p.cls}" data-panel="${esc(p.id)}" style="${i === 0 ? "" : "display:none"}">${p.html}</div>`).join("")}`;
 }
 
 /* ══════════════ AI visibility ══════════════
