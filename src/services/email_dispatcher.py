@@ -49,6 +49,9 @@ def delivery_status() -> dict[str, Any]:
         "security_mode": settings.email_security_mode,
         "max_attempts": settings.email_max_attempts,
         "dispatch_interval_seconds": settings.email_dispatch_interval_seconds,
+        # Blank when the mail service is left to apply its own default/priority
+        # order across its configured senders.
+        "sender_routing": getattr(provider, "sender_routing", dict)(),
     }
 
 
@@ -78,11 +81,30 @@ async def dispatch_pending(limit: int = 50) -> dict[str, Any]:
             except Exception as e:
                 # An unparseable entry would block the queue forever — drop it.
                 logger.error("email_outbox_entry_invalid", error=str(e), entry=str(raw)[:200])
+                await email_outbox.record_dead_letter(raw, f"unparseable outbox entry: {e}")
                 await email_outbox.remove_email(raw.get("email_id", ""))
                 failed += 1
                 continue
 
-            outcome = await _hand_off(provider, message)
+            try:
+                outcome = await _hand_off(provider, message)
+            except Exception as e:
+                # A provider is contractually forbidden from raising here
+                # (see base.EmailDeliveryProvider.send). If one ever does, the
+                # sweep must still drain the rest of the queue rather than
+                # aborting and re-hitting the same entry on every later run.
+                logger.error(
+                    "email_handoff_raised",
+                    email_id=message.email_id, error=str(e),
+                )
+                await email_outbox.record_dead_letter(raw, f"handoff raised: {e}")
+                await email_outbox.remove_email(message.email_id)
+                await delivery_store.record_attempt(
+                    message.email_id, delivery_store.FAILED, error=str(e)
+                )
+                failed += 1
+                continue
+
             if outcome == "accepted":
                 accepted += 1
             elif outcome == "failed":
@@ -127,6 +149,9 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
     permanent = not result.retryable
 
     if permanent or exhausted:
+        # File it before dropping it: giving up on a notification must not make
+        # it disappear, least of all a CRITICAL one.
+        await email_outbox.record_dead_letter(message.model_dump(), result.error)
         await email_outbox.remove_email(message.email_id)
         await delivery_store.record_attempt(
             message.email_id, delivery_store.FAILED, error=result.error

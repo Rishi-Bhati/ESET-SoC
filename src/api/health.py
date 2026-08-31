@@ -50,15 +50,17 @@ async def health_check(request: Request) -> dict[str, Any]:
     is_healthy = db_ok and dir_ok and gemini_configured
     status = "ok" if is_healthy else "degraded"
 
+    # This endpoint is deliberately unauthenticated so a load balancer or
+    # container probe can reach it, which is exactly why it must not echo the
+    # raw exception text: a sqlite or filesystem error carries absolute server
+    # paths. The full detail is logged above for whoever is on the host.
     return {
         "status": status,
         "database": {
-            "status": "ok" if db_ok else "error",
-            "error": db_error
+            "status": "ok" if db_ok else "error"
         },
         "output_directory": {
-            "status": "ok" if dir_ok else "error",
-            "error": dir_error
+            "status": "ok" if dir_ok else "error"
         },
         "gemini_api": {
             "status": "configured" if gemini_configured else "missing"

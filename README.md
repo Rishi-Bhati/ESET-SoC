@@ -242,13 +242,69 @@ EMAIL_MAX_ATTEMPTS=3          # handoff attempts, not delivery retries
 EMAIL_DISPATCH_INTERVAL_SECONDS=60
 ```
 
-The request body includes the outbound `email_id` as an idempotency key so the worker
-can reject a duplicate retry if a timeout makes the first send ambiguous.
+#### Choosing a sender (optional)
 
-Requests are signed exactly as the API reference specifies:
+The mail service can hold several configured senders (SMTP / Resend / SendGrid /
+Mailgun / Postmark) and fails over between them by priority. Leave these blank to
+let it apply its own default order, which is the right choice unless this platform
+must send from one specific verified address.
+
+```
+EMAIL_SENDER_EMAIL=           # must be an ACTIVE sender on the mail service
+EMAIL_SENDER_NAME=            # From: display name
+EMAIL_PROVIDER_ID=            # pin one configured provider by id
+EMAIL_ROUTING_VIA_HEADERS=false
+```
+
+Anything set here must exist and be active on the mail service, or every send is
+rejected with `400 Unauthorized Sender/Provider` — a permanent failure.
+
+`EMAIL_ROUTING_VIA_HEADERS` selects how the choice travels: `false` puts it in the
+signed JSON body (`from_email` / `from_name` / `provider_id`), `true` sends
+`X-Sender-Email` / `X-Provider-Id` headers. Both are tamper-proof; the body form is
+the simpler contract.
+
+#### Request signing
+
 `HMAC-SHA256(secret, timestamp + "\n" + nonce + "\n" + SHA256(body))`, with the
 hash taken over the exact bytes transmitted (compact JSON — re-serialising would
 invalidate the signature).
+
+When a routing **header** is sent, the mail service binds it into the canonical
+string, so the client signs a four-part message instead:
+
+```
+timestamp + "\n" + nonce + "\n" + qualifier + "\n" + SHA256(body)
+qualifier = "provider:<id>"   when X-Provider-Id is sent
+            "email:<address>" otherwise
+```
+
+This is what stops an attacker bolting routing headers onto an otherwise-valid
+signature. `tests/unit/test_eset_mail_provider.py` checks the client against an
+independent re-implementation of the service's verifier, so the two cannot drift
+apart silently.
+
+#### Duplicate sends
+
+The mail service does **not** deduplicate. `email_id` travels with each request for
+cross-referencing this platform's record against the service's log, but nothing on
+the far side rejects a repeat of it. If a handoff times out, the outcome is genuinely
+ambiguous — the message may already be queued — and the retry can produce a second
+copy. That trade is deliberate: a duplicate notification beats a dropped one.
+`EMAIL_TIMEOUT_SECONDS` is set generously to keep the window rare.
+
+#### When handoff gives up
+
+A permanently-rejected or attempt-exhausted email is written to
+`output/emails/dead_letter.json` with its failure reason before it leaves the outbox,
+and is surfaced on the dashboard under `dead_lettered`. Giving up on a notification
+must not make it disappear — least of all a CRITICAL one.
+
+Only failures that a retry cannot change are treated as permanent. Notably, the mail
+service answers **400** for its own internal errors as well as for invalid messages
+(its `/api/send` handler wraps everything in one try/catch), so an unrecognised 400 is
+retried rather than discarded — otherwise a D1 outage would delete every notification
+raised during it.
 
 ## Security notes
 
@@ -264,8 +320,15 @@ Read before exposing this beyond localhost:
   random value, not the `test` default.
 - **Terminate TLS in front of this service** (reverse proxy). Both the webhook
   token and the dashboard key are bearer secrets sent in cleartext otherwise.
-- `/health` and `/status/{correlation_id}` are unauthenticated. `/status` requires
-  knowing an unguessable UUID, but `/health` will confirm the service exists.
+- `/status/{correlation_id}` is gated by `DASHBOARD_ACCESS_KEY` like the rest of the
+  read API, and reports only whether the output was written, not its path on disk.
+- `/health` is intentionally unauthenticated so a load balancer or container probe can
+  reach it. It reports component status only — no error text, no paths — but it will
+  confirm the service exists.
+- `/docs`, `/redoc` and `/openapi.json` are **off** unless `ENABLE_API_DOCS=true`.
+  FastAPI serves them itself, so `DASHBOARD_ACCESS_KEY` cannot gate them; left on they
+  publish the full route inventory, ingest paths included, to anyone who can reach the
+  port. Enable for local development only.
 - There is no rate limiting on ingest; a flood will consume Gemini quota. Put a
   proxy-level limit in front if the endpoint is internet-facing.
 

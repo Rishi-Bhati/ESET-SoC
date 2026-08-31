@@ -1,8 +1,9 @@
 import os
 import json
 from typing import Any
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 import structlog
+from src.api.dashboard import _check_access
 from src.storage import job_store
 from src.config import settings
 
@@ -10,11 +11,17 @@ router = APIRouter(prefix="/status", tags=["Status"])
 logger = structlog.get_logger(__name__)
 
 @router.get("/{correlation_id}")
-async def get_job_status(correlation_id: str) -> dict[str, Any]:
+async def get_job_status(correlation_id: str, request: Request) -> dict[str, Any]:
     """
     Checks the status of a pipeline job by correlation_id.
-    If successfully processed, returns references to the written file.
+
+    Gated by the same DASHBOARD_ACCESS_KEY as every other read endpoint: the
+    response discloses whether a given alert exists, its processing state and
+    any error text. Left open, it was the one route that answered questions
+    about alert data without a key.
     """
+    _check_access(request)
+
     job = await job_store.get_job(correlation_id)
     if not job:
         logger.warning("status_query_not_found", correlation_id=correlation_id)
@@ -27,7 +34,9 @@ async def get_job_status(correlation_id: str) -> dict[str, Any]:
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
         "error": job["error"],
-        "output_file": None
+        # Whether the output was written, not where it lives on disk — the
+        # absolute path is server-side detail the caller has no use for.
+        "output_written": False
     }
     
     # If completed, check if the output file exists
@@ -35,6 +44,6 @@ async def get_job_status(correlation_id: str) -> dict[str, Any]:
         output_file_name = f"{correlation_id}.json"
         output_file_path = os.path.join(settings.output_dir, output_file_name)
         if os.path.exists(output_file_path):
-            response["output_file"] = output_file_path
+            response["output_written"] = True
             
     return response

@@ -290,6 +290,10 @@ async def get_delivery_overview(request: Request, limit: int = 100, status: str 
         "counts": await delivery_store.counts_by_status(),
         "deliveries": await delivery_store.list_deliveries(limit=limit, status=status),
         "pending_in_outbox": len(await email_outbox.list_emails()),
+        # Notifications handoff has permanently given up on. Surfaced here
+        # because a dead letter that nobody can see is just a quieter way of
+        # losing the alert.
+        "dead_lettered": await email_outbox.list_dead_letters(),
     }
 
 

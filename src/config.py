@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # --- Dashboard ---
     dashboard_access_key: str = Field("", validation_alias="DASHBOARD_ACCESS_KEY")
 
+    # --- API Documentation ---
+    # FastAPI's /docs, /redoc and /openapi.json cannot be gated by
+    # DASHBOARD_ACCESS_KEY (they are served by FastAPI itself, not our routers)
+    # and enumerate every route, including the ingest endpoints. Off by default;
+    # turn on for local development only.
+    enable_api_docs: bool = Field(False, validation_alias="ENABLE_API_DOCS")
+
     # --- Email Delivery (ESET Mail worker; see src/services/email_delivery/) ---
     email_delivery_enabled: bool = Field(False, validation_alias="EMAIL_DELIVERY_ENABLED")
     email_provider: str = Field("eset_mail", validation_alias="EMAIL_PROVIDER")
@@ -67,6 +74,24 @@ class Settings(BaseSettings):
     email_timeout_seconds: int = Field(60, validation_alias="EMAIL_TIMEOUT_SECONDS")
     email_max_attempts: int = Field(3, validation_alias="EMAIL_MAX_ATTEMPTS")
     email_dispatch_interval_seconds: int = Field(60, validation_alias="EMAIL_DISPATCH_INTERVAL_SECONDS")
+
+    # --- Email Sender Routing (mail service multi-provider support) ---
+    # The mail service can hold several configured senders (SMTP/Resend/SendGrid/
+    # Mailgun/Postmark) and picks one per email. Left blank, it applies its own
+    # default/priority order — which is the right choice unless this platform must
+    # send from a specific verified address.
+    #
+    # A sender named here must exist and be active on the mail service, otherwise
+    # it answers 400 "Unauthorized Sender/Provider".
+    email_sender_email: str = Field("", validation_alias="EMAIL_SENDER_EMAIL")
+    email_sender_name: str = Field("", validation_alias="EMAIL_SENDER_NAME")
+    email_provider_id: str = Field("", validation_alias="EMAIL_PROVIDER_ID")
+    # How the sender choice travels to the mail service:
+    #   false (default) - in the signed JSON body (from_email / from_name / provider_id)
+    #   true            - as X-Sender-Email / X-Provider-Id headers, which the mail
+    #                     service binds into the HMAC canonical string
+    # Both are tamper-proof; the body form is the simpler contract.
+    email_routing_via_headers: bool = Field(False, validation_alias="EMAIL_ROUTING_VIA_HEADERS")
 
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),

@@ -133,7 +133,14 @@ app = FastAPI(
     title="ESET SOC Lite Webhook Ingress Service",
     description="Fault-tolerant alert ingestion, normalization and analysis pipeline.",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    # Closed unless ENABLE_API_DOCS is set. These three routes are served by
+    # FastAPI itself, so _check_access() never sees them — left on, they publish
+    # the full route inventory (ingest paths included) to any unauthenticated
+    # caller who can reach the port.
+    docs_url="/docs" if settings.enable_api_docs else None,
+    redoc_url="/redoc" if settings.enable_api_docs else None,
+    openapi_url="/openapi.json" if settings.enable_api_docs else None,
 )
 
 # Live dashboard event bus. Wired at import rather than in lifespan so

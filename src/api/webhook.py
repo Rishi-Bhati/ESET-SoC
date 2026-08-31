@@ -90,6 +90,30 @@ async def run_pipeline_task(
         )
 
 
+def scrub_unencodable(value: Any) -> Any:
+    """
+    Replaces UTF-8-unencodable code points anywhere in a decoded JSON structure.
+
+    `json.loads` accepts lone surrogates (`"\\ud800"`), and a detection name or
+    file path in an ESET alert ultimately reflects whatever an attacker managed
+    to name a file or process. Such a string survives happily in memory but
+    raises UnicodeEncodeError the moment anything durable touches it — the
+    SQLite bind in delivery_store.record_pending(), or the compact-JSON
+    serialisation of an outbound email. Because the alert is already persisted
+    in the outbox by then, the same failure repeats on every later sweep.
+
+    Scrubbing once at ingest keeps that class of payload from reaching any
+    downstream stage, rather than defending each one separately.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {scrub_unencodable(k): scrub_unencodable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_unencodable(item) for item in value]
+    return value
+
+
 async def read_json_body(request: Request) -> dict[str, Any]:
     """
     Reads and validates the request body as a JSON object.
@@ -124,7 +148,7 @@ async def read_json_body(request: Request) -> dict[str, Any]:
             detail=f"Request body must be a JSON object, got {type(parsed).__name__}",
         )
 
-    return parsed
+    return scrub_unencodable(parsed)
 
 
 async def ingest_alert(

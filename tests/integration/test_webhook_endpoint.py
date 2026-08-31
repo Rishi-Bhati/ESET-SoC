@@ -70,3 +70,46 @@ def test_webhook_accepts_payload_within_default_limit(client: TestClient):
     response = client.post("/webhook/eset", headers=headers, json=payload)
     assert response.status_code == 200
     assert response.json()["status"] == "queued"
+
+
+# ---------------------------------------------------------------------------
+# Unencodable alert content
+# ---------------------------------------------------------------------------
+
+def test_scrub_unencodable_replaces_lone_surrogates():
+    """
+    json.loads accepts a lone surrogate, but anything durable (the SQLite bind
+    in delivery_store, the compact-JSON body of an outbound email) raises
+    UnicodeEncodeError on it. Scrubbing at ingest keeps such a payload from
+    reaching a stage that persists it and then fails on it forever.
+    """
+    from src.api.webhook import scrub_unencodable
+
+    scrubbed = scrub_unencodable({
+        "threat_name": "Win32/\ud800Agent",
+        "nested": {"path": "C:\\\\Users\\\\\ud800x\\\\bad.exe"},
+        "list": ["ok", "bad\udfff"],
+        "number": 42,
+        "null": None,
+    })
+
+    # Everything now survives the encodings the pipeline actually performs.
+    import json as _json
+    _json.dumps(scrubbed, ensure_ascii=False).encode("utf-8")
+
+    assert "\ud800" not in scrubbed["threat_name"]
+    assert scrubbed["threat_name"].startswith("Win32/")
+    assert scrubbed["number"] == 42
+    assert scrubbed["null"] is None
+
+
+def test_webhook_accepts_a_payload_carrying_a_lone_surrogate(client):
+    """A crafted detection name must not 500 or wedge anything downstream."""
+    body = '{"threat_name": "Win32/\\ud800Agent", "computer_name": "WKS-01", ' \
+           '"severity": "HIGH", "threat_handled": true}'
+    response = client.post(
+        "/webhook/eset",
+        content=body.encode("utf-8"),
+        headers={"Authorization": "test_token", "Content-Type": "application/json"},
+    )
+    assert response.status_code in (200, 202), response.text
