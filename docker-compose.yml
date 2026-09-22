@@ -1,0 +1,36 @@
+# Local/VM deployment. Secrets come from .env (copy .env.example and fill it in).
+#   docker compose up -d --build
+services:
+  soc-lite:
+    build: .
+    image: eset-soc-lite:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Paths inside the container; override whatever .env says for local runs.
+      APP_ENV: production
+      SQLITE_DB_PATH: /data/soc_lite.db
+      OUTPUT_DIR: /data/output/alerts
+      LOG_FILE: /data/logs/app.log
+      SYSLOG_UDP_PORT: "5514"
+      SYSLOG_TCP_PORT: "5601"
+      APP_PORT: "8000"
+    ports:
+      # Bound to localhost: put a TLS reverse proxy (Caddy, nginx, a Cloudflare
+      # tunnel) in front rather than exposing plain HTTP. Change to "8000:8000"
+      # only if something else terminates TLS on this host's network.
+      - "127.0.0.1:8000:8000"
+      # Syslog from ESET PROTECT. Restrict with SYSLOG_ALLOWED_SOURCES and/or a firewall.
+      - "514:5514/udp"
+      - "601:5601/tcp"
+    volumes:
+      - soc-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+
+volumes:
+  soc-data:
