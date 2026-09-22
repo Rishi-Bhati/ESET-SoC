@@ -17,6 +17,16 @@ const state = {
   aiTraces: new Map(),  // trace_id -> trace summary row
   aiLive: [],           // bounded live AI activity feed
   aiOverview: null,
+  // "connecting" | "live" | "reconnecting". Held in state rather than read back
+  // off the DOM, so a language switch re-renders the CURRENT status instead of
+  // resetting the label to "connecting…" while the dot stays green.
+  wsState: "connecting",
+  // The element focus should return to when the modal closes.
+  modalReturnFocus: null,
+  // The AI Content item currently open in the modal, if any. Kept so switching
+  // the language re-renders the open analysis instead of leaving a Japanese
+  // reader looking at the English text until they close and reopen it.
+  openAiItem: null,
 };
 
 const STAGES = ["INGEST", "NORMALIZE", "RISK", "INTEL", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"];
@@ -53,6 +63,43 @@ function badge(value, noTranslate) {
   return `<span class="badge b-${v}"><span class="g"></span>${esc(tBadgeLabel(value || "UNKNOWN", noTranslate))}</span>`;
 }
 const DASH = '<span class="dim">—</span>';
+
+/** BCP-47 tag for the active dashboard language.
+ *
+ * Every toLocaleString() here used to be called with no locale, so it followed
+ * the BROWSER's locale: a Japanese dashboard on an en-GB browser printed
+ * "22/09/2026, 12:26" instead of 2026/09/22. The date format has to follow the
+ * language the operator picked, like every other string on the page. */
+function uiLocale() {
+  return state_lang.current === "ja" ? "ja-JP" : "en-GB";
+}
+
+/** Date+time in the active language. */
+function fmtDateTime(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  return isNaN(d) ? "—" : d.toLocaleString(uiLocale());
+}
+
+/** Time of day with seconds, in the active language (event feeds, timelines). */
+function fmtClock(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  return isNaN(d) ? "—" : d.toLocaleTimeString(uiLocale());
+}
+
+/** Time-of-day only, in the active language (chart axes, tooltips). */
+function fmtTime(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  return isNaN(d) ? "—" : d.toLocaleTimeString(uiLocale(), { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Stat-tile / hero numbers: compact past 10k so the value keeps its display
+ * size instead of overflowing the tile (1,284 → "1,284"; 12,900 → "12.9K"). */
+function fmtCount(n) {
+  if (typeof n !== "number" || !isFinite(n)) return "0";
+  if (Math.abs(n) < 10000) return n.toLocaleString(uiLocale());
+  if (Math.abs(n) < 1000000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+  return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+}
 
 /** noTranslate=true is used by the Emails section's own rendering (Handoff
  * History), which must keep its current English wording regardless of language. */
@@ -94,7 +141,10 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let detail = await res.text();
     try { detail = JSON.parse(detail).detail || detail; } catch (e) { /* plain text */ }
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = res.status;
+    err.retryAfter = Number(res.headers.get("Retry-After")) || 0;
+    throw err;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -106,14 +156,16 @@ function lock() {
   if (window._ws) { try { window._ws.close(); } catch (e) { /* already closed */ } }
 }
 
+/** Resolves to null on success, or the message to show under the key field. */
 async function attemptLogin(key) {
   sessionStorage.setItem("dash_key", key);
   try {
     await api("/jobs?limit=1");     // cheapest authenticated probe
-    return true;
+    return null;
   } catch (e) {
     sessionStorage.removeItem("dash_key");
-    return false;
+    if (e.status === 429) return t("login_err_throttled", Math.ceil((e.retryAfter || 60) / 60));
+    return t("login_err");
   }
 }
 
@@ -122,11 +174,13 @@ document.getElementById("loginBtn").onclick = async () => {
   const err = document.getElementById("loginErr");
   const key = document.getElementById("loginKey").value.trim();
   btn.disabled = true; err.classList.remove("show");
-  if (await attemptLogin(key)) {
+  const problem = await attemptLogin(key);
+  if (!problem) {
     document.getElementById("login").classList.add("hidden");
     document.getElementById("app").classList.add("ready");
     boot();
   } else {
+    err.textContent = problem;
     err.classList.add("show");
     document.getElementById("loginKey").select();
   }
@@ -163,8 +217,12 @@ function updateViewHeader(name) {
 
 function showView(name) {
   state.view = name;
-  document.querySelectorAll("nav a.tab").forEach((a) =>
-    a.classList.toggle("active", a.dataset.view === name));
+  document.querySelectorAll("nav a.tab").forEach((a) => {
+    const selected = a.dataset.view === name;
+    a.classList.toggle("active", selected);
+    if (selected) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  });
   document.querySelectorAll("section.view").forEach((s) =>
     s.classList.toggle("active", s.id === "view-" + name));
   updateViewHeader(name);
@@ -194,16 +252,30 @@ function refreshCurrentViewTranslations() {
     drawSource(state.stats.by_source);
   }
   if (state.view === "ai") renderAiContent();
+  // The AI analysis inside an open modal is language-dependent too (the engineer
+  // report is generated in both languages), so re-render it in place.
+  if (state.openAiItem && document.getElementById("overlay").classList.contains("show")) {
+    openAiModal(state.openAiItem);
+  }
   if (state.view === "ai-visibility") {
     if (state.aiOverview) renderAiOverview(state.aiOverview);
     renderAiTraces();
     renderAiLiveFeed();
   }
+  if (state.view === "logs" && logState.res) renderLogs();
   if (state.view === "settings") loadSettings();
   if (state.view === "api") renderApiDocs();
   // state.view === "emails": intentionally does nothing.
 }
-document.querySelectorAll("nav a.tab").forEach((a) => (a.onclick = () => showView(a.dataset.view)));
+document.querySelectorAll("nav a.tab").forEach((a) => {
+  // These are page navigation links, not a tablist. A real href gives them
+  // native keyboard activation and the expected screen-reader semantics.
+  a.href = "#view-" + a.dataset.view;
+  a.removeAttribute("role");
+  a.removeAttribute("aria-selected");
+  if (a.classList.contains("active")) a.setAttribute("aria-current", "page");
+  a.onclick = (e) => { e.preventDefault(); showView(a.dataset.view); };
+});
 
 /* ══════════════ overview ══════════════ */
 
@@ -213,16 +285,22 @@ function renderCards() {
   for (const j of jobs) byStatus[j.status] = (byStatus[j.status] || 0) + 1;
   const active = (byStatus.PENDING || 0) + (byStatus.PROCESSING || 0);
 
+  // [label, value, tone]. The tone is the CSS token for the tile's edge rule —
+  // status tokens where the tile counts a state (succeeded / degraded / failed),
+  // neutral ones where it is just a total. It is redundant with the label by
+  // design; nothing here is encoded in colour alone.
   const cards = [
-    [t("card_total_alerts"), jobs.length],
-    [t("card_in_flight"), active],
-    [t("card_success"), byStatus.SUCCESS || 0],
-    [t("card_partial"), byStatus.PARTIAL || 0],
-    [t("card_failed"), byStatus.FAILED || 0],
-    [t("card_emails_pending"), state.emails.length],
+    [t("card_total_alerts"), jobs.length, "var(--accent)"],
+    [t("card_in_flight"), active, "var(--cat-1)"],
+    [t("card_success"), byStatus.SUCCESS || 0, "var(--good)"],
+    [t("card_partial"), byStatus.PARTIAL || 0, "var(--warning)"],
+    [t("card_failed"), byStatus.FAILED || 0, "var(--critical)"],
+    [t("card_emails_pending"), state.emails.length, "var(--dim)"],
   ];
   document.getElementById("statCards").innerHTML = cards
-    .map(([l, n]) => `<div class="card"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`)
+    .map(([l, n, tone]) =>
+      `<div class="card${n === 0 ? " zero" : ""}" style="--tone:${tone}">` +
+      `<div class="n">${fmtCount(n)}</div><div class="l">${esc(l)}</div></div>`)
     .join("");
 
   document.getElementById("cAlerts").textContent = jobs.length;
@@ -248,6 +326,11 @@ function upsertJob(patch) {
   state.jobs.set(id, { ...(state.jobs.get(id) || { correlation_id: id }), ...patch });
 }
 
+/** The normalizer writes "UNKNOWN" for fields it could not find; show those as blank. */
+function knownValue(v) {
+  return v && v !== "UNKNOWN" ? v : undefined;
+}
+
 function jobFromRow(row) {
   const rp = row.raw_payload || {};
   return {
@@ -259,23 +342,75 @@ function jobFromRow(row) {
     updated_at: row.updated_at,
     detection_name: rp.detection_name,
     endpoint_name: rp.endpoint_name,
+    indicators: [rp.ip_address, rp.file_hash, rp.domain, rp.url, rp.object_uri],
+    // The severity ESET itself reported, as distinct from the risk level this
+    // platform computed — the two disagreeing (HIGH reported, LOW computed
+    // because the threat was already handled) is exactly what the risk engine
+    // exists to express, and the table can only show that if it keeps both.
+    reported_severity: rp.severity || null,
+    // Not in the jobs table: the computed risk lives in the result files, and is
+    // merged in from /alerts by loadRiskLevels(). Left null here so a job that
+    // has not finished shows "—" rather than a stale level.
     risk_level: null,
   };
 }
 
+/** Merges the computed risk level into every job already in state.
+ *
+ * The jobs table does not store risk — it is written to the result file at the
+ * end of the pipeline — so before this ran, the Alerts table's Risk column was
+ * "—" for every row that had not arrived live over the WebSocket during this
+ * page's own session. After any reload, the column an analyst triages by was
+ * blank for the entire history. /dashboard/api/alerts is the index of finished
+ * results and already carries risk_level per correlation_id. */
+async function loadRiskLevels() {
+  try {
+    const { alerts } = await api("/alerts");
+    for (const a of alerts || []) {
+      const job = state.jobs.get(a.correlation_id);
+      // Only annotate jobs we already know about; /alerts can outlive the
+      // 300-row jobs window, and a risk level with no job row has nothing to
+      // attach to.
+      if (job && a.risk_level) job.risk_level = a.risk_level;
+      // Payloads not in ESET's shape have no detection_name/endpoint_name in
+      // the raw body; the normalized (alias-resolved) names come from here.
+      if (job && !job.detection_name && a.detection_name) job.detection_name = a.detection_name;
+      if (job && !job.endpoint_name && a.endpoint_name) job.endpoint_name = a.endpoint_name;
+    }
+  } catch (e) { /* non-fatal: the column falls back to "—" */ }
+}
+
 function renderAlerts() {
   const fStatus = document.getElementById("fStatus").value;
+  const fRisk = document.getElementById("fRisk").value;
   const q = document.getElementById("fSearch").value.trim().toLowerCase();
 
   let rows = [...state.jobs.values()].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
   if (fStatus) rows = rows.filter((j) => j.status === fStatus);
+  if (fRisk) rows = rows.filter((j) => (j.risk_level || "UNKNOWN") === fRisk);
   if (q) {
     rows = rows.filter((j) =>
-      [j.detection_name, j.endpoint_name, j.correlation_id, j.source]
+      [j.detection_name, j.endpoint_name, j.correlation_id, j.source, ...(j.indicators || [])]
         .some((v) => v && String(v).toLowerCase().includes(q)));
   }
 
   document.getElementById("alertsEmpty").style.display = rows.length ? "none" : "block";
+  if (!rows.length && state.jobs.size) document.getElementById("alertsEmpty").textContent = t("alerts_no_matches");
+
+  // Client-side paging over the loaded window (newest 500 jobs).
+  const pages = Math.max(1, Math.ceil(rows.length / alertsPaging.size));
+  alertsPaging.page = Math.min(alertsPaging.page, pages);
+  const start = (alertsPaging.page - 1) * alertsPaging.size;
+  const total = rows.length;
+  rows = rows.slice(start, start + alertsPaging.size);
+  document.getElementById("alertsPager").style.display = total > 25 ? "" : "none";
+  document.getElementById("alertsRangeText").textContent =
+    t("logs_showing", fmtCount(total ? start + 1 : 0), fmtCount(start + rows.length), fmtCount(total));
+  document.getElementById("alertsPageText").textContent = `${t("page_word")} ${alertsPaging.page} ${t("page_of", pages)}`;
+  document.getElementById("alertsPrev").disabled = alertsPaging.page <= 1;
+  document.getElementById("alertsNext").disabled = alertsPaging.page >= pages;
+  setSegActive(document.getElementById("alertsPageSize"), "data-size", alertsPaging.size);
+
   document.getElementById("alertRows").innerHTML = rows.map((j) => `
     <tr class="clickable" data-id="${esc(j.correlation_id)}">
       <td>${badge(j.status)}</td>
@@ -285,16 +420,42 @@ function renderAlerts() {
       <td>${j.source ? badge(j.source) : DASH}</td>
       <td class="muted">${timeAgo(j.updated_at)}</td>
       <td class="mono muted">${shortId(j.correlation_id)}</td>
-      <td>${["FAILED","PARTIAL"].includes(j.status)
-            ? `<button class="small" data-retry="${esc(j.correlation_id)}">${esc(t("btn_retry"))}</button>` : ""}</td>
+      <td class="row" style="gap:6px;flex-wrap:nowrap">
+        <button class="small" data-timeline="${esc(j.correlation_id)}" title="${esc(t("modal_alert_timeline"))}">${esc(t("btn_timeline"))}</button>
+        <button class="small" data-raw="${esc(j.correlation_id)}" title="${esc(t("stage_view_raw"))}">${esc(t("btn_raw"))}</button>
+        ${["FAILED","PARTIAL"].includes(j.status)
+            ? `<button class="small" data-retry="${esc(j.correlation_id)}">${esc(t("btn_retry"))}</button>` : ""}
+      </td>
     </tr>`).join("");
+  makeRowsFocusable(document.getElementById("alertRows"), "tr.clickable");
 
   renderCards();
 }
-document.getElementById("fStatus").onchange = renderAlerts;
-document.getElementById("fSearch").oninput = renderAlerts;
+const alertsPaging = { page: 1, size: 25 };
+function refilterAlerts() { alertsPaging.page = 1; renderAlerts(); }
+document.getElementById("fStatus").onchange = refilterAlerts;
+document.getElementById("fRisk").onchange = refilterAlerts;
+document.getElementById("fSearch").oninput = refilterAlerts;
+document.getElementById("alertsPrev").onclick = () => { alertsPaging.page--; renderAlerts(); };
+document.getElementById("alertsNext").onclick = () => { alertsPaging.page++; renderAlerts(); };
+document.getElementById("alertsPageSize").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-size]");
+  if (b) { alertsPaging.size = Number(b.dataset.size); alertsPaging.page = 1; renderAlerts(); }
+});
 
 document.getElementById("alertRows").addEventListener("click", async (e) => {
+  const timeline = e.target.getAttribute && e.target.getAttribute("data-timeline");
+  if (timeline) {
+    e.stopPropagation();
+    openAlertTimeline(timeline);
+    return;
+  }
+  const raw = e.target.getAttribute && e.target.getAttribute("data-raw");
+  if (raw) {
+    e.stopPropagation();
+    openRawPayload(raw);
+    return;
+  }
   const retry = e.target.getAttribute && e.target.getAttribute("data-retry");
   if (retry) {
     e.stopPropagation();
@@ -319,9 +480,10 @@ function renderEmails() {
       <td>${(m.to || []).length ? esc((m.to || []).join(", ")) : DASH}</td>
       <td>${esc(m.subject)}</td>
       <td>${badge(m.risk_level, true)}</td>
-      <td class="muted">${m.created_at ? esc(new Date(m.created_at).toLocaleString()) : "—"}</td>
+      <td class="muted">${m.created_at ? esc(fmtDateTime(m.created_at)) : "—"}</td>
       <td><button class="small danger" data-del="${esc(m.email_id)}">Discard</button></td>
     </tr>`).join("");
+  makeRowsFocusable(document.getElementById("emailRows"), "tr.clickable");
   renderCards();
 }
 
@@ -375,8 +537,15 @@ async function loadDelivery() {
       foot.innerHTML = `Mail service queue — queued <strong>${esc(q.queued ?? 0)}</strong> · ` +
         `sending <strong>${esc(q.sending ?? 0)}</strong> · sent <strong>${esc(q.sent ?? 0)}</strong> · ` +
         `failed <strong>${esc(q.failed ?? 0)}</strong> <span class="dim">(delivery and retries are handled there)</span>`;
+    } else if (svc.reachable) {
+      // The service answered its health probe, so this is a configuration
+      // problem on our side, not an outage on theirs — say which, because the
+      // two have opposite fixes.
+      foot.innerHTML = `<span style="color:var(--text-warn)">●</span> ` +
+        `Mail service is up, but this platform could not read its queue: ${esc(svc.error || "unknown")}`;
     } else {
-      foot.innerHTML = `<span class="muted">Mail service status unavailable: ${esc(svc.error || "unknown")}</span>`;
+      foot.innerHTML = `<span style="color:var(--text-danger)">●</span> ` +
+        `Mail service unreachable: ${esc(svc.error || "unknown")}`;
     }
   } catch (e) { /* non-fatal */ }
 }
@@ -445,22 +614,35 @@ function renderAiContent() {
   document.getElementById("aiCount").textContent = items.length ? t("ai_count", items.length) : "";
   document.getElementById("aiEmpty").style.display = items.length ? "none" : "block";
   document.getElementById("aiList").innerHTML = items.map((it, i) => `
-    <div class="aiitem" data-ai="${i}">
+    <div class="aiitem" data-ai="${i}" data-ai-id="${esc(it.correlation_id)}">
       <div class="t">
         ${badge(it.risk_level)}
         <strong>${esc(it.detection_name)}</strong>
         <span class="muted">${esc(t("ai_on_endpoint", it.endpoint_name))}</span>
-        <span class="muted mono" style="margin-left:auto">${esc(new Date(it.processed_at).toLocaleString())}</span>
+        <span class="muted mono" style="margin-left:auto">${esc(fmtDateTime(it.processed_at))}</span>
       </div>
-      <div class="snip">${esc((it.ai_output.engineer_notification_en && it.ai_output.engineer_notification_en.alert_summary) || it.ai_output.client_notification_ja.summary)}</div>
+      <div class="snip">${esc(engineerReport(it.ai_output).report.alert_summary || it.ai_output.client_notification_ja.summary)}</div>
     </div>`).join("");
+  makeRowsFocusable(document.getElementById("aiList"), "[data-ai]");
+}
+
+function openAiModal(it) {
+  const box = document.getElementById("modalBox");
+  const activeTab = state.openAiItem === it ? box.querySelector(".tabbtn.active")?.dataset.tab : null;
+  const scrollTop = state.openAiItem === it ? box.scrollTop : 0;
+  showModal(t("modal_ai_analysis"), alertContext(it) + notificationTabs(it.ai_output));
+  if (activeTab) box.querySelector(`[data-tab="${CSS.escape(activeTab)}"]`)?.click();
+  box.scrollTop = scrollTop;
+  // Set after showModal, which clears it — every other modal must leave it null so
+  // a language switch re-renders only an actually-open AI analysis.
+  state.openAiItem = it;
 }
 
 document.getElementById("aiList").addEventListener("click", (e) => {
   const el = e.target.closest("[data-ai]");
   if (!el) return;
   const it = state.ai[Number(el.dataset.ai)];
-  if (it) showModal(t("modal_ai_analysis"), alertContext(it) + notificationTabs(it.ai_output), true);
+  if (it) openAiModal(it);
 });
 
 // Tab labels ("Client (JA)" etc.) are dashboard chrome and follow the language
@@ -479,14 +661,40 @@ document.getElementById("aiList").addEventListener("click", (e) => {
  * analytical breakdown, so its fields are the source here. It is rendered as
  * analysis rather than as correspondence — no greeting, no draft reply.
  */
+/* The engineer report is written by Gemini in BOTH languages (see
+ * src/models/ai_output.py: engineer_notification_en / engineer_notification_ja),
+ * and it is the source for the Analysis panel and the AI Content snippet. Picks
+ * whichever language the dashboard toggle is currently set to.
+ *
+ * Falls back to the other language rather than rendering an empty panel: results
+ * stored before the Japanese report existed only carry the English one, and those
+ * files are never re-generated. `fallback` tells the caller to say so out loud, so
+ * a Japanese reader is never left silently staring at English with no explanation.
+ */
+function engineerReport(ai) {
+  const en = (ai && ai.engineer_notification_en) || null;
+  const ja = (ai && ai.engineer_notification_ja) || null;
+  const wantJa = state_lang.current === "ja";
+  const preferred = wantJa ? ja : en;
+  const other = wantJa ? en : ja;
+  if (preferred) return { report: preferred, fallback: false };
+  if (other) return { report: other, fallback: true };
+  return { report: {}, fallback: false };
+}
+
 function analysisPanel(ai) {
-  const e = ai.engineer_notification_en || {};
+  const picked = engineerReport(ai);
+  const e = picked.report;
+  const notice = picked.fallback
+    ? `<p class="ai-fallback">${esc(t(state_lang.current === "ja" ? "ai_lang_fallback_ja" : "ai_lang_fallback_en"))}</p>`
+    : "";
   const list = (arr) => (arr || []).length
     ? `<ul class="ai-list">${(arr || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
     : `<p class="muted">${esc(t("ai_none_stated"))}</p>`;
 
   return `
     <div class="ai-analysis">
+      ${notice}
       <h4>${esc(t("ai_alert_summary"))}</h4>
       <p class="ai-prose">${esc(e.alert_summary)}</p>
 
@@ -509,6 +717,19 @@ function analysisPanel(ai) {
 
       <h4>${esc(t("ai_recommended"))}</h4>
       ${list(e.recommended_actions)}
+    </div>`;
+}
+
+/* Threat-intel result boxes (VirusTotal / AbuseIPDB), as their own function so
+ * the Pipeline Flow INTEL stage detail can render exactly what alertContext()
+ * shows in the AI Content modal, without duplicating it inline a third time. */
+function threatIntelBlock(ti) {
+  if (!ti || !ti.virustotal || !ti.abuseipdb) return "";
+  return `<div class="intel-row">
+      <div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
+        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>
+      <div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
+        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>
     </div>`;
 }
 
@@ -551,9 +772,24 @@ function notificationTabs(ai) {
       `${ai.cthree_notification_ja.summary}\n\n【評価】\n${ai.cthree_notification_ja.assessment}\n\n【フロントオフィス】\n${ai.cthree_notification_ja.front_office_notes}\n\n【クライアント返信案】\n${ai.cthree_notification_ja.draft_client_response}`],
     ["internal", t("tab_internal"),
       `${ai.internal_notification_ja.summary}\n\n【評価】\n${ai.internal_notification_ja.assessment}\n\n【推奨アクション】\n${bullets(ai.internal_notification_ja.recommended_actions)}\n\n【返信案】\n${ai.internal_notification_ja.draft_client_response}`],
-    ["engineer", t("tab_engineer"),
-      `${ai.engineer_notification_en.alert_summary}\n\nASSESSMENT\n${ai.engineer_notification_en.assessment}\n\nCONFIRMED\n${bullets(ai.engineer_notification_en.confirmed_information)}\n\nUNKNOWN\n${bullets(ai.engineer_notification_en.unknown_information)}\n\nINVESTIGATE\n${bullets(ai.engineer_notification_en.investigation_items)}\n\nRECOMMENDED ACTIONS\n${bullets(ai.engineer_notification_en.recommended_actions)}\n\nDRAFT CLIENT RESPONSE\n${ai.engineer_notification_en.draft_client_response}`],
   ];
+
+  // The engineer report exists in both languages and both are offered as their own
+  // tab, regardless of the dashboard's language setting: the engineer email that
+  // actually goes out is the English one, and a reviewer comparing the two needs
+  // them side by side rather than behind a global toggle. Each keeps its own
+  // language's section headers. Older stored results carry only the English one,
+  // so each tab is added only when its content is actually present.
+  const engineerEn = ai.engineer_notification_en;
+  if (engineerEn) {
+    tabs.push(["engineer", t("tab_engineer"),
+      `${engineerEn.alert_summary}\n\nASSESSMENT\n${engineerEn.assessment}\n\nCONFIRMED\n${bullets(engineerEn.confirmed_information)}\n\nUNKNOWN\n${bullets(engineerEn.unknown_information)}\n\nINVESTIGATE\n${bullets(engineerEn.investigation_items)}\n\nRECOMMENDED ACTIONS\n${bullets(engineerEn.recommended_actions)}\n\nDRAFT CLIENT RESPONSE\n${engineerEn.draft_client_response}`]);
+  }
+  const engineerJa = ai.engineer_notification_ja;
+  if (engineerJa) {
+    tabs.push(["engineer-ja", t("tab_engineer_ja"),
+      `${engineerJa.alert_summary}\n\n【評価】\n${engineerJa.assessment}\n\n【確認済みの情報】\n${bullets(engineerJa.confirmed_information)}\n\n【不明な情報】\n${bullets(engineerJa.unknown_information)}\n\n【調査項目】\n${bullets(engineerJa.investigation_items)}\n\n【推奨アクション】\n${bullets(engineerJa.recommended_actions)}\n\n【クライアント返信案】\n${engineerJa.draft_client_response}`]);
+  }
 
   // The analysis panel leads: it is what the AI concluded, and the four
   // notification tabs are the audience-specific drafts derived from it.
@@ -565,10 +801,14 @@ function notificationTabs(ai) {
   ];
 
   return `
-    <div class="tabs">${panels.map((p, i) =>
-      `<div class="tabbtn ${i === 0 ? "active" : ""}" data-tab="${esc(p.id)}">${esc(p.label)}</div>`).join("")}</div>
+    <div class="tabs" role="tablist">${panels.map((p, i) =>
+      `<button type="button" role="tab" class="tabbtn ${i === 0 ? "active" : ""}" ` +
+      `id="notification-tab-${esc(p.id)}" aria-controls="notification-panel-${esc(p.id)}" ` +
+      `tabindex="${i === 0 ? "0" : "-1"}" aria-selected="${i === 0}" data-tab="${esc(p.id)}">${esc(p.label)}</button>`).join("")}</div>
+    <div class="notification-actions"><button type="button" class="small" data-copy-notification>${esc(t("btn_copy_panel"))}</button></div>
     ${panels.map((p, i) =>
-      `<div class="${p.cls}" data-panel="${esc(p.id)}" style="${i === 0 ? "" : "display:none"}">${p.html}</div>`).join("")}`;
+      `<div class="${p.cls}" role="tabpanel" tabindex="0" id="notification-panel-${esc(p.id)}" ` +
+      `aria-labelledby="notification-tab-${esc(p.id)}" data-panel="${esc(p.id)}" style="${i === 0 ? "" : "display:none"}">${p.html}</div>`).join("")}`;
 }
 
 /* ══════════════ AI visibility ══════════════
@@ -629,6 +869,7 @@ function renderAiTraces() {
       <td>${badge(row.status)}</td>
       <td>${badge(row.risk)}</td>
     </tr>`).join("");
+  makeRowsFocusable(document.getElementById("aiTraceRows"), "tr.clickable");
 }
 
 document.getElementById("aiTraceRows").addEventListener("click", (e) => {
@@ -650,7 +891,7 @@ function renderAiLiveFeed() {
   document.getElementById("aiLiveFeed").innerHTML = items.map((ev) => `
     <div class="logline" style="grid-template-columns:20px 68px 1fr">
       <span>${esc(aiLiveIcon(ev.type))}</span>
-      <span class="dim">${esc(new Date(ev.ts * 1000).toLocaleTimeString())}</span>
+      <span class="dim">${esc(fmtClock(ev.ts * 1000))}</span>
       <span class="logmsg"><strong>${esc(tBackendText(ev.label))}</strong>${ev.detail ? ` <span class="muted">— ${esc(tBackendText(ev.detail))}</span>` : ""}
         <span class="muted mono" style="margin-left:6px">${esc((ev.trace_id || "").slice(0, 10))}</span></span>
     </div>`).join("");
@@ -694,7 +935,7 @@ function aiExternalCallsTable(calls) {
       <td>${esc(c.service)}</td>
       <td class="mono">${esc(c.domain)}</td>
       <td class="muted">${esc(tBackendText(c.purpose))}</td>
-      <td class="muted">${esc(new Date(c.requested_at * 1000).toLocaleTimeString())}</td>
+      <td class="muted">${esc(fmtClock(c.requested_at * 1000))}</td>
       <td>${badge(c.status)}</td>
       <td class="muted">${fmtMs(c.latency_ms)}</td>
       <td class="muted">${esc(tBackendText(c.data_sent_category))}</td>
@@ -707,7 +948,7 @@ function aiTimelineList(events_) {
   if (!events_ || !events_.length) return `<p class="muted">${esc(t("timeline_empty"))}</p>`;
   return events_.map((ev) => `
     <div class="logline" style="grid-template-columns:74px 1fr">
-      <span class="dim">${esc(new Date(ev.ts * 1000).toLocaleTimeString())}</span>
+      <span class="dim">${esc(fmtClock(ev.ts * 1000))}</span>
       <span class="logmsg"><strong>${esc(tBackendText(ev.label))}</strong>${ev.detail ? `<br><span class="muted">${esc(tBackendText(ev.detail))}</span>` : ""}</span>
     </div>`).join("");
 }
@@ -765,7 +1006,7 @@ function renderAiTraceModal(tr) {
       <div>${esc(t("kv_provider_model"))}</div><div class="mono">${esc(tr.provider)} / ${esc(tr.model)}</div>
       <div>${esc(t("kv_status"))}</div><div>${badge(tr.status)}</div>
       <div>${esc(t("kv_risk"))}</div><div>${badge(tr.risk)}</div>
-      <div>${esc(t("kv_started"))}</div><div class="muted">${esc(new Date(tr.started_at * 1000).toLocaleString())}</div>
+      <div>${esc(t("kv_started"))}</div><div class="muted">${esc(fmtDateTime(tr.started_at * 1000))}</div>
       <div>${esc(t("kv_duration"))}</div><div class="muted">${esc(fmtMs(tr.duration_ms))}</div>
       <div>${esc(t("kv_external_transfer"))}</div><div>${tr.external_data_transfer
         ? `<span style="color:var(--warning)">${esc(t("external_transfer_yes"))}</span>`
@@ -849,31 +1090,136 @@ ${esc(t("ds_policy"))}: ${esc((ds.policy_checks || []).map((p) => tBackendText(p
 /* ══════════════ alert detail modal ══════════════ */
 
 function showModal(title, bodyHtml) {
+  const overlay = document.getElementById("overlay");
+  if (!overlay.classList.contains("show")) {
+    state.modalReturnFocus = document.activeElement;
+  }
+  // Any modal opening replaces whatever was open; openAiModal re-sets this.
+  state.openAiItem = null;
   const box = document.getElementById("modalBox");
   box.innerHTML = `
-    <div class="head"><h3>${esc(title)}</h3><button class="small" id="closeModal">${esc(t("btn_close"))}</button></div>
+    <div class="head"><h3 id="modalTitle">${esc(title)}</h3><button class="small" id="closeModal">${esc(t("btn_close"))}</button></div>
     <div class="body">${bodyHtml}</div>`;
-  document.getElementById("overlay").classList.add("show");
-  document.getElementById("closeModal").onclick = () =>
-    document.getElementById("overlay").classList.remove("show");
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.setAttribute("aria-labelledby", "modalTitle");
+  box.setAttribute("tabindex", "-1");
+  overlay.classList.add("show");
+  document.getElementById("closeModal").onclick = closeModal;
   wireTabs(box);
+
+  // Remember where focus came from, and move it into the dialog. Without this a
+  // keyboard user opens a modal and their focus is still behind it, on a row
+  // they can no longer see.
+  box.focus();
 }
+
+/* Keeps Tab inside the open dialog. A modal that can be tabbed out of is a modal
+ * only for people using a mouse. */
+document.getElementById("overlay").addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const box = document.getElementById("modalBox");
+  const focusable = [...box.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => el.offsetParent !== null && !el.disabled && el.tabIndex >= 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && (document.activeElement === first || document.activeElement === box)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 function wireTabs(box) {
   box.querySelectorAll(".tabbtn").forEach((tab) => (tab.onclick = () => {
-    box.querySelectorAll(".tabbtn").forEach((btn) => btn.classList.remove("active"));
+    box.querySelectorAll(".tabbtn").forEach((btn) => {
+      btn.classList.remove("active");
+      btn.setAttribute("aria-selected", "false");
+      btn.tabIndex = -1;
+    });
     box.querySelectorAll("[data-panel]").forEach((p) => (p.style.display = "none"));
     tab.classList.add("active");
+    tab.setAttribute("aria-selected", "true");
+    tab.tabIndex = 0;
     const panel = box.querySelector(`[data-panel="${CSS.escape(tab.dataset.tab)}"]`);
     if (panel) panel.style.display = "block";
   }));
+  box.querySelectorAll(".tabs").forEach((tabs) => tabs.addEventListener("keydown", (e) => {
+    const buttons = [...tabs.querySelectorAll(".tabbtn")];
+    const current = buttons.indexOf(e.target);
+    if (current < 0) return;
+    let next;
+    if (e.key === "ArrowRight") next = (current + 1) % buttons.length;
+    else if (e.key === "ArrowLeft") next = (current + buttons.length - 1) % buttons.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = buttons.length - 1;
+    else return;
+    e.preventDefault();
+    buttons[next].click();
+    buttons[next].focus();
+  }));
+  const copy = box.querySelector("[data-copy-notification]");
+  if (copy) copy.onclick = async () => {
+    const active = box.querySelector(".tabbtn.active");
+    const panel = active && box.querySelector(`[data-panel="${CSS.escape(active.dataset.tab)}"]`);
+    if (!panel) return;
+    try {
+      await navigator.clipboard.writeText(panel.innerText);
+      toast(t("toast_panel_copied"));
+    } catch (e) { toast(t("toast_copy_failed"), true); }
+  };
+}
+
+/* Makes a container's click-to-drill-down rows reachable without a mouse.
+ * The rows are <tr>/<div>, which have no implicit role or tab stop, so every
+ * drill-down in the app (alerts, AI content, AI traces, emails) was
+ * mouse-only. Rather than rewriting each renderer's markup, the rows are
+ * annotated after render and Enter/Space are mapped onto the existing click
+ * handler — the same behaviour a button would give. */
+function makeRowsFocusable(container, selector) {
+  if (!container) return;
+  container.querySelectorAll(selector).forEach((row) => {
+    if (row.dataset.kbd) return;
+    row.dataset.kbd = "1";
+    row.setAttribute("tabindex", "0");
+    row.setAttribute("role", "button");
+    row.addEventListener("keydown", (e) => {
+      if (e.target !== row) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        row.click();
+      }
+    });
+  });
+}
+
+function closeModal() {
+  if (!document.getElementById("overlay").classList.contains("show")) return;
+  document.getElementById("overlay").classList.remove("show");
+  state.openAiItem = null;
+  // Put focus back where it was, so closing a modal does not dump a keyboard
+  // user at the top of the document.
+  const target = state.modalReturnFocus;
+  state.modalReturnFocus = null;
+  if (target && document.contains(target)) target.focus();
+  else if (target) {
+    // Live updates and language changes replace list rows. Find the same item
+    // by its stable identifier so closing still returns to the original row.
+    const attr = ["data-ai-id", "data-id", "data-email", "data-trace"].find((name) => target.hasAttribute(name));
+    const replacement = attr && document.querySelector(`[${attr}="${CSS.escape(target.getAttribute(attr))}"]`);
+    (replacement || document.querySelector("nav a.tab.active"))?.focus();
+  }
 }
 
 document.getElementById("overlay").addEventListener("click", (e) => {
-  if (e.target.id === "overlay") e.currentTarget.classList.remove("show");
+  if (e.target.id === "overlay") closeModal();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") document.getElementById("overlay").classList.remove("show");
+  if (e.key === "Escape") closeModal();
 });
 
 const kvRow = (k, v) => `<div>${esc(k)}</div><div>${esc(v)}</div>`;
@@ -891,8 +1237,8 @@ async function openAlert(id) {
       <div>${esc(t("kv_correlation_id2"))}</div><div class="mono">${esc(job.correlation_id)}</div>
       <div>${esc(t("kv_status2"))}</div><div>${badge(job.status)}</div>
       <div>${esc(t("kv_source"))}</div><div>${badge(job.source)}</div>
-      ${kvRow(t("kv_created"), new Date(job.created_at * 1000).toLocaleString())}
-      ${kvRow(t("kv_updated"), new Date(job.updated_at * 1000).toLocaleString())}
+      ${kvRow(t("kv_created"), fmtDateTime(job.created_at * 1000))}
+      ${kvRow(t("kv_updated"), fmtDateTime(job.updated_at * 1000))}
       ${job.error ? `<div>${esc(t("kv_error2"))}</div><div style="color:var(--text-danger)">${esc(job.error)}</div>` : ""}
     </div>`;
 
@@ -930,48 +1276,448 @@ async function openAlert(id) {
   showModal(t("modal_alert_detail"), html);
 }
 
+/* job.raw_payload (from GET /jobs/{id}) is NOT literally the bytes that arrived
+ * over the wire — it is `EsetRawPayload.model_dump()` (src/api/webhook.py), the
+ * platform's own envelope: ESET's 24 declared fields (mostly null for a
+ * non-ESET-shaped alert) plus, nested one level down under its OWN "raw_payload"
+ * key, the actual original submission. It has to be stored in that wrapped shape
+ * — src/pipeline/orchestrator.py's retry path reconstructs `EsetRawPayload(**raw_payload)`
+ * directly from this exact dict, so re-shaping it here would break Retry.
+ * This drills into that nested key to show what the user actually means by "the
+ * raw request": the original submitted JSON, not the platform's wrapper around
+ * it. Falls back to the outer object for the rare historical row that predates
+ * this convention or genuinely had no extra data of its own. */
+function originalRequestPayload(job) {
+  const outer = (job && job.raw_payload) || {};
+  const inner = outer.raw_payload;
+  return (inner && typeof inner === "object" && Object.keys(inner).length) ? inner : outer;
+}
+
+/* Pretty-printed original request JSON with a copy button — a common reason to
+ * open this is pasting it into a bug report or a support ticket. */
+function rawPayloadHtml(payload) {
+  const pretty = JSON.stringify(payload ?? {}, null, 2);
+  return `
+    <div class="row" style="justify-content:space-between;margin-bottom:9px">
+      <span class="muted" style="font-size:11.5px">${esc(t("stage_ingest_desc"))}</span>
+      <button class="small" id="copyRawPayload">${esc(t("btn_copy"))}</button>
+    </div>
+    <pre class="code" id="rawPayloadPre">${esc(pretty)}</pre>`;
+}
+
+function wireRawPayloadCopy(box) {
+  const btn = box.querySelector("#copyRawPayload");
+  const pre = box.querySelector("#rawPayloadPre");
+  if (!btn || !pre) return;
+  btn.onclick = () => {
+    navigator.clipboard.writeText(pre.textContent).then(
+      () => toast(t("toast_copied")),
+      () => toast(t("toast_copy_blocked"), true));
+  };
+}
+
+/** Standalone raw-request viewer, reachable from the Alerts table for ANY alert
+ * (not only one currently visible in the session-only Pipeline Flow view — see
+ * openStageDetail's INGEST case in dashboard-viz.js, which renders the same HTML
+ * from a job it already has in hand, without a second fetch). */
+async function openRawPayload(id) {
+  showModal(t("modal_raw_request"), `<p class="muted">${esc(t("modal_fetching_alert"))}</p>`);
+  let data;
+  try { data = await api(`/jobs/${encodeURIComponent(id)}`); }
+  catch (e) { showModal(t("modal_error"), `<p class="muted">${esc(tBackendText(e.message))}</p>`); return; }
+
+  showModal(t("modal_raw_request"), rawPayloadHtml(originalRequestPayload(data.job)));
+  wireRawPayloadCopy(document.getElementById("modalBox"));
+}
+
 /* ══════════════ logs ══════════════ */
 
+// Filtering, sorting and paging all happen server-side
+// (src/services/log_reader.py); this holds the current query and the last
+// page returned for it.
+const logState = {
+  page: 1,
+  pageSize: 100,
+  levels: new Set(),       // empty = every level
+  source: "",              // "" | "app" | "http"
+  event: "",
+  q: "",
+  range: 0,                // minutes; 0 = all time
+  sort: "desc",
+  res: null,
+  signature: "",
+};
+const LOG_LEVELS = ["debug", "info", "warning", "error", "critical"];
+const LOG_POLL_MS = 5000;
+// Keys already shown in their own column (or internal to the viewer).
+const LOG_HIDDEN_KEYS = new Set(["_id", "_source"]);
+// Expanded rows, by the server-assigned _id (the line's byte offset), which
+// stays the same for a given line across refreshes and pages.
+const logExpanded = new Set();
 let logTimer = null;
+let logEntriesById = new Map();
+let logFetchSeq = 0;
 
-async function loadLogs() {
-  const level = document.getElementById("logLevel").value;
-  const q = document.getElementById("logSearch").value.trim();
-  const params = new URLSearchParams({ limit: "300" });
-  if (level) params.set("level", level);
-  if (q) params.set("q", q);
+function logQueryParams() {
+  const p = new URLSearchParams({
+    page: String(logState.page),
+    page_size: String(logState.pageSize),
+    sort: logState.sort,
+  });
+  if (logState.levels.size) p.set("level", [...logState.levels].join(","));
+  if (logState.source) p.set("source", logState.source);
+  if (logState.event) p.set("event", logState.event);
+  if (logState.q) p.set("q", logState.q);
+  if (logState.range) p.set("since_minutes", String(logState.range));
+  return p;
+}
 
-  try {
-    const res = await api("/logs?" + params.toString());
-    renderLogs(res.lines);
-  } catch (e) { /* handled */ }
+/** Live refresh only makes sense while looking at the newest entries, and
+ * would yank an open row out from under the reader, so it pauses otherwise. */
+function logLiveStatus() {
+  if (!document.getElementById("logAuto").checked) return "off";
+  if (logExpanded.size) return "paused_open";
+  if (logState.page !== 1 || logState.sort !== "desc") return "paused_page";
+  return "live";
+}
 
+function scheduleLogPoll() {
   clearTimeout(logTimer);
-  if (document.getElementById("logAuto").checked && state.view === "logs") {
-    logTimer = setTimeout(loadLogs, 3000);
+  renderLogLiveState();
+  if (state.view === "logs" && logLiveStatus() === "live") {
+    logTimer = setTimeout(() => loadLogs({ quiet: true }), LOG_POLL_MS);
   }
 }
 
-function renderLogs(lines) {
-  document.getElementById("logsEmpty").style.display = lines.length ? "none" : "block";
-  const skip = new Set(["event", "level", "timestamp", "logger", "filename", "lineno", "func_name"]);
-  document.getElementById("logList").innerHTML = lines.slice().reverse().map((e) => {
-    const ts = e.timestamp ? String(e.timestamp).slice(11, 19) : "";
-    const lvl = (e.level || "info").toLowerCase();
-    const extras = Object.keys(e)
-      .filter((k) => !skip.has(k))
-      .map((k) => `<span class="kvp">${esc(k)}=</span>${esc(String(e[k]).slice(0, 220))}`)
-      .join("  ");
-    return `<div class="logline">
-      <span class="dim">${esc(ts)}</span>
-      <span class="lvl ${esc(lvl)}">${esc(tLogLevel(lvl))}</span>
-      <span class="logmsg"><strong>${esc(e.event || "")}</strong> ${extras}</span>
-    </div>`;
-  }).join("");
+async function loadLogs(opts = {}) {
+  const seq = ++logFetchSeq;
+  clearTimeout(logTimer);
+  try {
+    const res = await api("/logs?" + logQueryParams().toString());
+    if (seq !== logFetchSeq) return;   // a newer query superseded this one
+    logState.res = res;
+    logState.page = res.page || 1;
+    const signature = (res.lines || []).map((e) => e._id).join(",") + "|" + res.total;
+    // Nothing changed since the last poll: leave the DOM (and any text
+    // selection or scroll position inside it) alone.
+    if (!(opts.quiet && signature === logState.signature)) {
+      logState.signature = signature;
+      renderLogs();
+    }
+  } catch (e) { /* api() already surfaced it */ }
+  scheduleLogPoll();
 }
-document.getElementById("logLevel").onchange = loadLogs;
-document.getElementById("logSearch").oninput = () => { clearTimeout(logTimer); logTimer = setTimeout(loadLogs, 300); };
-document.getElementById("logAuto").onchange = loadLogs;
+
+/** Resets to page 1 and fetches — for every filter change. */
+function applyLogFilter() {
+  logState.page = 1;
+  logExpanded.clear();
+  loadLogs();
+}
+
+function renderLogs() {
+  const res = logState.res || { lines: [], total: 0, page: 1, pages: 1 };
+  const lines = res.lines || [];
+  logEntriesById = new Map(lines.map((e) => [String(e._id), e]));
+  document.getElementById("logsEmpty").style.display = lines.length ? "none" : "block";
+  document.getElementById("logList").innerHTML = lines.map(logRowHtml).join("");
+  renderLogControls();
+}
+
+function logTimeHtml(ts) {
+  if (!ts) return `<span class="dim">—</span>`;
+  const d = new Date(ts);
+  if (isNaN(d)) return `<span class="dim">${esc(ts)}</span>`;
+  const date = d.toLocaleDateString(uiLocale(), { month: "2-digit", day: "2-digit" });
+  return `<span class="dim" title="${esc(fmtDateTime(d))}">${esc(date)} ${esc(fmtClock(d))}</span>`;
+}
+
+function httpStatusClass(status) {
+  const n = Number(status);
+  if (!n) return status === "accepted" ? "ok" : "warn";
+  return n >= 500 ? "bad" : n >= 400 ? "warn" : "ok";
+}
+
+function logFieldKeys(e) {
+  return Object.keys(e).filter((k) => !LOG_HIDDEN_KEYS.has(k));
+}
+
+function logRowHtml(e) {
+  const id = String(e._id);
+  const open = logExpanded.has(id);
+  const lvl = (e.level || "info").toLowerCase();
+  let headline;
+  if (e._source === "http") {
+    headline = `<span class="http-m">${esc(e.http_method || "")}</span>${esc(e.http_path || "")}`
+      + `<span class="http-s ${httpStatusClass(e.http_status)}">${esc(e.http_status || "")}</span>`
+      + ` <span class="dim">${esc(e.client || "")}</span>`;
+  } else {
+    const extra = logFieldKeys(e).filter((k) => !["event", "level", "timestamp"].includes(k));
+    const summary = extra.map((k) => {
+      const v = (e[k] !== null && typeof e[k] === "object") ? JSON.stringify(e[k]) : String(e[k]);
+      return `<span class="kvp">${esc(k)}=</span>${esc(v.length > 80 ? v.slice(0, 80) + "…" : v)}`;
+    }).join("  ");
+    headline = `<strong>${esc(e.event || "")}</strong>${summary ? `<span class="sum">${summary}</span>` : ""}`;
+  }
+  return `<div class="logline${open ? " open" : ""}" data-logid="${esc(id)}" tabindex="0" role="button" aria-expanded="${open}">
+    <svg class="log-caret" aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>
+    ${logTimeHtml(e.timestamp)}
+    <span class="lvl ${esc(lvl)}">${esc(tLogLevel(lvl))}</span>
+    <span class="logmsg">${headline}</span>
+    ${open ? logDetailHtml(e) : ""}
+  </div>`;
+}
+
+/** One field's value: dicts/lists pretty-printed, long or multi-line text in
+ * a scrollable block, anything short inline. */
+function logFieldValueHtml(value) {
+  if (value !== null && typeof value === "object") {
+    return `<pre class="code">${esc(JSON.stringify(value, null, 2))}</pre>`;
+  }
+  const text = String(value);
+  if (text.length > 90 || text.includes("\n")) return `<pre class="code">${esc(text)}</pre>`;
+  return `<span class="mono">${esc(text)}</span>`;
+}
+
+function logDetailHtml(e) {
+  const id = String(e._id);
+  const keys = logFieldKeys(e);
+  const cid = e.correlation_id ? String(e.correlation_id) : "";
+  const clean = Object.fromEntries(keys.map((k) => [k, e[k]]));
+  return `<div class="log-detail" data-detail="${esc(id)}">
+    <div class="log-detail-grid">
+      ${keys.map((k) => `<div class="log-detail-key">${esc(k)}</div><div>${logFieldValueHtml(e[k])}</div>`).join("")}
+    </div>
+    <div class="log-detail-actions">
+      <button class="small" data-log-act="copy" data-id="${esc(id)}">${esc(t("btn_copy_json"))}</button>
+      <button class="small" data-log-act="raw" data-id="${esc(id)}">${esc(t("btn_view_json"))}</button>
+      ${e._source !== "http" && e.event ? `<button class="small" data-log-act="event" data-id="${esc(id)}">${esc(t("btn_only_this_event"))}</button>` : ""}
+      ${cid ? `<button class="small" data-log-act="cid" data-id="${esc(id)}">${esc(t("btn_trace_correlation"))}</button>` : ""}
+      ${cid ? `<button class="small" data-log-act="timeline" data-id="${esc(id)}">${esc(t("btn_timeline"))}</button>` : ""}
+    </div>
+    <pre class="code rawjson" hidden>${esc(JSON.stringify(clean, null, 2))}</pre>
+  </div>`;
+}
+
+function toggleLogRow(row) {
+  const id = row.dataset.logid;
+  const entry = logEntriesById.get(id);
+  if (!entry) return;
+  if (logExpanded.has(id)) logExpanded.delete(id); else logExpanded.add(id);
+  const tmp = document.createElement("div");
+  tmp.innerHTML = logRowHtml(entry);
+  const fresh = tmp.firstElementChild;
+  row.replaceWith(fresh);
+  fresh.focus({ preventScroll: true });
+  scheduleLogPoll();
+}
+
+function logAction(act, entry) {
+  if (act === "copy") {
+    const clean = Object.fromEntries(logFieldKeys(entry).map((k) => [k, entry[k]]));
+    navigator.clipboard.writeText(JSON.stringify(clean, null, 2)).then(
+      () => toast(t("toast_copied")), () => toast(t("toast_copy_blocked"), true));
+  } else if (act === "event") {
+    logState.event = entry.event;
+    applyLogFilter();
+  } else if (act === "cid") {
+    logState.q = String(entry.correlation_id);
+    document.getElementById("logSearch").value = logState.q;
+    applyLogFilter();
+  } else if (act === "timeline" && typeof openAlertTimeline === "function") {
+    openAlertTimeline(String(entry.correlation_id));
+  }
+}
+
+document.getElementById("logList").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-log-act]");
+  if (btn) {
+    if (btn.dataset.logAct === "raw") {
+      const pre = btn.closest(".log-detail").querySelector(".rawjson");
+      pre.hidden = !pre.hidden;
+      return;
+    }
+    const entry = logEntriesById.get(btn.dataset.id);
+    if (entry) logAction(btn.dataset.logAct, entry);
+    return;
+  }
+  // Clicks inside the open detail panel (selecting text, scrolling a code
+  // block) must not collapse it; neither should finishing a text selection.
+  if (e.target.closest(".log-detail")) return;
+  if (String(window.getSelection && window.getSelection()).length) return;
+  const row = e.target.closest(".logline");
+  if (row) toggleLogRow(row);
+});
+document.getElementById("logList").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  if (!e.target.classList || !e.target.classList.contains("logline")) return;
+  e.preventDefault();
+  toggleLogRow(e.target);
+});
+
+function setSegActive(container, attr, value) {
+  container.querySelectorAll("button").forEach((b) => {
+    const on = b.getAttribute(attr) === String(value);
+    b.classList.toggle("primary", on);
+    b.setAttribute("aria-pressed", String(on));
+  });
+}
+
+function renderLogControls() {
+  const res = logState.res || {};
+  const facets = res.facets || {};
+  const levelCounts = facets.levels || {};
+
+  document.getElementById("logLevels").innerHTML = LOG_LEVELS.map((lv) => `
+    <button class="small lvlchip ${lv}" data-level="${lv}" aria-pressed="${logState.levels.has(lv)}">
+      <span class="sw"></span>${esc(tLogLevel(lv))}<span class="n">${esc(fmtCount(levelCounts[lv] || 0))}</span>
+    </button>`).join("");
+
+  setSegActive(document.getElementById("logRange"), "data-range", logState.range);
+  setSegActive(document.getElementById("logSource"), "data-source", logState.source);
+  setSegActive(document.getElementById("logPageSize"), "data-size", logState.pageSize);
+  const sources = facets.sources || {};
+  document.querySelectorAll("#logSource button").forEach((b) => {
+    const s = b.dataset.source;
+    const n = s ? (sources[s] || 0) : (sources.app || 0) + (sources.http || 0);
+    b.textContent = `${t(b.getAttribute("data-i18n"))} · ${fmtCount(n)}`;
+  });
+
+  const sel = document.getElementById("logEvent");
+  const events = (facets.events || []).slice();
+  if (logState.event && !events.some(([name]) => name === logState.event)) events.unshift([logState.event, 0]);
+  sel.innerHTML = `<option value="">${esc(t("opt_all_events"))}</option>` + events.map(([name, n]) => {
+    const label = name.length > 60 ? name.slice(0, 60) + "…" : name;
+    return `<option value="${esc(name)}">${esc(label)} (${esc(fmtCount(n))})</option>`;
+  }).join("");
+  sel.value = logState.event;
+
+  document.getElementById("logSort").textContent = t(logState.sort === "desc" ? "sort_newest" : "sort_oldest");
+
+  const total = res.total || 0, pages = res.pages || 1, page = res.page || 1;
+  const from = total ? (page - 1) * logState.pageSize + 1 : 0;
+  const to = Math.min(total, page * logState.pageSize);
+  let text = t("logs_showing", fmtCount(from), fmtCount(to), fmtCount(total));
+  if (res.window && res.window.truncated) text += " " + t("logs_window_truncated");
+  document.getElementById("logRangeText").textContent = text;
+  document.getElementById("logPageLabel").textContent = t("page_word");
+  const input = document.getElementById("logPageInput");
+  input.value = page; input.max = pages;
+  document.getElementById("logPageOf").textContent = t("page_of", fmtCount(pages));
+  document.getElementById("logFirst").disabled = document.getElementById("logPrev").disabled = page <= 1;
+  document.getElementById("logNext").disabled = document.getElementById("logLast").disabled = page >= pages;
+
+  const filtered = logState.levels.size || logState.source || logState.event || logState.q || logState.range;
+  document.getElementById("logClear").style.visibility = filtered ? "visible" : "hidden";
+  renderLogLiveState();
+}
+
+function renderLogLiveState() {
+  const el = document.getElementById("logLiveState");
+  if (!el) return;
+  const status = logLiveStatus();
+  el.querySelector(".dot").className = "dot" + (status === "live" ? " ok live" : status === "off" ? "" : " warn");
+  el.querySelector("span:last-child").textContent = t("logs_live_" + status);
+}
+
+function goToLogPage(page) {
+  const pages = (logState.res && logState.res.pages) || 1;
+  const target = Math.min(Math.max(1, page), pages);
+  if (target === logState.page) return;
+  logState.page = target;
+  logExpanded.clear();
+  loadLogs();
+  document.getElementById("logList").scrollTop = 0;
+}
+
+document.getElementById("logLevels").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-level]");
+  if (!chip) return;
+  const lv = chip.dataset.level;
+  if (logState.levels.has(lv)) logState.levels.delete(lv); else logState.levels.add(lv);
+  applyLogFilter();
+});
+document.getElementById("logRange").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-range]");
+  if (b) { logState.range = Number(b.dataset.range); applyLogFilter(); }
+});
+document.getElementById("logSource").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-source]");
+  if (b) { logState.source = b.dataset.source; applyLogFilter(); }
+});
+document.getElementById("logPageSize").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-size]");
+  if (!b) return;
+  // Keep the first visible entry on screen when the page size changes.
+  const firstIndex = (logState.page - 1) * logState.pageSize;
+  logState.pageSize = Number(b.dataset.size);
+  logState.page = Math.floor(firstIndex / logState.pageSize) + 1;
+  loadLogs();
+});
+document.getElementById("logEvent").onchange = (e) => { logState.event = e.target.value; applyLogFilter(); };
+document.getElementById("logSort").onclick = () => {
+  logState.sort = logState.sort === "desc" ? "asc" : "desc";
+  applyLogFilter();
+};
+document.getElementById("logSearch").oninput = (e) => {
+  clearTimeout(logTimer);
+  logTimer = setTimeout(() => { logState.q = e.target.value.trim(); applyLogFilter(); }, 300);
+};
+document.getElementById("logClear").onclick = () => {
+  Object.assign(logState, { levels: new Set(), source: "", event: "", q: "", range: 0 });
+  document.getElementById("logSearch").value = "";
+  applyLogFilter();
+};
+document.getElementById("logFirst").onclick = () => goToLogPage(1);
+document.getElementById("logPrev").onclick = () => goToLogPage(logState.page - 1);
+document.getElementById("logNext").onclick = () => goToLogPage(logState.page + 1);
+document.getElementById("logLast").onclick = () => goToLogPage((logState.res && logState.res.pages) || 1);
+document.getElementById("logPageInput").onchange = (e) => goToLogPage(Number(e.target.value) || 1);
+document.getElementById("logRefresh").onclick = () => loadLogs();
+
+/** Downloads every entry matching the current filters (not just this page).
+ * Fetched rather than linked because the request needs the key header. */
+document.getElementById("logExport").onclick = async () => {
+  const btn = document.getElementById("logExport");
+  const p = logQueryParams();
+  p.delete("page"); p.delete("page_size");
+  btn.disabled = true;
+  try {
+    const res = await fetch(API + "/logs/export?" + p.toString(), {
+      headers: dashKey() ? { "X-Dashboard-Key": dashKey() } : {},
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const blob = await res.blob();
+    const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name ? name[1] : "soc-lite-logs.ndjson";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(t("toast_logs_exported"));
+  } catch (e) {
+    toast(t("toast_logs_export_failed"), true);
+  }
+  btn.disabled = false;
+};
+
+// "/" jumps to the log search, as in most log tools — unless already typing.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || state.view !== "logs" || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || document.activeElement.isContentEditable) return;
+  e.preventDefault();
+  document.getElementById("logSearch").focus();
+});
+document.getElementById("logAuto").onchange = () => {
+  if (logLiveStatus() === "live") loadLogs(); else scheduleLogPoll();
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearTimeout(logTimer);
+  else if (state.view === "logs") loadLogs({ quiet: true });
+});
 
 /* ══════════════ settings ══════════════ */
 
@@ -993,7 +1739,22 @@ async function loadSettings() {
     document.getElementById("runtimeKv").innerHTML =
       Object.entries(s.runtime).map(([k, v]) =>
         `<div>${esc(RUNTIME_KEY_I18N[k] ? t(RUNTIME_KEY_I18N[k]) : k.replace(/_/g, " "))}</div><div class="mono">${esc(v)}</div>`).join("");
+    renderPosture(s.security || []);
   } catch (e) { /* handled */ }
+}
+
+/** Settings → Security posture: one line per deployment control. */
+function renderPosture(items) {
+  const dot = { ok: "ok", warn: "warn", bad: "bad" };
+  document.getElementById("postureList").innerHTML = items.map((it) => `
+    <div class="posture-item">
+      <span class="dot ${dot[it.status] || ""}"></span>
+      <div><strong>${esc(t(`posture_${it.id}_title`))}</strong>
+        <span>${esc(t(`posture_${it.id}_${it.status}`))}</span></div>
+    </div>`).join("");
+  const open = items.filter((it) => it.status !== "ok").length;
+  document.getElementById("postureSummary").textContent =
+    open ? t("posture_summary_open", open) : t("posture_summary_all_ok");
 }
 
 document.getElementById("saveRecipients").onclick = async () => {
@@ -1074,7 +1835,18 @@ function renderApiDocs() {
 
 /* ══════════════ health ══════════════ */
 
-const setDot = (id, ok) => (document.getElementById(id).className = "dot " + (ok ? "ok" : "bad"));
+/* A health dot's only visual state is its colour, so the same fact is written
+ * into aria-label as text — otherwise "is the database up?" is unanswerable
+ * without colour vision. The service name is read from the markup so the two
+ * can never drift apart. */
+const setDot = (id, ok) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = "dot " + (ok ? "ok" : "bad");
+  const name = (el.getAttribute("aria-label") || id).split(":")[0];
+  el.setAttribute("aria-label", `${name}: ${t(ok ? "health_ok" : "health_down")}`);
+  el.setAttribute("title", `${name}: ${t(ok ? "health_ok" : "health_down")}`);
+};
 
 async function loadHealth() {
   try {
@@ -1089,19 +1861,51 @@ async function loadHealth() {
 
 /* ══════════════ websocket ══════════════ */
 
+/* The access key is offered as a WebSocket SUBPROTOCOL, not as a ?key= query
+ * parameter. A query string on the handshake is logged by the server's access
+ * log — which this dashboard then serves back to the browser in its own Logs
+ * view — and is kept in browser history and by any proxy in between. A
+ * subprotocol offer rides in a request header instead. base64url keeps it a
+ * legal subprotocol token whatever characters the key contains. */
+function wsKeyProtocol(key) {
+  const bytes = new TextEncoder().encode(key);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return "socpass." + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Paints the live-feed pill from state.wsState. Called on every status change
+ * AND on every language switch, so the two can never disagree. */
+function renderWsStatus() {
+  const dot = document.getElementById("wsDot");
+  const label = document.getElementById("wsLabel");
+  if (!dot || !label) return;
+  const spec = {
+    live: { cls: "dot ok live", key: "ws_live" },
+    reconnecting: { cls: "dot bad", key: "ws_reconnecting" },
+    connecting: { cls: "dot", key: "ws_connecting" },
+  }[state.wsState] || { cls: "dot", key: "ws_connecting" };
+  dot.className = spec.cls;
+  label.textContent = t(spec.key);
+  // The dot is the only visual state cue, so the same fact has to exist as text
+  // for anyone who cannot use colour.
+  dot.setAttribute("aria-label", `${t("pill_live_feed")}: ${t(spec.key)}`);
+}
+
 function connectWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const key = dashKey();
-  const ws = new WebSocket(`${proto}://${location.host}${API}/ws${key ? "?key=" + encodeURIComponent(key) : ""}`);
+  const url = `${proto}://${location.host}${API}/ws`;
+  const ws = key ? new WebSocket(url, [wsKeyProtocol(key)]) : new WebSocket(url);
   window._ws = ws;
 
   ws.onopen = () => {
-    document.getElementById("wsDot").className = "dot ok live";
-    document.getElementById("wsLabel").textContent = t("ws_live");
+    state.wsState = "live";
+    renderWsStatus();
   };
   ws.onclose = () => {
-    document.getElementById("wsDot").className = "dot bad";
-    document.getElementById("wsLabel").textContent = t("ws_reconnecting");
+    state.wsState = "reconnecting";
+    renderWsStatus();
     if (sessionStorage.getItem("dash_key") !== null) setTimeout(connectWs, 2000);
   };
   ws.onerror = () => ws.close();
@@ -1124,8 +1928,10 @@ function handleEvent(msg) {
     upsertJob({
       correlation_id: d.correlation_id, source: d.source, status: d.pipeline_status,
       risk_level: d.risk_level, error: d.error, updated_at: Date.now() / 1000,
-      detection_name: d.normalized_alert?.detection_name,
-      endpoint_name: d.normalized_alert?.endpoint_name,
+      detection_name: knownValue(d.normalized_alert?.detection_name),
+      endpoint_name: knownValue(d.normalized_alert?.endpoint_name),
+      indicators: ["ip_address", "file_hash", "domain", "url", "object_uri"]
+        .map((key) => d.normalized_alert?.[key]),
     });
     renderAlerts();
     if (state.view === "overview") loadStats();
@@ -1175,10 +1981,11 @@ function handleEvent(msg) {
 async function boot() {
   renderApiDocs();
   try {
-    const [jobs, emails] = await Promise.all([api("/jobs?limit=300"), api("/emails")]);
+    const [jobs, emails] = await Promise.all([api("/jobs?limit=500"), api("/emails")]);
     state.jobs.clear();
     for (const row of jobs.jobs) upsertJob(jobFromRow(row));
     state.emails = emails.emails;
+    await loadRiskLevels();
     renderAlerts();
     renderEmails();
   } catch (e) { return; }
@@ -1186,6 +1993,17 @@ async function boot() {
   await loadStats();
   loadHealth();
   connectWs();
+  startPolling();
+}
+
+// boot() also runs on every Refresh click, so the periodic timers are started
+// once and only once — otherwise each click stacked another pair of intervals
+// on top of the last, and a long session ended up re-rendering the alerts table
+// dozens of times a second.
+let pollingStarted = false;
+function startPolling() {
+  if (pollingStarted) return;
+  pollingStarted = true;
   setInterval(loadHealth, 20000);
   setInterval(renderAlerts, 15000);   // keep relative timestamps fresh
 }

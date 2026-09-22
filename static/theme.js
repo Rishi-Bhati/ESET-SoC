@@ -46,6 +46,15 @@ function setTheme(theme) {
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch (e) { /* localStorage unavailable (private mode, etc.) — theme still applies for this page view */ }
   updateThemeButtons();
+  announceTheme();
+}
+
+/* The charts (dashboard-viz.js) hold colors as resolved hex, not as var()
+ * references, so a theme change has to make them redraw. An event keeps this
+ * file's "only touches the theme buttons and [data-theme]" contract intact —
+ * it announces, and does not know or care who listens. */
+function announceTheme() {
+  document.dispatchEvent(new CustomEvent("soc:themechange", { detail: { theme: currentTheme() } }));
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -59,7 +68,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // has been made yet (matches the CSS's own prefers-color-scheme behavior).
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
-      if (!document.documentElement.getAttribute("data-theme")) updateThemeButtons();
+      // With no explicit choice, the CSS has just swapped every token underneath
+      // the charts, so they need the same redraw an explicit switch triggers.
+      if (!document.documentElement.getAttribute("data-theme")) {
+        updateThemeButtons();
+        announceTheme();
+      }
     });
   }
 });

@@ -13,6 +13,16 @@ logger = structlog.get_logger(__name__)
 # Lock to synchronize concurrent writes to index.json
 _index_lock = asyncio.Lock()
 
+def alert_labels(normalized: dict | None) -> dict:
+    """detection_name / endpoint_name for index.json, omitting UNKNOWN."""
+    labels = {}
+    for key in ("detection_name", "endpoint_name"):
+        value = (normalized or {}).get(key)
+        if value and value != "UNKNOWN":
+            labels[key] = str(value)
+    return labels
+
+
 async def write_result(result: PipelineResult) -> None:
     """
     Writes the PipelineResult object as a JSON file atomically using a temp file.
@@ -70,7 +80,11 @@ async def write_result(result: PipelineResult) -> None:
             "source": result.source,
             "processed_at": result.processed_at,
             "risk_level": result.risk_level,
-            "status": result.pipeline_status
+            "status": result.pipeline_status,
+            # The normalized names, not the raw payload's: an alert posted in
+            # a non-ESET shape only has these after alias resolution, and the
+            # Alerts table would otherwise show "—" for it.
+            **alert_labels(result.normalized_alert.model_dump()),
         })
         
         # Write index.json atomically
