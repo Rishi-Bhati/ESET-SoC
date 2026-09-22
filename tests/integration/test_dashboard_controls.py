@@ -38,6 +38,15 @@ def test_settings_defaults_to_env(client: TestClient):
     assert body["runtime"]["dashboard_protected"] is False
 
 
+def test_settings_reports_security_posture_without_secrets(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_access_key", "")
+    body = client.get("/dashboard/api/settings").json()
+    posture = {p["id"]: p["status"] for p in body["security"]}
+    assert posture["dashboard_key"] == "bad"
+    assert posture["https"] == "warn"          # TestClient speaks plain http
+    assert "test_token" not in json.dumps(body)
+
+
 def test_update_recipients_persists_and_marks_source(client: TestClient):
     res = client.put("/dashboard/api/settings/recipients", json={
         "client_notification_emails": "a@example.com, b@example.com",

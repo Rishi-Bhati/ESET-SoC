@@ -2018,13 +2018,13 @@ document.getElementById("refreshBtn").onclick = () => {
 
 // Resume an existing session, otherwise show the login gate.
 (async () => {
-  if (dashKey() && (await attemptLogin(dashKey()))) {
+  if (dashKey() && (await attemptLogin(dashKey())) === null) {
     document.getElementById("login").classList.add("hidden");
     document.getElementById("app").classList.add("ready");
     boot();
   } else {
     // No key configured server-side? Then the probe succeeds with an empty key.
-    if (await attemptLogin("")) {
+    if ((await attemptLogin("")) === null) {
       document.getElementById("login").classList.add("hidden");
       document.getElementById("app").classList.add("ready");
       boot();
