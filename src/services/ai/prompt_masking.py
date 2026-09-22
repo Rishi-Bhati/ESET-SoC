@@ -68,3 +68,42 @@ def mask_alert_for_prompt(data: dict[str, Any]) -> tuple[dict[str, Any], list[st
             changed.append("object_uri")
 
     return masked, changed
+
+
+# Key names masked wherever they appear in the ORIGINAL submitted payload (see
+# mask_raw_payload_for_prompt below) — a superset of _MASKED_FIELDS's single
+# "user_name", because the raw payload is not ESET-shaped by requirement: a sender
+# may call the same concept "username", "user", "owner", or "account". Matched
+# case-insensitively against the key, not the field name the platform itself uses.
+_RAW_MASKED_KEY_NAMES = frozenset({"user_name", "username", "user", "owner", "account"})
+
+
+def mask_raw_payload_for_prompt(value: Any, _path: str = "") -> tuple[Any, list[str]]:
+    """
+    Recursively masks values under any key matching _RAW_MASKED_KEY_NAMES, anywhere
+    in the arbitrarily-shaped original submitted payload (src/api/webhook.py accepts
+    any JSON object — this does not assume ESET's or any other specific schema).
+
+    Unlike mask_alert_for_prompt (which knows the exact NormalizedAlert field list),
+    this walks a structure of unknown shape, so it masks by key name at every
+    nesting level rather than at a fixed set of top-level fields. Does not mutate
+    the input.
+    """
+    changed: list[str] = []
+
+    def walk(node: Any, path: str) -> Any:
+        if isinstance(node, dict):
+            out = {}
+            for key, item in node.items():
+                key_path = f"{path}.{key}" if path else str(key)
+                if str(key).lower() in _RAW_MASKED_KEY_NAMES and isinstance(item, str) and item:
+                    out[key] = _mask_identifier(item)
+                    changed.append(key_path)
+                else:
+                    out[key] = walk(item, key_path)
+            return out
+        if isinstance(node, list):
+            return [walk(item, f"{path}[{i}]") for i, item in enumerate(node)]
+        return node
+
+    return walk(value, _path), changed

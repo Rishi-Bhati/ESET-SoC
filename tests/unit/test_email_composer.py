@@ -4,7 +4,7 @@ import pytest
 from src.config import settings
 from src.models.ai_output import (
     AIOutput, ClientNotificationJa, CThreeNotificationJa,
-    InternalNotificationJa, EngineerNotificationEn,
+    InternalNotificationJa, EngineerNotificationEn, EngineerNotificationJa,
 )
 from src.models.normalized_alert import NormalizedAlert
 from src.models.pipeline_result import PipelineResult
@@ -25,6 +25,11 @@ def _ai_output(risk="HIGH"):
             confirmed_information=["c1"], unknown_information=["u1"],
             investigation_items=["i1"], recommended_actions=["a1"],
             draft_client_response="Draft"),
+        engineer_notification_ja=EngineerNotificationJa(
+            alert_summary="概要", assessment="評価",
+            confirmed_information=["c1"], unknown_information=["u1"],
+            investigation_items=["i1"], recommended_actions=["a1"],
+            draft_client_response="返信案"),
     )
 
 

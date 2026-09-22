@@ -77,7 +77,10 @@ async def get_job(correlation_id: str) -> dict[str, Any] | None:
                 }
     return None
 
-async def list_jobs(limit: int = 50, offset: int = 0, status: str | None = None) -> list[dict[str, Any]]:
+async def list_jobs(
+    limit: int = 50, offset: int = 0, status: str | None = None,
+    created_after: float | None = None, created_before: float | None = None,
+) -> list[dict[str, Any]]:
     """
     Retrieves recent jobs ordered by most-recently-updated first, for the dashboard's
     live activity table. Optionally filtered by status.
@@ -87,9 +90,18 @@ async def list_jobs(limit: int = 50, offset: int = 0, status: str | None = None)
         FROM jobs
     """
     params: list[Any] = []
+    filters: list[str] = []
     if status:
-        query += " WHERE status = ?"
+        filters.append("status = ?")
         params.append(status)
+    if created_after is not None:
+        filters.append("created_at >= ?")
+        params.append(created_after)
+    if created_before is not None:
+        filters.append("created_at <= ?")
+        params.append(created_before)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 

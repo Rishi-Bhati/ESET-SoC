@@ -522,6 +522,8 @@ async def test_fetch_service_status_reports_queue_and_providers(monkeypatch):
     provider = make_provider()
 
     async def fake_get(self, url, **kwargs):
+        if url.endswith("/api/health"):
+            return _response(200, {"status": "ok", "runtime": "cf_worker", "d1": "bound"})
         if url.endswith("/api/status"):
             return _response(200, {"queued": 2, "sending": 0, "sent": 9, "failed": 1})
         if url.endswith("/api/providers"):
@@ -542,9 +544,77 @@ async def test_fetch_service_status_reports_queue_and_providers(monkeypatch):
     status = await provider.fetch_service_status()
 
     assert status["available"] is True
+    assert status["reachable"] is True
     assert status["queue"]["sent"] == 9
     assert status["providers"][0]["id"] == "resend_primary"
     assert status["providers"][0]["is_default"] is True
+
+
+@pytest.mark.parametrize("health_status", [404, 401, 403, 500])
+@pytest.mark.asyncio
+async def test_a_health_probe_that_is_not_200_never_reads_as_an_outage(monkeypatch, health_status):
+    """
+    /api/health postdates this integration, and older deployments do not answer
+    it uniformly — the build live on eset-mail.villdesign.workers.dev has no
+    such route, so the request falls through to that build's blanket /api/*
+    API-key check and returns 401, not 404. Any HTTP answer at all proves the
+    host is serving, so none of these may be reported as the service being down.
+    """
+    provider = make_provider()
+
+    async def fake_get(self, url, **kwargs):
+        if url.endswith("/api/health"):
+            return _response(health_status, {"error": "nope"})
+        if url.endswith("/api/status"):
+            return _response(200, {"queued": 0, "sending": 0, "sent": 3, "failed": 0})
+        return _response(404, {"error": "Not Found"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    status = await provider.fetch_service_status()
+
+    assert status["available"] is True
+    assert status["reachable"] is True
+    assert status["queue"]["sent"] == 3
+
+
+@pytest.mark.asyncio
+async def test_unreachable_service_is_reported_as_down_not_as_a_bad_key(monkeypatch):
+    """A host we cannot reach at all is an outage, and must say so."""
+    provider = make_provider()
+
+    async def fake_get(self, url, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    status = await provider.fetch_service_status()
+
+    assert status["available"] is False
+    assert status["reachable"] is False
+    assert "not reachable" in status["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_live_service_rejecting_the_key_is_not_reported_as_an_outage(monkeypatch):
+    """
+    The whole reason /api/health is probed first: a 401 from /api/status alone
+    cannot distinguish "the service is down" from "the service is up and our
+    API key is wrong", and those have opposite remedies.
+    """
+    provider = make_provider()
+
+    async def fake_get(self, url, **kwargs):
+        if url.endswith("/api/health"):
+            return _response(200, {"status": "ok"})
+        if url.endswith("/api/status"):
+            return _response(401, {"error": "Unauthorized"})
+        return _response(404, {"error": "Not Found"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    status = await provider.fetch_service_status()
+
+    assert status["available"] is False
+    assert status["reachable"] is True
+    assert "EMAIL_API_KEY" in status["error"]
 
 
 @pytest.mark.asyncio
@@ -553,6 +623,8 @@ async def test_fetch_service_status_survives_a_worker_without_providers(monkeypa
     provider = make_provider()
 
     async def fake_get(self, url, **kwargs):
+        if url.endswith("/api/health"):
+            return _response(200, {"status": "ok"})
         if url.endswith("/api/status"):
             return _response(200, {"queued": 0, "sending": 0, "sent": 0, "failed": 0})
         return _response(404, {"error": "Not Found"})

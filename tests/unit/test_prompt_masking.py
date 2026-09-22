@@ -81,3 +81,52 @@ def test_short_user_name_is_fully_masked_not_left_readable():
     masked, changed = mask_alert_for_prompt(_base_data(user_name="al"))
     assert masked["user_name"] == "**"
     assert "user_name" in changed
+
+
+# --------------------------- mask_raw_payload_for_prompt ---------------------------
+# Covers the raw/arbitrary-shaped original payload, distinct from the fixed-field
+# normalized-alert masking above: this platform accepts alerts in any JSON shape,
+# so PII in the original payload is masked by key name at any nesting depth, not
+# only at the one top-level "user_name" field mask_alert_for_prompt knows about.
+
+def test_raw_payload_masks_known_key_at_any_depth():
+    from src.services.ai.prompt_masking import mask_raw_payload_for_prompt
+
+    payload = {
+        "username": "john.smith",
+        "detail": {"owner": "jane.doe", "host": "PC-01"},
+        "list": [{"account": "bob.jones"}],
+    }
+    masked, changed = mask_raw_payload_for_prompt(payload)
+
+    assert masked["username"] == "j********h"
+    assert masked["detail"]["owner"] == "j******e"
+    assert masked["detail"]["host"] == "PC-01"  # not a masked key name
+    assert masked["list"][0]["account"] == "b*******s"
+    assert set(changed) == {"username", "detail.owner", "list[0].account"}
+
+
+def test_raw_payload_masking_is_case_insensitive_on_key_name():
+    from src.services.ai.prompt_masking import mask_raw_payload_for_prompt
+
+    masked, changed = mask_raw_payload_for_prompt({"UserName": "Alice"})
+    assert masked["UserName"] == "A***e"
+    assert changed == ["UserName"]
+
+
+def test_raw_payload_masking_leaves_unrelated_keys_and_types_untouched():
+    from src.services.ai.prompt_masking import mask_raw_payload_for_prompt
+
+    payload = {"ip_address": "203.0.113.5", "count": 3, "active": True, "tags": None}
+    masked, changed = mask_raw_payload_for_prompt(payload)
+    assert masked == payload
+    assert changed == []
+
+
+def test_raw_payload_masking_does_not_mutate_input():
+    from src.services.ai.prompt_masking import mask_raw_payload_for_prompt
+
+    original = {"user": "jane.doe"}
+    snapshot = dict(original)
+    mask_raw_payload_for_prompt(original)
+    assert original == snapshot

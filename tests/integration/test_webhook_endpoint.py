@@ -113,3 +113,38 @@ def test_webhook_accepts_a_payload_carrying_a_lone_surrogate(client):
         headers={"Authorization": "test_token", "Content-Type": "application/json"},
     )
     assert response.status_code in (200, 202), response.text
+
+
+# --------------------------- arbitrary/non-ESET-shaped JSON ---------------------------
+# The webhook has no required fields and does not require ESET's own key names — a
+# sender can post any JSON object shape and the pipeline is expected to still run to
+# completion, with the AI receiving the original payload verbatim so it can extract
+# what a fixed field list would have missed.
+
+def test_webhook_accepts_completely_non_eset_shaped_json(client: TestClient):
+    headers = {"Authorization": "Bearer test_token"}
+    # None of these keys exist anywhere in EsetRawPayload/NormalizedAlert.
+    payload = {
+        "alert_name": "Suspicious PowerShell execution",
+        "host": "ARBITRARY-HOST-07",
+        "risk": "critical",
+        "reported_by": "AcmeEDR",
+        "indicators": {"sha256": "a" * 64, "src_ip": "198.51.100.42"},
+    }
+
+    response = client.post("/webhook/eset", headers=headers, json=payload)
+    assert response.status_code == 200
+    correlation_id = response.json()["correlation_id"]
+
+    job = client.get(f"/dashboard/api/jobs/{correlation_id}").json()["job"]
+    assert job["status"] == "SUCCESS"
+    # The unrecognized-shape payload is still stored verbatim for the record and
+    # for the AI to read directly, regardless of whether normalize() recognized
+    # any of its field names.
+    assert job["raw_payload"]["alert_name"] == "Suspicious PowerShell execution"
+
+    result = client.get(f"/dashboard/api/jobs/{correlation_id}").json()["result"]
+    # "risk" isn't severity, but it IS one of the aliases normalize() checks —
+    # the fixture in tests/conftest.py's mock_gemini reads alert.detection_name, so
+    # this also exercises the alias resolution actually reaching the AI stage.
+    assert result["normalized_alert"]["severity"] == "critical"

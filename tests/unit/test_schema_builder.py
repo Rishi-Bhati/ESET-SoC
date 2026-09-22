@@ -18,6 +18,7 @@ def test_required_preserved_at_top_level():
         "cthree_notification_ja",
         "internal_notification_ja",
         "engineer_notification_en",
+        "engineer_notification_ja",
     }
 
 
@@ -30,9 +31,14 @@ def test_required_preserved_in_nested_models():
         "summary", "assessment", "front_office_notes", "draft_client_response"}
     assert set(props["internal_notification_ja"]["required"]) == {
         "summary", "assessment", "recommended_actions", "draft_client_response"}
-    assert set(props["engineer_notification_en"]["required"]) == {
+    # The two engineer reports are one report in two languages, so they must carry
+    # exactly the same required fields — a section required in only one language would
+    # let the model return a report that is complete in EN and truncated in JA.
+    engineer_fields = {
         "alert_summary", "assessment", "confirmed_information", "unknown_information",
         "investigation_items", "recommended_actions", "draft_client_response"}
+    assert set(props["engineer_notification_en"]["required"]) == engineer_fields
+    assert set(props["engineer_notification_ja"]["required"]) == engineer_fields
 
 
 def test_refs_are_inlined_and_unsupported_keys_stripped():

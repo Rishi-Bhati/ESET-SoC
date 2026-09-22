@@ -78,16 +78,24 @@ async def get_delivery(email_id: str) -> dict[str, Any] | None:
             return _row(row) if row else None
 
 
-async def list_deliveries(limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
+async def list_deliveries(
+    limit: int = 100, status: str | None = None, correlation_id: str | None = None,
+) -> list[dict[str, Any]]:
     query = """
         SELECT email_id, correlation_id, notification_type, recipients, subject,
                status, attempts, remote_id, error, created_at, updated_at
         FROM email_deliveries
     """
+    clauses: list[str] = []
     params: list[Any] = []
     if status:
-        query += " WHERE status = ?"
+        clauses.append("status = ?")
         params.append(status)
+    if correlation_id:
+        clauses.append("correlation_id = ?")
+        params.append(correlation_id)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY updated_at DESC LIMIT ?"
     params.append(limit)
 

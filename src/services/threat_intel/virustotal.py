@@ -1,4 +1,6 @@
+import ipaddress
 import os
+import re
 import httpx
 import structlog
 from src.services.threat_intel.base import BaseThreatIntelProvider
@@ -7,6 +9,36 @@ from src.models.threat_intel import VirusTotalResult
 from src.config import settings
 
 logger = structlog.get_logger(__name__)
+
+# A file hash as VirusTotal accepts one: MD5, SHA-1 or SHA-256, hex only.
+_HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
+
+
+def _indicator_is_safe(indicator: str, indicator_type: str) -> bool:
+    """
+    True when the indicator can be interpolated into a VirusTotal path segment.
+
+    Every indicator here originates in an alert, and an alert's fields ultimately
+    come from whatever an attacker was able to name a file or a host. A
+    `file_hash` of "../../../intelligence/search?query=x" would otherwise be
+    pasted straight into the request path and send this server — carrying
+    VIRUSTOTAL_API_KEY — to a different VirusTotal endpoint than the one this
+    code believes it is calling. URLs do not need a check: they are
+    base64url-encoded before they reach the path.
+    """
+    if indicator_type == "file":
+        return bool(_HASH_RE.fullmatch(indicator))
+    if indicator_type == "ip":
+        # IPv6 zone identifiers are local interface names, not public threat
+        # indicators; ipaddress allows '?' and '#' inside them.
+        if "%" in indicator:
+            return False
+        try:
+            ipaddress.ip_address(indicator)
+            return True
+        except ValueError:
+            return False
+    return True
 
 class VirusTotalProvider(BaseThreatIntelProvider):
     """
@@ -83,6 +115,13 @@ class VirusTotalProvider(BaseThreatIntelProvider):
             logger.error("vt_real_query_missing_api_key")
             return VirusTotalResult(status="UNKNOWN", query=indicator, error="Missing VIRUSTOTAL_API_KEY")
             
+        if not _indicator_is_safe(indicator, indicator_type):
+            logger.warning("vt_indicator_rejected", type=indicator_type, indicator=indicator[:80])
+            return VirusTotalResult(
+                status="UNKNOWN", query=indicator,
+                error=f"Indicator is not a well-formed {indicator_type}",
+            )
+
         headers = {"x-apikey": api_key}
         
         # Build API endpoint

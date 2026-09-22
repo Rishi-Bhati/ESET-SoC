@@ -36,6 +36,7 @@ earlier step already failed to even start a trace) as a silent no-op.
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import Any
@@ -142,8 +143,7 @@ def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) 
     """
     Categorizes exactly what src/services/ai/gemini_service.py actually sends to the
     model — derived from the real NormalizedAlert/ThreatIntelResult fields, not a
-    generic guess. `raw_payload` is never included: it is deliberately excluded from
-    the prompt (see gemini_service.py) and is therefore never part of this trace.
+    generic guess.
     """
     out: list[AIDataCategory] = []
     try:
@@ -157,6 +157,21 @@ def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) 
                 field=f"normalized_alert.{field}",
                 origin="Ingested alert, normalized by src/services/normalizer.py",
                 value_preview=str(preview)[:160],
+            ))
+
+        # The platform accepts alerts in any JSON shape (src/api/webhook.py has no
+        # required fields), so the exact submitted payload — not just the fields
+        # normalize() recognized — is also sent to the model (masked/truncated the
+        # same way normalized_alert is; see gemini_service.py). One summary entry
+        # here rather than one per key: the shape, and therefore the key set, is
+        # unknown in advance, which is the whole point of sending it.
+        if getattr(alert, "raw_payload", None):
+            preview, _ = redact_value(json.dumps(alert.raw_payload, default=str)[:200], "original_submitted_payload")
+            out.append(AIDataCategory(
+                category="Company data (free text)", field="original_submitted_payload",
+                origin="The original JSON exactly as submitted to the ingest route "
+                       "(src/api/webhook.py) — not limited to ESET's own field names",
+                value_preview=str(preview),
             ))
 
         out.append(AIDataCategory(

@@ -2,6 +2,17 @@
 ESET Mail delivery provider — the Cloudflare Worker documented in
 email-api-docs.pdf (POST /api/send).
 
+Endpoints this platform uses, and what each needs:
+
+    POST /api/send      X-API-Key (+ signature, see below) — queue one email
+    GET  /api/status    X-API-Key                          — queue counters
+    GET  /api/providers X-API-Key                          — configured senders
+    GET  /api/health    none                               — liveness probe
+
+/api/health was added to the mail service after this platform started talking to
+it, so it is treated as optional: a deployment that predates it answers 404 and
+is still healthy. See _probe_health().
+
 Security modes, matching the worker's SECURITY_MODE:
 
   api-key-only  X-API-Key
@@ -439,6 +450,37 @@ class EsetMailProvider(EmailDeliveryProvider):
         """The worker's origin, derived from the configured /api/send endpoint."""
         return self.url.rsplit("/api/send", 1)[0].rstrip("/")
 
+    async def _probe_health(self, client: httpx.AsyncClient, base: str) -> bool | None:
+        """
+        GET /api/health — the service's unauthenticated liveness probe.
+
+        Tri-state, and the three states are deliberately about the HOST, not the
+        endpoint:
+
+            False → no HTTP response at all. The host is genuinely unreachable.
+            None  → the host answered, but not with a usable health result.
+            True  → the host answered 200: the probe exists and the service is up.
+
+        Anything that comes back over HTTP proves the host is serving, which is
+        the only thing this probe is for. That distinction matters because
+        /api/health postdates this integration and older deployments do not
+        answer it uniformly: the build currently live on
+        eset-mail.villdesign.workers.dev has no such route, so the request falls
+        through to that build's blanket /api/* API-key check and comes back
+        401 — not the 404 you would expect. Treating any non-200 as "down" would
+        report a perfectly healthy production service as an outage.
+
+        The point of probing before /api/status is that /api/status needs the API
+        key, so on its own a failure there cannot tell "the service is down" from
+        "the service is up and rejected our credentials" — opposite problems with
+        opposite fixes.
+        """
+        try:
+            response = await client.get(f"{base}/api/health")
+        except Exception:
+            return False
+        return True if response.status_code == 200 else None
+
     async def fetch_service_status(self) -> dict:
         """
         Reads the mail service's own queue counters (GET /api/status) and its
@@ -454,14 +496,44 @@ class EsetMailProvider(EmailDeliveryProvider):
         status_url = f"{base}/api/status"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(status_url, headers={"X-API-Key": self.api_key})
-                if response.status_code != 200:
+                reachable = await self._probe_health(client, base)
+                if reachable is False:
                     return {
                         "available": False,
-                        "error": f"HTTP {response.status_code}",
+                        "reachable": False,
+                        "error": "Mail service is not reachable",
+                        "url": f"{base}/api/health",
+                    }
+
+                response = await client.get(status_url, headers={"X-API-Key": self.api_key})
+                if response.status_code != 200:
+                    # A 401/403 from a service we just proved is up is a
+                    # credentials problem, not an outage. Say which one it is:
+                    # the two have completely different remedies.
+                    # `reachable is True` only — an indeterminate probe (None)
+                    # cannot tell us the 401 came from a live, correctly
+                    # configured service, so it stays a plain HTTP error.
+                    if reachable is True and response.status_code in (401, 403):
+                        error = (
+                            f"HTTP {response.status_code} — the mail service is up but rejected "
+                            f"EMAIL_API_KEY"
+                        )
+                    else:
+                        error = f"HTTP {response.status_code}"
+                    return {
+                        "available": False,
+                        "reachable": bool(reachable),
+                        "error": error,
                         "url": status_url,
                     }
-                result = {"available": True, "url": status_url, "queue": response.json()}
+                result = {
+                    "available": True,
+                    # An indeterminate probe still means we reached it — we just
+                    # got a 200 from /api/status on the same host.
+                    "reachable": True,
+                    "url": status_url,
+                    "queue": response.json(),
+                }
 
                 # Which senders the service will actually use. Older worker
                 # deployments have no /api/providers, so its absence is not an error.
@@ -490,4 +562,4 @@ class EsetMailProvider(EmailDeliveryProvider):
 
                 return result
         except Exception as e:
-            return {"available": False, "error": str(e), "url": status_url}
+            return {"available": False, "reachable": False, "error": str(e), "url": status_url}

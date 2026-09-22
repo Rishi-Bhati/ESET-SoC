@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import httpx
 import structlog
@@ -76,6 +77,18 @@ class AbuseIPDBProvider(BaseThreatIntelProvider):
             logger.error("abuseipdb_real_query_missing_api_key")
             return AbuseIPDBResult(status="UNKNOWN", query=ip, error="Missing ABUSEIPDB_API_KEY")
             
+        # httpx encodes query parameters, so a malformed value cannot escape the
+        # URL here the way it can in a path segment — but the value still comes
+        # from an attacker-influenced alert field, and sending it to a third
+        # party at all is worth refusing when it is not even an IP address.
+        try:
+            if "%" in ip:
+                raise ValueError("Scoped IP addresses are not public indicators")
+            ipaddress.ip_address(ip)
+        except ValueError:
+            logger.warning("abuseipdb_indicator_rejected", ip=str(ip)[:80])
+            return AbuseIPDBResult(status="UNKNOWN", query=ip, error="Not a valid IP address")
+
         headers = {
             "Key": api_key,
             "Accept": "application/json"

@@ -16,8 +16,12 @@ class EventBroadcaster:
     def __init__(self) -> None:
         self._clients: set[WebSocket] = set()
 
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
+    async def connect(self, websocket: WebSocket, subprotocol: str | None = None) -> None:
+        # `subprotocol` echoes back the one the client offered (the dashboard
+        # sends its access key that way — see src/api/dashboard.py). A browser
+        # that offered a subprotocol and is answered with none closes the socket
+        # immediately after the handshake.
+        await websocket.accept(subprotocol=subprotocol)
         self._clients.add(websocket)
         logger.info("dashboard_ws_connected", total_clients=len(self._clients))
 

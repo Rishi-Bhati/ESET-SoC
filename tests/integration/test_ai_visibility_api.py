@@ -16,7 +16,8 @@ import pytest
 from fastapi.testclient import TestClient
 from src.config import settings
 from src.models.ai_output import (
-    AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa, EngineerNotificationEn,
+    AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa,
+    EngineerNotificationEn, EngineerNotificationJa,
 )
 
 AUTH = {"Authorization": "Bearer test_token"}
@@ -49,6 +50,11 @@ def _fake_ai_output(risk: str = "HIGH") -> AIOutput:
         engineer_notification_en=EngineerNotificationEn(
             alert_summary="s", assessment="a", confirmed_information=["c"], unknown_information=["u"],
             investigation_items=["i"], recommended_actions=["r"], draft_client_response="d",
+        ),
+        engineer_notification_ja=EngineerNotificationJa(
+            alert_summary="概要", assessment="評価", confirmed_information=["確認"],
+            unknown_information=["不明"], investigation_items=["調査"],
+            recommended_actions=["対応"], draft_client_response="返信案",
         ),
     )
 

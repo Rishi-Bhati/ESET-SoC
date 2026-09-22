@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 from typing import Any
@@ -11,6 +10,7 @@ from src.ingestion.webhook_handler import WebhookIngestionHandler
 from src.models.raw_payload import EsetRawPayload
 from src.ingestion.syslog_handler import SyslogIngestionHandler
 from src.storage import deduplication, job_store
+from src.services import pipeline_capacity
 from src.utils.correlation import generate_correlation_id, set_correlation_id
 from src.config import settings
 
@@ -23,15 +23,70 @@ logger = structlog.get_logger(__name__)
 webhook_handler = WebhookIngestionHandler()
 syslog_handler = SyslogIngestionHandler()
 
+# Bound on how much of a REJECTED request's body is written to the log. A
+# request that is dropped before a job exists (oversized, malformed, duplicate,
+# over capacity) leaves no other trace of itself anywhere in this platform — no
+# job row, no result file, no Alert Timeline — so the log is the only place an
+# operator can ever answer "what did that request actually contain, and why
+# didn't it become an alert". Capped well below the ingest size limit itself so
+# a sender that is oversized ON PURPOSE cannot also make the log file grow
+# without bound.
+_LOG_BODY_PREVIEW_LIMIT = 4000
+
+
+def _body_preview(value: Any) -> Any:
+    """
+    A bounded, loggable version of a rejected request's body.
+
+    Passed through as the real parsed object (dict/list/etc.), not pre-
+    stringified, whenever it fits under the cap — logging it as structured data
+    means structlog's own key-based secret redaction (redact_secrets in
+    src/utils/logging.py, applied to every log call before it reaches disk)
+    still runs on it, the same as any other logged field. Only falls back to a
+    truncated string once the serialized form is actually too large to log in
+    full, or isn't JSON at all (a malformed body, logged from raw bytes).
+    """
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+        return text if len(text) <= _LOG_BODY_PREVIEW_LIMIT else text[:_LOG_BODY_PREVIEW_LIMIT] + "…[truncated]"
+    if len(serialized) <= _LOG_BODY_PREVIEW_LIMIT:
+        return value
+    return serialized[:_LOG_BODY_PREVIEW_LIMIT] + "…[truncated]"
+
+
+def _raw_body_preview(body: bytes) -> str:
+    """Same bound, for a body that failed to parse as JSON at all — all that's
+    left to show is the decoded bytes themselves.
+
+    Slices the BYTES before decoding, not just the resulting string: a caller
+    reporting an oversized single chunk can hand this tens of megabytes, and
+    decoding all of it just to keep the first 4000 characters would spend CPU
+    proportional to the full chunk on every oversized request — the exact cost
+    the streaming read in read_json_body() exists to avoid. A UTF-8 sequence
+    sliced mid-character at the boundary decodes safely to U+FFFD via
+    errors="replace", so no extra care is needed there.
+    """
+    # A little headroom over the character cap for multi-byte UTF-8 sequences;
+    # still a small, fixed slice regardless of how large `body` actually is.
+    text = body[: _LOG_BODY_PREVIEW_LIMIT + 16].decode("utf-8", errors="replace")
+    return text if len(text) <= _LOG_BODY_PREVIEW_LIMIT else text[:_LOG_BODY_PREVIEW_LIMIT] + "…[truncated]"
+
 
 def _reject_oversized_body(request: Request) -> int:
     """
-    Defense-in-depth guard: rejects a request whose declared Content-Length exceeds
-    MAX_INGEST_BODY_BYTES before the body is parsed. This is a header check, not a
-    hard cap enforced on the wire (a sender could omit or lie about Content-Length),
-    but it stops a straightforwardly oversized payload from reaching JSON parsing
-    and the pipeline. Returns the parsed content length (0 if not provided) so
-    callers can also use it for logging.
+    Fast path: reject a request whose DECLARED Content-Length is already over
+    MAX_INGEST_BODY_BYTES, before a single byte of body is read.
+
+    This is only the cheap half of the cap. A sender can omit Content-Length
+    entirely (Transfer-Encoding: chunked), in which case this returns 0 and
+    nothing here applies — the enforced limit is the byte counter in
+    read_json_body(), which is what actually bounds memory. Keep both: this one
+    saves reading a body that has already announced it is too big.
+
+    Returns the parsed content length (0 if not provided) so callers can also
+    use it for logging.
     """
     raw = request.headers.get("content-length")
     if not raw:
@@ -122,16 +177,52 @@ async def read_json_body(request: Request) -> dict[str, Any]:
     content type) is a client error, not a server fault: answer 400 rather than
     letting json.JSONDecodeError bubble up as a 500 with a stack trace that
     leaks internal paths.
+
+    The body is streamed and counted rather than read with request.body(): a
+    chunked request declares no Content-Length, so the header check in
+    _reject_oversized_body() never fires for one, and request.body() would
+    accumulate an unbounded stream into memory until the process was OOM-killed
+    — taking the dashboard and the syslog listeners down with it, since they
+    share this process. Counting as we go means an oversized sender is cut off
+    at the limit instead of at the memory ceiling.
     """
-    body = await request.body()
+    body = bytearray()
+    async for chunk in request.stream():
+        bytes_read = len(body) + len(chunk)
+        if bytes_read > settings.max_ingest_body_bytes:
+            logger.warning(
+                "ingest_payload_too_large_stream",
+                bytes_read=bytes_read,
+                limit=settings.max_ingest_body_bytes,
+                # `body` plus the ONE chunk that tripped the limit, not `body`
+                # alone: most real requests arrive as a single ASGI chunk, so
+                # previewing only what was accumulated BEFORE that chunk would
+                # log an empty preview for exactly the common case. Still
+                # bounded — _raw_body_preview caps it regardless of how large
+                # this one chunk is, so the "never hold the full oversized body"
+                # guarantee this streaming read exists for is unaffected.
+                body_preview=_raw_body_preview(bytes(body) + chunk[:_LOG_BODY_PREVIEW_LIMIT + 16]),
+            )
+            raise HTTPException(status_code=413, detail="Payload too large")
+        body.extend(chunk)
+    body = bytes(body)
 
     try:
         parsed = json.loads(body)
+        parsed = scrub_unencodable(parsed)
+    except RecursionError:
+        logger.warning(
+            "ingest_too_deeply_nested",
+            byte_length=len(body),
+            body_preview=_raw_body_preview(body),
+        )
+        raise HTTPException(status_code=400, detail="Request body JSON is nested too deeply")
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.warning(
             "ingest_malformed_json",
             error=str(e),
             byte_length=len(body),
+            body_preview=_raw_body_preview(body),
         )
         raise HTTPException(
             status_code=400,
@@ -142,13 +233,14 @@ async def read_json_body(request: Request) -> dict[str, Any]:
         logger.warning(
             "ingest_non_object_body",
             type=type(parsed).__name__,
+            body_preview=_body_preview(parsed),
         )
         raise HTTPException(
             status_code=400,
             detail=f"Request body must be a JSON object, got {type(parsed).__name__}",
         )
 
-    return scrub_unencodable(parsed)
+    return parsed
 
 
 async def ingest_alert(
@@ -173,6 +265,7 @@ async def ingest_alert(
             "ingest_invalid_payload",
             error=str(e),
             source=source,
+            body_preview=_body_preview(raw_json),
         )
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -183,6 +276,8 @@ async def ingest_alert(
             "ingest_duplicate_dropped",
             dedup_key=dedup_key,
             source=source,
+            correlation_id=correlation_id,
+            body_preview=_body_preview(raw_json),
         )
         return {
             "status": "duplicate",
@@ -190,25 +285,35 @@ async def ingest_alert(
             "correlation_id": correlation_id,
         }
 
-    await deduplication.record_seen(
-        dedup_key,
-        settings.dedup_ttl_seconds,
-    )
+    try:
+        reservation = pipeline_capacity.capacity.reserve(correlation_id, dedup_key)
+    except (pipeline_capacity.CapacityExhausted, pipeline_capacity.PipelineAlreadyActive):
+        # A concurrent request may have persisted this key while our initial
+        # dedup check was in flight. It needs no additional pipeline slot.
+        if await deduplication.is_duplicate(dedup_key):
+            return {
+                "status": "duplicate",
+                "message": "Alert already processed",
+                "correlation_id": correlation_id,
+            }
+        logger.warning(
+            "ingest_capacity_exhausted",
+            source=source,
+            correlation_id=correlation_id,
+            body_preview=_body_preview(raw_json),
+        )
+        raise pipeline_capacity.overloaded()
 
-    payload_dict = raw_payload.model_dump()
-
-    await job_store.create_job(
-        correlation_id,
-        source,
-        payload_dict,
-    )
-
-    background_tasks.add_task(
-        run_pipeline_task,
-        correlation_id,
-        payload_dict,
-        source,
-    )
+    try:
+        await deduplication.record_seen(dedup_key, settings.dedup_ttl_seconds)
+        payload_dict = raw_payload.model_dump()
+        await job_store.create_job(correlation_id, source, payload_dict)
+        background_tasks.add_task(
+            reservation.run, run_pipeline_task, correlation_id, payload_dict, source,
+        )
+    except BaseException:
+        reservation.release()
+        raise
 
     return {
         "status": "queued",

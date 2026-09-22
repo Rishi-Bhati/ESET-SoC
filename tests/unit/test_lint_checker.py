@@ -1,5 +1,8 @@
 import pytest
-from src.models.ai_output import AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa, EngineerNotificationEn
+from src.models.ai_output import (
+    AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa,
+    EngineerNotificationEn, EngineerNotificationJa,
+)
 from src.services.ai.lint_checker import lint_ai_output, LintFailureException
 
 def get_base_ai_output() -> AIOutput:
@@ -30,6 +33,15 @@ def get_base_ai_output() -> AIOutput:
             investigation_items=["Item 1"],
             recommended_actions=["Action 1"],
             draft_client_response="Draft response"
+        ),
+        engineer_notification_ja=EngineerNotificationJa(
+            alert_summary="アラート概要",
+            assessment="評価",
+            confirmed_information=["事実 1"],
+            unknown_information=["なし"],
+            investigation_items=["項目 1"],
+            recommended_actions=["アクション 1"],
+            draft_client_response="返信案"
         )
     )
 

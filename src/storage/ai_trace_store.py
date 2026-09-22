@@ -165,6 +165,12 @@ async def overview_counts() -> dict[str, Any]:
     }
 
 
+# The only subtrees manual redaction may touch: the captured model input and the
+# captured model output. Everything else in a trace (status, risk, component,
+# timings, error) is the audit record of what happened and must not be editable.
+_REDACTABLE_ROOTS = {"input_redacted", "output_redacted"}
+
+
 def _resolve_parent(root: dict[str, Any], path: str) -> tuple[Any, Any]:
     """
     Walks a dot/bracket path like 'input_redacted.normalized_alert.raw_content' or
@@ -192,12 +198,29 @@ async def apply_manual_redaction(trace_id: str, field_path: str, start: int, end
     """
     Permanently overwrites the [start:end) character range of the string found at
     `field_path` inside the stored trace with a fixed [REDACTED] marker, and records
-    the action in manual_redactions. The ORIGINAL substring is never written anywhere
-    else — once applied it cannot be recovered from the stored trace or the API.
+    the action in manual_redactions. The excised substring is then scrubbed from
+    every other copy of it anywhere in the trace's redactable subtrees (and from
+    data_categories previews) too — the same fact commonly appears more than once
+    (e.g. normalized_alert.endpoint_name and the matching key inside
+    original_submitted_payload are, by construction, often the same string). The
+    ORIGINAL substring is never written anywhere else — once applied it cannot be
+    recovered from the stored trace or the API.
     """
     trace = await get_trace(trace_id)
     if trace is None:
         raise ValueError("trace not found")
+
+    # _resolve_parent walks from the trace root, so without this gate field_path
+    # can address ANY field in the trace — including `status`, `component` and
+    # `error`. Since the operation is irreversible and keeps no copy of the
+    # original, that turns a redaction tool into a way to quietly rewrite the
+    # audit record of an AI call. Only the two captured payloads may be redacted;
+    # they are also the only paths the UI ever generates.
+    root_token = field_path.split(".", 1)[0].split("[", 1)[0]
+    if root_token not in _REDACTABLE_ROOTS:
+        raise ValueError(
+            f"field_path must start with one of {sorted(_REDACTABLE_ROOTS)}; got {root_token!r}"
+        )
 
     node, key = _resolve_parent(trace, field_path)
     try:
@@ -214,18 +237,45 @@ async def apply_manual_redaction(trace_id: str, field_path: str, start: int, end
     original_substring = current[start:end]
     node[key] = current[:start] + "[REDACTED]" + current[end:]
 
-    # The same underlying value is also copied — independently — into
-    # data_categories[].value_preview for the Data Sent to the Model table
-    # (see trace_recorder.build_alert_data_categories). Redacting only input_redacted
-    # would leave that second copy recoverable, breaking the "cannot be recovered from
-    # the API" guarantee, so scrub any exact occurrence there too.
+    # The same underlying value can legitimately be copied elsewhere in the trace:
+    # data_categories[].value_preview always duplicates it (see
+    # trace_recorder.build_alert_data_categories), and since the AI prompt now
+    # carries both normalized_alert AND original_submitted_payload (the verbatim
+    # original JSON normalized_alert was extracted from — see gemini_service.py),
+    # a value the operator redacts from one is, by construction, very likely to
+    # still be sitting in the other. Redacting only the one path an operator
+    # clicked would leave those copies recoverable, breaking the "cannot be
+    # recovered from the API" guarantee — so scrub any exact occurrence of the
+    # same substring everywhere in input_redacted/output_redacted and in the data
+    # categories, not only at the one field_path given.
     scrubbed_previews = 0
+    scrubbed_copies = 0
     if len(original_substring) >= 3:
         for cat in trace.get("data_categories", []) or []:
             preview = cat.get("value_preview")
             if isinstance(preview, str) and original_substring in preview:
                 cat["value_preview"] = preview.replace(original_substring, "[REDACTED]")
                 scrubbed_previews += 1
+
+        def scrub(value: Any) -> Any:
+            nonlocal scrubbed_copies
+            if isinstance(value, str):
+                if original_substring in value:
+                    scrubbed_copies += 1
+                    return value.replace(original_substring, "[REDACTED]")
+                return value
+            if isinstance(value, dict):
+                return {k: scrub(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [scrub(v) for v in value]
+            return value
+
+        for root_key in _REDACTABLE_ROOTS:
+            if root_key in trace:
+                trace[root_key] = scrub(trace[root_key])
+        # The field_path just edited above was already replaced with a mix of
+        # kept-prefix + "[REDACTED]" + kept-suffix, not a full-string match — the
+        # whole-string scrub pass does not touch it, so it is not double-counted.
 
     now = time.time()
     trace.setdefault("manual_redactions", []).append({
