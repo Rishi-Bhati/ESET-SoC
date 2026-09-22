@@ -23,7 +23,14 @@ settings.dashboard_access_key = ""
 from src.storage.database import init_db
 from src.services import email_outbox
 from src.main import app
-from src.models.ai_output import AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa, EngineerNotificationEn
+from src.models.ai_output import (
+    AIOutput,
+    ClientNotificationJa,
+    CThreeNotificationJa,
+    InternalNotificationJa,
+    EngineerNotificationEn,
+    EngineerNotificationJa,
+)
 
 # email_outbox resolves its paths at import time, so point them at the temp tree too
 email_outbox.OUTBOX_DIR = os.path.join(test_output_dir, "emails")
@@ -68,6 +75,13 @@ def client() -> TestClient:
     """FastAPI TestClient fixture."""
     return TestClient(app)
 
+
+@pytest.fixture(autouse=True)
+def prevent_live_side_effects(monkeypatch):
+    """Tests never inherit live delivery/intel flags from a developer's .env."""
+    monkeypatch.setattr(settings, "email_delivery_enabled", False)
+    monkeypatch.setattr(settings, "use_mock_threat_intel", True)
+
 @pytest.fixture(autouse=True)
 def mock_gemini(monkeypatch) -> None:
     """
@@ -104,7 +118,29 @@ def mock_gemini(monkeypatch) -> None:
                 investigation_items=["Check registry run keys", "Verify process tree"],
                 recommended_actions=["Scan host with ESET", "Isolate network card if suspicious"],
                 draft_client_response="Security operations are actively triaging the alert."
+            ),
+            # Same report as engineer_notification_en, in Japanese — the dashboard
+            # renders whichever matches its language toggle (src/models/ai_output.py).
+            engineer_notification_ja=EngineerNotificationJa(
+                alert_summary=f"[MOCK] {alert.detection_name} の技術的アラート概要",
+                assessment=f"算出されたリスクレベルは {risk_level} です。",
+                confirmed_information=["エンドポイント名: " + alert.endpoint_name],
+                unknown_information=["ネットワーク通信の全ログが未取得"],
+                investigation_items=["レジストリの Run キーを確認", "プロセスツリーを検証"],
+                recommended_actions=["ESET で端末をスキャン", "不審な場合はネットワークを遮断"],
+                draft_client_response="セキュリティ運用チームがアラートを確認中です。"
             )
         )
         
     monkeypatch.setattr(GeminiAIService, "generate", mock_generate)
+
+
+@pytest.fixture(autouse=True)
+def reset_auth_limiter() -> Generator[None, None, None]:
+    """Auth-failure throttling is per client address, and every TestClient
+    request comes from the same one — without a reset, wrong-credential tests
+    would lock out the tests that run after them."""
+    from src.middleware.security import auth_limiter
+    auth_limiter.reset()
+    yield
+    auth_limiter.reset()

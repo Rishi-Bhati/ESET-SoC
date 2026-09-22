@@ -12,8 +12,9 @@ from src.utils.broadcaster import EventBroadcaster
 from src.utils import events
 from src.storage.database import init_db
 from src.storage import job_store, deduplication
-from src.services import syslog_runtime, email_dispatcher
+from src.services import syslog_runtime, email_dispatcher, pipeline_capacity
 from src.api.router import api_router
+from src.middleware.security import SecurityHeadersMiddleware, build_csp, inline_script_hashes
 
 logger = structlog.get_logger(__name__)
 
@@ -60,6 +61,49 @@ def warn_on_insecure_exposure() -> None:
             tip="Set DASHBOARD_ACCESS_KEY in .env, or bind APP_HOST=127.0.0.1 and reach it over a tunnel.",
         )
 
+_PLACEHOLDER_SECRETS = {"", "test", "changeme", "change-me", "your_gemini_api_key_here", "secret", "password"}
+_MIN_SECRET_LENGTH = 16
+
+
+def production_config_problems() -> list[str]:
+    """
+    Settings that are tolerable on a developer's laptop but must not reach a
+    deployment. Empty list = fine. Only enforced when APP_ENV=production.
+    """
+    problems = []
+    key = settings.dashboard_access_key
+    if not key:
+        problems.append("DASHBOARD_ACCESS_KEY is blank — the dashboard and its API would be open to anyone")
+    elif len(key) < _MIN_SECRET_LENGTH:
+        problems.append(f"DASHBOARD_ACCESS_KEY is shorter than {_MIN_SECRET_LENGTH} characters")
+    token = settings.eset_webhook_auth_token
+    if token.lower() in _PLACEHOLDER_SECRETS or len(token) < _MIN_SECRET_LENGTH:
+        problems.append(f"ESET_WEBHOOK_AUTH_TOKEN is a placeholder or shorter than {_MIN_SECRET_LENGTH} characters")
+    if settings.gemini_api_key.lower() in _PLACEHOLDER_SECRETS:
+        problems.append("GEMINI_API_KEY is not set")
+    if settings.enable_api_docs:
+        problems.append("ENABLE_API_DOCS must be false in production (docs cannot be gated by the dashboard key)")
+    if settings.email_delivery_enabled and not (settings.email_api_url and settings.email_api_key):
+        problems.append("EMAIL_DELIVERY_ENABLED is true but EMAIL_API_URL / EMAIL_API_KEY are missing")
+    return problems
+
+
+def check_production_config() -> None:
+    """Refuses to start a production deployment with an unsafe configuration."""
+    if settings.app_env.lower() != "production":
+        return
+    problems = production_config_problems()
+    if problems:
+        for p in problems:
+            logger.error("unsafe_production_config", problem=p)
+        raise RuntimeError("Refusing to start with APP_ENV=production: " + "; ".join(problems))
+    if not settings.syslog_allowed_sources:
+        logger.warning(
+            "syslog_allowlist_blank_in_production",
+            tip="Set SYSLOG_ALLOWED_SOURCES, or keep the syslog ports unreachable from outside.",
+        )
+
+
 async def recover_unfinished_jobs() -> None:
     """
     Scans the database for jobs in PENDING or PROCESSING status
@@ -76,10 +120,32 @@ async def recover_unfinished_jobs() -> None:
         # We import here to avoid potential startup circular imports
         from src.api.webhook import run_pipeline_task
         
+        # A single coordinator holds at most one reservation and awaits each
+        # pipeline. Never create a waiting task for every saved job: a large
+        # backlog must not bypass live-ingest capacity or exhaust the task queue.
         for job in unfinished:
-            logger.info("recovery_retriggering_job", correlation_id=job["correlation_id"])
-            # Re-enqueue in background tasks
-            asyncio.create_task(run_pipeline_task(job["correlation_id"], job["raw_payload"], job["source"]))
+            while True:
+                try:
+                    reservation = pipeline_capacity.capacity.reserve(job["correlation_id"])
+                    break
+                except pipeline_capacity.PipelineAlreadyActive:
+                    reservation = None  # Already accepted by ingest/manual retry.
+                    break
+                except pipeline_capacity.CapacityExhausted:
+                    await asyncio.sleep(0.1)
+            if reservation is None:
+                continue
+            try:
+                # The snapshot can become stale while waiting for capacity.
+                current = await job_store.get_job(job["correlation_id"])
+                if current is None or current["status"] not in ("PENDING", "PROCESSING"):
+                    continue
+                logger.info("recovery_retriggering_job", correlation_id=job["correlation_id"])
+                await reservation.run(
+                    run_pipeline_task, job["correlation_id"], current["raw_payload"], current["source"],
+                )
+            finally:
+                reservation.release()
             
     except Exception as e:
         logger.error("recovery_failed", error=str(e))
@@ -88,8 +154,15 @@ async def recover_unfinished_jobs() -> None:
 async def lifespan(app: FastAPI):
     # --- Startup ---
     # Setup structlog
-    setup_logging(settings.log_level)
-    logger.info("app_starting", host=settings.app_host, port=settings.app_port)
+    setup_logging(
+        settings.log_level,
+        settings.log_file,
+        max_bytes=settings.log_max_bytes,
+        backup_count=settings.log_backup_count,
+        quiet_dashboard_access=not settings.log_dashboard_access,
+    )
+    logger.info("app_starting", host=settings.app_host, port=settings.app_port, env=settings.app_env)
+    check_production_config()
     warn_on_insecure_exposure()
 
     # Python does not hot-reload source files: this process serves exactly the code
@@ -110,7 +183,7 @@ async def lifespan(app: FastAPI):
     app.state.syslog_handles = await syslog_runtime.start()
 
     # Trigger crash recovery process in the background
-    asyncio.create_task(recover_unfinished_jobs())
+    app.state.recovery_task = asyncio.create_task(recover_unfinished_jobs())
 
     # Sweeper that retries emails which could not be handed to the mail service.
     # The service itself owns retrying actual delivery.
@@ -122,12 +195,18 @@ async def lifespan(app: FastAPI):
         deduplication.run_cleanup_loop(max(60, settings.dedup_ttl_seconds))
     )
 
-    yield
-    # --- Shutdown ---
-    app.state.dispatch_task.cancel()
-    app.state.dedup_cleanup_task.cancel()
-    await syslog_runtime.stop(app.state.syslog_handles)
-    logger.info("app_shutting_down")
+    try:
+        yield
+    finally:
+        # --- Shutdown ---
+        background = (
+            app.state.recovery_task, app.state.dispatch_task, app.state.dedup_cleanup_task,
+        )
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await syslog_runtime.stop(app.state.syslog_handles)
+        logger.info("app_shutting_down")
 
 app = FastAPI(
     title="ESET SOC Lite Webhook Ingress Service",
@@ -153,9 +232,28 @@ events.set_broadcaster(app.state.broadcaster)
 # Attach all grouped routers
 app.include_router(api_router)
 
+with open(os.path.join(STATIC_DIR, "dashboard.html"), encoding="utf-8") as _f:
+    _CSP = build_csp(inline_script_hashes(_f.read()))
+app.add_middleware(SecurityHeadersMiddleware, csp=_CSP)
+
 # Live dashboard: static assets + root page
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+class _RevalidatingStaticFiles(StaticFiles):
+    """
+    With no Cache-Control header, browsers cache the dashboard's JS/CSS
+    heuristically and can keep running an old dashboard.js for a while after
+    an update — new HTML against stale script. `no-cache` still lets the
+    browser keep its copy, but it must revalidate (a cheap 304 via the
+    ETag/Last-Modified StaticFiles already sends) before using it.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _RevalidatingStaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/", include_in_schema=False)
 async def dashboard_root() -> FileResponse:
-    return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"))
+    return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"), headers={"Cache-Control": "no-cache"})

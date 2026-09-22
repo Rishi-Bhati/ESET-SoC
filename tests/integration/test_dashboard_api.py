@@ -153,12 +153,15 @@ def test_ai_content_exposes_the_assessment_not_only_the_drafted_emails(client: T
     client.post("/webhook/eset", headers=AUTH, json=_payload("dash-ai-2"))
     item = client.get("/dashboard/api/ai-content").json()["items"][0]
 
-    engineer = item["ai_output"]["engineer_notification_en"]
-    assert engineer["alert_summary"]
-    assert engineer["assessment"]
-    for field in ("confirmed_information", "unknown_information",
-                  "investigation_items", "recommended_actions"):
-        assert isinstance(engineer[field], list), field
+    # Both languages, since the panel follows the dashboard's JA/EN toggle: a
+    # JA-only reader must not be shown an empty or English-only assessment.
+    for lang_key in ("engineer_notification_en", "engineer_notification_ja"):
+        engineer = item["ai_output"][lang_key]
+        assert engineer["alert_summary"], lang_key
+        assert engineer["assessment"], lang_key
+        for field in ("confirmed_information", "unknown_information",
+                      "investigation_items", "recommended_actions"):
+            assert isinstance(engineer[field], list), (lang_key, field)
 
 
 def test_ai_content_requires_the_dashboard_key(client: TestClient, monkeypatch):

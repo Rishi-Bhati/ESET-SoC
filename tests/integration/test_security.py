@@ -2,6 +2,8 @@
 Security-focused coverage: ingest auth, dashboard key enforcement,
 WebSocket origin/key checks, and XSS-safe rendering of hostile payloads.
 """
+import base64
+
 import pytest
 from fastapi.testclient import TestClient
 from src.config import settings
@@ -93,8 +95,64 @@ def test_ws_requires_key_when_configured(client: TestClient, monkeypatch):
     with pytest.raises(Exception):
         with client.websocket_connect("/dashboard/api/ws"):
             pass
+    # ?key= is still honoured for existing operator scripts and bookmarks.
     with client.websocket_connect("/dashboard/api/ws?key=s3cret-key") as ws:
         assert ws is not None
+
+
+def _key_subprotocol(key: str) -> str:
+    """Mirrors wsKeyProtocol() in static/dashboard.js."""
+    encoded = base64.urlsafe_b64encode(key.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"socpass.{encoded}"
+
+
+def test_ws_accepts_key_as_subprotocol(client: TestClient, monkeypatch):
+    """
+    The dashboard sends its key as a subprotocol, not as ?key=: a query string on
+    the handshake lands in the server's access log, which this same dashboard
+    serves back through /dashboard/api/logs.
+    """
+    monkeypatch.setattr(settings, "dashboard_access_key", "s3cret-key")
+    with client.websocket_connect(
+        "/dashboard/api/ws", subprotocols=[_key_subprotocol("s3cret-key")],
+    ) as ws:
+        assert ws is not None
+
+
+def test_ws_rejects_wrong_key_subprotocol(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_access_key", "s3cret-key")
+    with pytest.raises(Exception):
+        with client.websocket_connect(
+            "/dashboard/api/ws", subprotocols=[_key_subprotocol("not-the-key")],
+        ):
+            pass
+
+
+def test_ws_unicode_key_is_rejected_cleanly_or_matches_configured_key(client, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    monkeypatch.setattr(settings, "dashboard_access_key", "ascii-key")
+    with pytest.raises(WebSocketDisconnect) as rejected:
+        with client.websocket_connect("/dashboard/api/ws", subprotocols=[_key_subprotocol("日本語")]):
+            pass
+    assert rejected.value.code == 4401
+    monkeypatch.setattr(settings, "dashboard_access_key", "日本語")
+    with client.websocket_connect("/dashboard/api/ws", subprotocols=[_key_subprotocol("日本語")]) as ws:
+        assert ws.accepted_subprotocol == _key_subprotocol("日本語")
+
+
+def test_http_non_ascii_keys_return_401_not_server_error(client, monkeypatch):
+    monkeypatch.setattr(settings, "dashboard_access_key", "ascii-key")
+    assert client.get("/dashboard/api/jobs", headers={b"X-Dashboard-Key": b"\xff"}).status_code == 401
+    assert client.post("/webhook/eset", headers={b"Authorization": b"Bearer \xff"}, json={}).status_code == 401
+
+
+def test_ws_url_carries_no_secret(client: TestClient, monkeypatch):
+    """The whole point of the change: nothing secret in the request line."""
+    monkeypatch.setattr(settings, "dashboard_access_key", "s3cret-key")
+    with client.websocket_connect(
+        "/dashboard/api/ws", subprotocols=[_key_subprotocol("s3cret-key")],
+    ) as ws:
+        assert "s3cret-key" not in str(ws.scope.get("query_string", b""))
 
 
 # --------------------------- XSS ---------------------------

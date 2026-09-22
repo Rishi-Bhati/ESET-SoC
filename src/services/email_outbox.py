@@ -5,13 +5,16 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 import structlog
+from src.config import settings
 from src.models.email_message import EmailMessage
 from src.storage import delivery_store
 from src.utils import events
 
 logger = structlog.get_logger(__name__)
 
-OUTBOX_DIR = "output/emails"
+# Sibling of OUTPUT_DIR (output/alerts -> output/emails), so pointing OUTPUT_DIR
+# at a persistent volume in a deployment moves the outbox along with it.
+OUTBOX_DIR = os.path.join(os.path.dirname(os.path.normpath(settings.output_dir)) or ".", "emails")
 OUTBOX_PATH = os.path.join(OUTBOX_DIR, "outbox.json")
 # Emails that will never be handed off. Giving up on a notification is not the
 # same as it never having existed: a CRITICAL alert that could not be delivered
