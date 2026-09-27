@@ -241,7 +241,7 @@ async def apply_manual_redaction(trace_id: str, field_path: str, start: int, end
     # data_categories[].value_preview always duplicates it (see
     # trace_recorder.build_alert_data_categories), and since the AI prompt now
     # carries both normalized_alert AND original_submitted_payload (the verbatim
-    # original JSON normalized_alert was extracted from — see gemini_service.py),
+    # original JSON normalized_alert was extracted from — see src/services/ai/base.py),
     # a value the operator redacts from one is, by construction, very likely to
     # still be sitting in the other. Redacting only the one path an operator
     # clicked would leave those copies recoverable, breaking the "cannot be

@@ -1,0 +1,21 @@
+{
+  "_poc_case": "CRITICAL — ransomware-like behavior. ESET reports HIGH; the event-pattern rule raises it.",
+  "source": "ESET_PROTECT_CLOUD",
+  "event_type": "Threat Detection",
+  "alert_id": "poc-critical-0001",
+  "occurred_at": "2026-09-20T04:22:00Z",
+  "severity": "HIGH",
+  "detection_name": "Win32/Filecoder.LockBit.C",
+  "endpoint_name": "MAC-FS-01",
+  "endpoint_type": "Server",
+  "user_name": "svc-backup",
+  "os_name": "Windows Server 2022",
+  "action_taken": "Blocked; cleaning failed",
+  "threat_handled": false,
+  "isolation_status": false,
+  "object_type": "Process",
+  "object_uri": "C:\\ProgramData\\lb3.exe",
+  "file_hash": "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "raw_subject": "Ransomware behavior detected on MAC-FS-01",
+  "raw_content": "Ransomware Shield blocked a process attempting to encrypt files on shared folders. vssadmin delete shadows was observed immediately before."
+}

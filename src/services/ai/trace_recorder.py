@@ -2,7 +2,7 @@
 Instrumentation API for AI Visibility / Observability.
 
 This is the ONLY place AI calls should be instrumented from. src/services/ai/
-gemini_service.py and src/pipeline/orchestrator.py call into this module rather
+base.py and src/pipeline/orchestrator.py call into this module rather
 than writing to storage or the event bus directly, so the trace schema and its
 redaction guarantee stay in exactly one place.
 
@@ -141,7 +141,7 @@ _FIELD_CATEGORY: dict[str, str] = {
 
 def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) -> list[AIDataCategory]:
     """
-    Categorizes exactly what src/services/ai/gemini_service.py actually sends to the
+    Categorizes exactly what src/services/ai/base.py actually sends to the
     model — derived from the real NormalizedAlert/ThreatIntelResult fields, not a
     generic guess.
     """
@@ -162,7 +162,7 @@ def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) 
         # The platform accepts alerts in any JSON shape (src/api/webhook.py has no
         # required fields), so the exact submitted payload — not just the fields
         # normalize() recognized — is also sent to the model (masked/truncated the
-        # same way normalized_alert is; see gemini_service.py). One summary entry
+        # same way normalized_alert is; see ai/base.py). One summary entry
         # here rather than one per key: the shape, and therefore the key set, is
         # unknown in advance, which is the whole point of sending it.
         if getattr(alert, "raw_payload", None):
@@ -175,7 +175,7 @@ def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) 
             ))
 
         out.append(AIDataCategory(
-            category="Application-generated context", field="calculated_risk_level",
+            category="Application-generated context", field="predefined_risk",
             origin="Deterministic rule-based risk engine (src/services/risk_engine.py) — not the AI",
             value_preview=risk_level,
         ))
@@ -361,7 +361,7 @@ async def attach_policy_check(correlation_id: str, *, name: str, passed: bool, d
     Attaches a policy-check result (e.g. the post-generation safety lint in
     src/services/ai/lint_checker.py) to the most recent AI trace for this
     correlation_id. Called from src/pipeline/orchestrator.py, which runs the lint
-    check after GeminiAIService.generate() has already returned and its trace has
+    check after BaseAIProvider.generate() has already returned and its trace has
     already been persisted — so this looks the trace up by correlation_id rather than
     holding a reference to the AITrace object across that call boundary.
     """

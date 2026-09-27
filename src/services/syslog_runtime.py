@@ -319,7 +319,7 @@ async def start() -> SyslogHandles:
         logger.warning(
             "syslog_source_allowlist_empty",
             tip="SYSLOG_ALLOWED_SOURCES is blank: any host that can reach the syslog "
-                "ports can inject alerts, each costing a Gemini call and a notification. "
+                "ports can inject alerts, each costing an AI call and a notification. "
                 "Set it to the ESET PROTECT exporter address(es), or keep the ports on a "
                 "trusted network only.",
         )

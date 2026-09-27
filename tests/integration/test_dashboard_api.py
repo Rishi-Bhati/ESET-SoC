@@ -45,7 +45,7 @@ def test_health_reports_all_subsystems(client: TestClient):
     res = client.get("/health")
     assert res.status_code == 200
     body = res.json()
-    for key in ("status", "database", "output_directory", "gemini_api", "syslog_listener"):
+    for key in ("status", "database", "output_directory", "ai_provider", "syslog_listener"):
         assert key in body
     assert body["database"]["status"] == "ok"
     assert body["output_directory"]["status"] == "ok"
@@ -149,19 +149,19 @@ def test_ai_content_carries_the_alert_the_assessment_was_made_from(client: TestC
 
 
 def test_ai_content_exposes_the_assessment_not_only_the_drafted_emails(client: TestClient):
-    """The analytical fields the Analysis panel renders must actually be present."""
+    """The fields the Analysis panel renders, plus the audit trail behind them."""
     client.post("/webhook/eset", headers=AUTH, json=_payload("dash-ai-2"))
     item = client.get("/dashboard/api/ai-content").json()["items"][0]
 
-    # Both languages, since the panel follows the dashboard's JA/EN toggle: a
-    # JA-only reader must not be shown an empty or English-only assessment.
-    for lang_key in ("engineer_notification_en", "engineer_notification_ja"):
-        engineer = item["ai_output"][lang_key]
-        assert engineer["alert_summary"], lang_key
-        assert engineer["assessment"], lang_key
-        for field in ("confirmed_information", "unknown_information",
-                      "investigation_items", "recommended_actions"):
-            assert isinstance(engineer[field], list), (lang_key, field)
+    ai = item["ai_output"]
+    for field in ("alert_summary_ja", "risk_reason_ja", "internal_summary_ja", "engineer_summary_en"):
+        assert ai[field], field
+    for field in ("recommended_initial_actions_ja", "additional_confirmation_items_ja", "unknown_items"):
+        assert isinstance(ai[field], list), field
+    # Rule-based decision and the AI call's audit record travel with the output.
+    assert item["risk_factors"] and item["risk_factors"][0]["effect"] == "base"
+    assert item["ai_run"]["request_id"] == "req_mock_0001"
+    assert item["ai_run"]["status"] == "SUCCESS"
 
 
 def test_ai_content_requires_the_dashboard_key(client: TestClient, monkeypatch):
@@ -261,7 +261,7 @@ def test_websocket_streams_every_pipeline_stage(client: TestClient):
         assert ("AI", "ok") in stages
         # Stages must arrive in pipeline order
         order = [s for s, st in stages if st == "ok"]
-        assert order.index("NORMALIZE") < order.index("RISK") < order.index("INTEL") < order.index("AI")
+        assert order.index("NORMALIZE") < order.index("INTEL") < order.index("RISK") < order.index("AI")
 
 
 # --------------------------- test endpoints must be gone ---------------------------

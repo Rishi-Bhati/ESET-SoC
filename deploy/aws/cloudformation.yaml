@@ -1,0 +1,390 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ESET SOC Lite — one environment (poc / staging / prod) on a single EC2 host:
+  the platform container behind Caddy (automatic HTTPS), SQLite and alert
+  results on an encrypted EBS volume with daily snapshots, credentials in
+  AWS Secrets Manager read at runtime through the instance role, container
+  logs in CloudWatch, and shell access through SSM Session Manager (no SSH).
+  Deploy one stack per environment; each stack can read only its own secrets.
+  See docs/AWS_DEPLOYMENT.md.
+
+Parameters:
+  EnvName:
+    Type: String
+    AllowedValues: [poc, staging, prod]
+    Description: Environment name. Scopes secret names, IAM access and resource names.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: A public subnet (route to an internet gateway) in VpcId.
+  DomainName:
+    Type: String
+    Description: DNS name for the platform (e.g. soc-poc.example.com). Point an A record at the Elastic IP output; Caddy then obtains a Let's Encrypt certificate.
+  ImageUri:
+    Type: String
+    Description: Platform image in ECR, e.g. 123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/eset-soc-lite:2026-09-27
+  AdminCidr:
+    Type: String
+    Description: Address range allowed to open the dashboard (office / VPN egress), e.g. 203.0.113.0/24. The webhook endpoint stays reachable from anywhere because ESET PROTECT Cloud has no fixed source IP.
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  SyslogSourceCidr:
+    Type: String
+    Default: ""
+    Description: Optional. Source range allowed to send syslog (UDP 514 / TCP 601). Blank = syslog ports closed.
+  OpenAIModel:
+    Type: String
+    Description: OPENAI_MODEL for this environment (must support structured outputs), e.g. gpt-5-mini.
+  InstanceType:
+    Type: String
+    Default: t3.small
+  DataVolumeSizeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 8
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [30, 60, 90, 180, 365, 400, 545, 731, 1827, 3653]
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  SyslogEnabled: !Not [!Equals [!Ref SyslogSourceCidr, ""]]
+
+Resources:
+  # ---------------------------------------------------------------- secrets
+  # Created with random placeholder values so IAM can reference them; the real
+  # values are written afterwards with `aws secretsmanager put-secret-value`
+  # (docs/AWS_DEPLOYMENT.md). Real keys never pass through CloudFormation
+  # parameters, templates or stack events.
+  OpenAIApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub eset-soc-lite/${EnvName}/openai-api-key
+      Description: !Sub OpenAI API key for the ESET SOC Lite ${EnvName} project (plain string, sk-...).
+      GenerateSecretString:
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub eset-soc-lite/${EnvName}/app
+      Description: !Sub >-
+        ESET SOC Lite ${EnvName} platform credentials (JSON): ESET_WEBHOOK_AUTH_TOKEN,
+        DASHBOARD_ACCESS_KEY, EMAIL_API_KEY, EMAIL_API_SECRET, VIRUSTOTAL_API_KEY, ABUSEIPDB_API_KEY.
+      GenerateSecretString:
+        SecretStringTemplate: '{"ESET_WEBHOOK_AUTH_TOKEN": "REPLACE_ME"}'
+        GenerateStringKey: DASHBOARD_ACCESS_KEY
+        PasswordLength: 40
+        ExcludePunctuation: true
+
+  # ---------------------------------------------------------------- logging
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /eset-soc-lite/${EnvName}
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---------------------------------------------------------------- IAM
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: soc-lite-runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadOwnEnvironmentSecretsOnly
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref OpenAIApiKeySecret, !Ref AppSecret]
+              - Sid: PullPlatformImage
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullPlatformImageLayers
+                Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/eset-soc-lite
+              - Sid: ContainerLogs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
+                Resource: !Sub ${LogGroup.Arn}:*
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # ---------------------------------------------------------------- network
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ESET SOC Lite ${EnvName} - HTTPS in, optional syslog from one range, no SSH
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS (webhook + dashboard; dashboard limited to AdminCidr by Caddy)}
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: ACME HTTP-01 challenge and redirect to HTTPS}
+      Tags:
+        - Key: Name
+          Value: !Sub eset-soc-lite-${EnvName}
+
+  SyslogUdpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SyslogEnabled
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: udp
+      FromPort: 514
+      ToPort: 514
+      CidrIp: !Ref SyslogSourceCidr
+      Description: ESET syslog export (UDP)
+
+  SyslogTcpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SyslogEnabled
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: 601
+      ToPort: 601
+      CidrIp: !Ref SyslogSourceCidr
+      Description: ESET syslog export (TCP)
+
+  # ---------------------------------------------------------------- compute
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref SecurityGroup]
+      IamInstanceProfile: !Ref InstanceProfile
+      # IMDSv2 only. Hop limit 2 so the container (one extra network hop) can
+      # reach the instance role credentials that boto3 uses for Secrets Manager.
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 16, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+      Tags:
+        - Key: Name
+          Value: !Sub eset-soc-lite-${EnvName}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > >(tee /var/log/soc-lite-bootstrap.log) 2>&1
+
+          dnf install -y docker
+          systemctl enable --now docker
+
+          # ---- data volume, attached as /dev/sdf by DataVolumeAttachment (possibly
+          # after boot). AL2023's udev rules link /dev/sdf to the NVMe device.
+          DEV=""
+          for i in $(seq 1 90); do
+            for candidate in /dev/sdf /dev/xvdf; do
+              [ -e "$candidate" ] && DEV=$(readlink -f "$candidate") && break 2
+            done
+            sleep 5
+          done
+          [ -n "$DEV" ] || { echo "data volume not attached"; exit 1; }
+          blkid "$DEV" >/dev/null || mkfs -t xfs "$DEV"
+          mkdir -p /srv/soc-data
+          grep -q /srv/soc-data /etc/fstab || echo "UUID=$(blkid -s UUID -o value "$DEV") /srv/soc-data xfs defaults,nofail 0 2" >> /etc/fstab
+          mount -a
+          mkdir -p /srv/soc-data/app /srv/soc-data/caddy
+          chown -R 10001:10001 /srv/soc-data/app
+
+          # ---- configuration (no secrets in here: they are read from Secrets Manager at runtime)
+          mkdir -p /opt/soc-lite
+          cat > /opt/soc-lite/app.env <<'EOF'
+          APP_ENV=production
+          AWS_REGION=${AWS::Region}
+          AWS_DEFAULT_REGION=${AWS::Region}
+          AI_PROVIDER=openai
+          OPENAI_MODEL=${OpenAIModel}
+          OPENAI_API_KEY_SECRET_ID=${OpenAIApiKeySecret}
+          APP_SECRETS_SECRET_ID=${AppSecret}
+          AI_MASKING_ENABLED=true
+          FORWARDED_ALLOW_IPS=*
+          SQLITE_DB_PATH=/data/soc_lite.db
+          OUTPUT_DIR=/data/output/alerts
+          LOG_FILE=/data/logs/app.log
+          SYSLOG_UDP_PORT=5514
+          SYSLOG_TCP_PORT=5601
+          SYSLOG_ALLOWED_SOURCES=${SyslogSourceCidr}
+          EOF
+          echo "IMAGE_URI=${ImageUri}" > /opt/soc-lite/image.env
+
+          cat > /opt/soc-lite/Caddyfile <<'EOF'
+          ${DomainName} {
+            encode gzip
+            # ESET PROTECT Cloud has no fixed source address: the ingest routes
+            # (token-authenticated) and the health probe are public.
+            @public path /webhook/* /health
+            handle @public {
+              reverse_proxy soc-lite:8000
+            }
+            # Everything else — the dashboard and its API — only from AdminCidr.
+            @admin remote_ip ${AdminCidr}
+            handle @admin {
+              reverse_proxy soc-lite:8000
+            }
+            handle {
+              respond "Forbidden" 403
+            }
+          }
+          EOF
+
+          cat > /opt/soc-lite/run.sh <<'EOF'
+          #!/bin/bash
+          # (Re)starts the platform and Caddy. Used by systemd and by deploy/aws/update.sh.
+          set -euo pipefail
+          source /opt/soc-lite/image.env
+          REGISTRY=$(echo "$IMAGE_URI" | cut -d/ -f1)
+          aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin "$REGISTRY"
+          docker pull "$IMAGE_URI"
+          docker network inspect soc-net >/dev/null 2>&1 || docker network create soc-net
+          docker rm -f soc-lite caddy >/dev/null 2>&1 || true
+          docker run -d --name soc-lite --restart unless-stopped --network soc-net \
+            --env-file /opt/soc-lite/app.env \
+            -v /srv/soc-data/app:/data \
+            -p 514:5514/udp -p 601:5601/tcp \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+            --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
+            --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=soc-lite \
+            "$IMAGE_URI"
+          docker run -d --name caddy --restart unless-stopped --network soc-net \
+            -p 80:80 -p 443:443 \
+            -v /opt/soc-lite/Caddyfile:/etc/caddy/Caddyfile:ro \
+            -v /srv/soc-data/caddy:/data \
+            --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
+            --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=caddy \
+            caddy:2
+          EOF
+          chmod +x /opt/soc-lite/run.sh
+
+          cat > /etc/systemd/system/soc-lite.service <<'EOF'
+          [Unit]
+          Description=ESET SOC Lite
+          After=docker.service network-online.target
+          Requires=docker.service
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/opt/soc-lite/run.sh
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          systemctl daemon-reload
+          systemctl enable --now soc-lite.service
+
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt Instance.AvailabilityZone
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub eset-soc-lite-${EnvName}-data
+        - Key: eset-soc-lite-backup
+          Value: !Ref EnvName
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref Instance
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+      Tags:
+        - Key: Name
+          Value: !Sub eset-soc-lite-${EnvName}
+
+  # Restarts the instance on healthy hardware if AWS's system status check fails.
+  AutoRecoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub ESET SOC Lite ${EnvName} - recover instance on system status check failure
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Dimensions: [{Name: InstanceId, Value: !Ref Instance}]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: [!Sub "arn:${AWS::Partition}:automate:${AWS::Region}:ec2:recover"]
+
+  # ---------------------------------------------------------------- backups
+  SnapshotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: dlm.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
+
+  DailySnapshots:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: !Sub ESET SOC Lite ${EnvName} data volume daily 14 kept
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt SnapshotRole.Arn
+      PolicyDetails:
+        ResourceTypes: [VOLUME]
+        TargetTags: [{Key: eset-soc-lite-backup, Value: !Ref EnvName}]
+        Schedules:
+          - Name: daily
+            CreateRule: {Interval: 24, IntervalUnit: HOURS, Times: ["18:00"]}
+            RetainRule: {Count: 14}
+            CopyTags: true
+
+Outputs:
+  ElasticIp:
+    Description: Point DomainName's A record here.
+    Value: !Ref ElasticIp
+  WebhookUrl:
+    Description: Register this in ESET PROTECT Cloud (Authorization - Bearer <ESET_WEBHOOK_AUTH_TOKEN>).
+    Value: !Sub https://${DomainName}/webhook/eset
+  DashboardUrl:
+    Value: !Sub https://${DomainName}/
+  InstanceId:
+    Description: For `aws ssm start-session --target <id>` and deploy/aws/update.sh.
+    Value: !Ref Instance
+  OpenAIApiKeySecretArn:
+    Value: !Ref OpenAIApiKeySecret
+  AppSecretArn:
+    Value: !Ref AppSecret
+  LogGroupName:
+    Value: !Ref LogGroup

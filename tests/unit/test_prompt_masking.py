@@ -58,7 +58,7 @@ def test_fields_needed_for_triage_are_left_unmasked():
 
 
 def test_unknown_values_are_left_alone():
-    masked, changed = mask_alert_for_prompt(_base_data(user_name="UNKNOWN", object_uri="UNKNOWN"))
+    masked, changed = mask_alert_for_prompt(_base_data(user_name="UNKNOWN", object_uri="UNKNOWN", alert_id="UNKNOWN"))
     assert masked["user_name"] == "UNKNOWN"
     assert masked["object_uri"] == "UNKNOWN"
     assert changed == []
@@ -130,3 +130,38 @@ def test_raw_payload_masking_does_not_mutate_input():
     snapshot = dict(original)
     mask_raw_payload_for_prompt(original)
     assert original == snapshot
+
+
+# --------------------------- client requirement #9 additions ---------------------------
+
+def test_internal_identifiers_are_replaced():
+    masked, changed = mask_alert_for_prompt(_base_data(
+        detection_uuid="0f8fad5b-d9cb-469f-a165-70867728950e", target_uuid="7c9e6679-7425-40de-944b"))
+    for field in ("detection_uuid", "target_uuid", "alert_id"):
+        assert masked[field] == "[INTERNAL_ID]"
+        assert field in changed
+
+
+def test_email_addresses_in_free_text_keep_only_their_domain():
+    masked, changed = mask_alert_for_prompt(_base_data(raw_content="Reported by it-admin@client.example today"))
+    assert "it-admin@" not in masked["raw_content"]
+    assert "@client.example" in masked["raw_content"]
+    assert "raw_content" in changed
+
+
+def test_domain_account_references_are_masked_but_windows_paths_are_not():
+    masked, _ = mask_alert_for_prompt(_base_data(
+        raw_content=r"Logon by CORP\charlie.brown, process C:\Windows\System32\cmd.exe"))
+    assert "charlie.brown" not in masked["raw_content"]
+    assert r"C:\Windows\System32\cmd.exe" in masked["raw_content"]
+
+
+def test_raw_payload_internal_ids_and_emails_are_masked():
+    from src.services.ai.prompt_masking import mask_raw_payload_for_prompt
+    masked, changed = mask_raw_payload_for_prompt({
+        "tenant_id": "T-1", "uuid": "abc", "note": "mail bob@corp.example", "hostname": "PC-01",
+    })
+    assert masked["tenant_id"] == masked["uuid"] == "[INTERNAL_ID]"
+    assert "bob@" not in masked["note"]
+    assert masked["hostname"] == "PC-01"
+    assert set(changed) == {"tenant_id", "uuid", "note"}

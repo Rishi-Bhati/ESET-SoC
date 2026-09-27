@@ -9,7 +9,7 @@
  *   - the Emails section (#view-emails) or anything triggered from it — left
  *     exactly as-is, per product requirement.
  *   - AI-generated notification content (client_notification_ja.summary etc.) —
- *     that is real bilingual data produced by Gemini, not dashboard chrome.
+ *     that is real bilingual data produced by the AI provider, not dashboard chrome.
  *   - raw application log lines — structured audit data, not localizable text.
  *   - free-text backend-authored prose in AI Visibility (decision-summary values,
  *     timeline event detail text, data-category "origin" sentences) — these are
@@ -120,8 +120,15 @@ const I18N = {
     posture_syslog_allowlist_ok: "許可された送信元からのみ受け付けます。",
     posture_syslog_allowlist_warn: "未設定です。ポートに到達できる誰でもアラートを注入できます。",
     posture_ai_masking_title: "AI 送信前のマスキング",
-    posture_ai_masking_ok: "ユーザー名などを Gemini に送る前にマスクします。",
-    posture_ai_masking_warn: "無効です。すべてのフィールドがそのまま Gemini に送信されます。",
+    posture_ai_masking_ok: "ユーザー名・メールアドレス・内部IDを AI プロバイダーに送る前にマスクします。",
+    posture_ai_masking_warn: "無効です。すべてのフィールドがそのまま AI プロバイダーに送信されます。",
+    posture_threat_intel_title: "脅威インテリジェンス",
+    posture_threat_intel_ok: "VirusTotal / AbuseIPDB に実際に照会し、結果をリスク判定に使用します。",
+    posture_threat_intel_warn: "模擬データです。画面には表示されますが、リスク判定やAIへの入力には使用しません。",
+    posture_ai_key_store_title: "AI APIキーの保管",
+    posture_ai_key_store_ok: "AWS Secrets Manager から実行時に読み込んでいます。",
+    posture_ai_key_store_warn: "環境変数から読み込んでいます。本番では Secrets Manager を使用してください。",
+    posture_ai_key_store_bad: "APIキーが設定されていません。AIによる文章生成は失敗し、社内向けの代替通知のみ送信されます。",
     posture_email_delivery_title: "メール配信",
     posture_email_delivery_ok: "有効です。通知はメールサービスへ送信されます。",
     posture_email_delivery_warn: "無効です。通知は作成されますが送信されません。",
@@ -167,7 +174,7 @@ const I18N = {
     stage_normalize_desc: "取り込んだ内容から、社内の固定フィールドへ変換した結果です。項目名が一致しない場合は近い名称のフィールドから推測し、それでも見つからないものは「不明」のままにしています。",
     stage_normalize_unknown_note: (n) => `${n} 件のフィールドが「不明」です — AIには元データも渡されるため、そちらから読み取れる場合があります。`,
     stage_risk_desc: "決定的なルールエンジンによる、リスクレベルの算出結果です（AIではありません）。",
-    stage_intel_desc: "AI生成の前に取得した、脅威インテリジェンスの照会結果です。",
+    stage_intel_desc: "リスク判定の前に取得した、脅威インテリジェンスの照会結果です（リスク判定の入力の一つです）。",
     stage_intel_none: "参照可能な指標（ハッシュ/IPなど）がありませんでした。",
     stage_ai_desc: "モデルが生成した内容の概要です。全文は下のボタンから確認できます。",
     stage_ai_not_reached: "このアラートはAI生成段階に到達していません。",
@@ -221,6 +228,23 @@ const I18N = {
     ai_investigate: "調査項目", ai_recommended: "推奨アクション",
     ai_none_stated: "記載なし",
     ai_draft_response: "クライアント返信案",
+    ai_risk_reason: "リスク判定の理由", ai_initial_actions: "推奨初動対応",
+    ai_confirm_items: "追加確認事項", ai_unknown_items: "不明・要確認事項",
+    tab_client_email: "クライアント宛メール (JA)", tab_backlog: "Backlog コメント (JA)",
+    kv_ai_model: "AIプロバイダー / モデル", kv_ai_request_id: "AIリクエストID", kv_ai_run: "AI実行結果",
+    kv_ai_attempts: "回試行",
+    stage_ai_failed: (why) => `AIによる文章生成に失敗しました（${why}）。アラートは記録済みで、社内向けに通知しています。`,
+    panel_ai_provider: "AIプロバイダー",
+    sub_ai_readonly: "読み取り専用 — 環境ごとに設定します。APIキーはシークレットストアで管理され、ここには表示されません。",
+    btn_test_ai: "接続テスト",
+    ai_kv_provider: "プロバイダー", ai_kv_model: "モデル", ai_kv_key_source: "APIキーの保管場所",
+    ai_kv_limits: "タイムアウト / 試行回数 / 最大出力", ai_kv_masking: "送信前マスキング", ai_kv_prompt_version: "プロンプトのバージョン",
+    ai_limits_value: (timeout, attempts, tokens) => `${timeout}秒 / 最大${attempts}回 / ${tokens}トークン`,
+    ai_src_aws_secrets_manager: "AWS Secrets Manager", ai_src_environment: "環境変数", ai_src_missing: "未設定",
+    ai_not_set: "未設定", ai_masking_on: "有効", ai_masking_off: "無効",
+    ai_test_running: "テスト中…",
+    ai_test_ok: (detail, ms, rid) => `成功: ${detail}（${ms}、リクエストID ${rid}）`,
+    ai_test_failed: (detail) => `失敗: ${detail}`,
     // Shown when a stored result predates the bilingual engineer report, so the
     // panel is falling back to the other language rather than showing nothing.
     ai_lang_fallback_ja: "このアラートには日本語版の分析がありません（生成時点では英語のみ）。英語版を表示しています。",
@@ -322,7 +346,10 @@ const I18N = {
     eff_threat_handled: "trueの場合、リスクを引き下げます",
     eff_isolation_status: "trueの場合、HIGHアラートのリスクをさらに引き下げます",
     eff_dedup_key: "重複排除キー(未指定時はペイロード全体のハッシュを使用)",
-    eff_intel_fields: "脅威インテリジェンス検索(VirusTotal, AbuseIPDB)",
+    eff_intel_fields: "脅威インテリジェンス検索(VirusTotal, AbuseIPDB)。MALICIOUS 判定はリスクを引き上げます",
+    eff_endpoint_importance: "重要端末（サーバー、ドメインコントローラー、IMPORTANT_ENDPOINT_PATTERNS）で未処理の検知はリスクを1段階引き上げます",
+    eff_event_pattern: "ランサムウェアの兆候やアウトブレイクは CRITICAL になります",
+    eff_multi_endpoint: "同一の検知が複数端末で発生した場合は CRITICAL になります",
     foot_unknown: "未指定の項目は、内容を推測せず",
     foot_unknown_2: "として正規化されます。",
     panel_dashboard_api: "ダッシュボードAPI",
@@ -487,8 +514,15 @@ const I18N = {
     posture_syslog_allowlist_ok: "Only listed senders are accepted.",
     posture_syslog_allowlist_warn: "Blank — anyone who can reach the syslog ports can inject alerts.",
     posture_ai_masking_title: "AI data masking",
-    posture_ai_masking_ok: "User names are masked before anything is sent to Gemini.",
-    posture_ai_masking_warn: "Off — every field is sent to Gemini as-is.",
+    posture_ai_masking_ok: "User names, email addresses and internal IDs are masked before anything is sent to the AI provider.",
+    posture_ai_masking_warn: "Off — every field is sent to the AI provider as-is.",
+    posture_threat_intel_title: "Threat intelligence",
+    posture_threat_intel_ok: "Real VirusTotal / AbuseIPDB lookups; verdicts feed the risk rules.",
+    posture_threat_intel_warn: "Simulated verdicts — shown here, but not used for risk or given to the AI.",
+    posture_ai_key_store_title: "AI API key storage",
+    posture_ai_key_store_ok: "Read at runtime from AWS Secrets Manager.",
+    posture_ai_key_store_warn: "Read from an environment variable. Use Secrets Manager in production.",
+    posture_ai_key_store_bad: "No API key configured — AI generation will fail and only the internal fallback notice is sent.",
     posture_email_delivery_title: "Email delivery",
     posture_email_delivery_ok: "On — notifications are handed to the mail service.",
     posture_email_delivery_warn: "Off — notifications are composed but not sent.",
@@ -528,7 +562,7 @@ const I18N = {
     stage_normalize_desc: "What the received data was converted into, field by field. When an exact field name wasn't found, a close alternate name was tried; anything still missing is left \"UNKNOWN\".",
     stage_normalize_unknown_note: (n) => `${n} field${n === 1 ? " is" : "s are"} "UNKNOWN" — the AI is also given the original payload and may still find these there.`,
     stage_risk_desc: "The deterministic, rule-based risk calculation (not the AI).",
-    stage_intel_desc: "Threat-intelligence lookups, fetched before the AI stage.",
+    stage_intel_desc: "Threat-intelligence lookups, fetched before risk assessment — one of its inputs.",
     stage_intel_none: "No lookable-up indicator (hash/IP/etc.) was present.",
     stage_ai_desc: "A summary of what the model produced. See the full output below.",
     stage_ai_not_reached: "This alert has not reached the AI generation stage.",
@@ -579,6 +613,23 @@ const I18N = {
     ai_investigate: "Investigation items", ai_recommended: "Recommended actions",
     ai_none_stated: "None stated",
     ai_draft_response: "Draft client response",
+    ai_risk_reason: "Why this risk level", ai_initial_actions: "Recommended initial actions",
+    ai_confirm_items: "Items to confirm", ai_unknown_items: "Unknown / needs confirmation",
+    tab_client_email: "Client email (JA)", tab_backlog: "Backlog comment (JA)",
+    kv_ai_model: "AI provider / model", kv_ai_request_id: "AI request ID", kv_ai_run: "AI run",
+    kv_ai_attempts: "attempt(s)",
+    stage_ai_failed: (why) => `AI text generation failed (${why}). The alert is recorded and our team was notified.`,
+    panel_ai_provider: "AI Provider",
+    sub_ai_readonly: "Read-only — set per environment. The API key stays in the secret store and is never shown here.",
+    btn_test_ai: "Test connection",
+    ai_kv_provider: "Provider", ai_kv_model: "Model", ai_kv_key_source: "API key source",
+    ai_kv_limits: "Timeout / attempts / max output", ai_kv_masking: "Pre-AI masking", ai_kv_prompt_version: "Prompt version",
+    ai_limits_value: (timeout, attempts, tokens) => `${timeout}s / up to ${attempts} / ${tokens} tokens`,
+    ai_src_aws_secrets_manager: "AWS Secrets Manager", ai_src_environment: "Environment variable", ai_src_missing: "Not configured",
+    ai_not_set: "Not set", ai_masking_on: "On", ai_masking_off: "Off",
+    ai_test_running: "Testing…",
+    ai_test_ok: (detail, ms, rid) => `OK: ${detail} (${ms}, request ID ${rid})`,
+    ai_test_failed: (detail) => `Failed: ${detail}`,
     ai_lang_fallback_ja: "No Japanese assessment was stored for this alert (it predates the bilingual engineer report). Showing the English one.",
     ai_lang_fallback_en: "No English assessment was stored for this alert. Showing the Japanese one.",
 
@@ -673,7 +724,10 @@ const I18N = {
     eff_threat_handled: "Downgrades risk when true",
     eff_isolation_status: "Downgrades a HIGH alert further when true",
     eff_dedup_key: "Deduplication key (falls back to a hash of the payload)",
-    eff_intel_fields: "Threat-intel lookups (VirusTotal, AbuseIPDB)",
+    eff_intel_fields: "Threat-intel lookups (VirusTotal, AbuseIPDB); a MALICIOUS verdict raises the risk level",
+    eff_endpoint_importance: "Important endpoints (servers, domain controllers, IMPORTANT_ENDPOINT_PATTERNS) raise an unhandled detection one level",
+    eff_event_pattern: "Ransomware-like indicators or an outbreak make the alert CRITICAL",
+    eff_multi_endpoint: "The same detection on several endpoints makes the alert CRITICAL",
     foot_unknown: "Anything omitted normalizes to",
     foot_unknown_2: "rather than being invented.",
     panel_dashboard_api: "Dashboard API",
@@ -885,34 +939,34 @@ function tSecurityCategory(value) {
 
 // 1) Exact-match fixed strings -----------------------------------------------
 const BACKEND_TEXT_JA = {
-  // src/services/ai/gemini_service.py: CONTEXT_NOTES (verbatim, 4 entries)
-  "raw_payload (the original, unmodified ESET payload) is deliberately excluded from the prompt — only normalized_alert fields are sent (see normalizer.py).":
-    "raw_payload（ESETから受信した加工前の元データ）はプロンプトから意図的に除外されています — 送信されるのは normalized_alert（正規化済みアラート）のフィールドのみです（詳細は normalizer.py を参照）。",
+  // src/services/ai/base.py: CONTEXT_NOTES (verbatim)
+  "original_submitted_payload (the original JSON exactly as submitted to the ingest route, masked and length-capped the same way normalized_alert is) is included alongside normalized_alert. This platform accepts alerts in any JSON shape, not only ESET's field names, so normalized_alert can legitimately read 'UNKNOWN' for a field a sender reported under a different key.":
+    "normalized_alert に加えて original_submitted_payload（取り込み時に送信された元のJSON。normalized_alert と同じくマスキング・長さ制限済み）も送信しています。本プラットフォームはESETのフィールド名以外の任意のJSON形式を受け付けるため、送信元が別のキー名で報告した項目は normalized_alert 上で「UNKNOWN」になることがあります。",
+  "predefined_risk (level, rationale and the rules that fired) is computed by the rule engine before this call. The model is asked to explain it, and the output schema only admits that one level.":
+    "predefined_risk（リスクレベル、判定理由、適用されたルール）は、この呼び出しの前にルールエンジンが算出したものです。モデルにはその説明のみを求めており、出力スキーマはその1つのレベルしか許可しません。",
   "No conversation history is sent — each request is a stateless, single-turn structured-generation call with no memory of prior alerts.":
     "会話履歴は送信されません — 各リクエストは状態を持たない単発の構造化生成呼び出しであり、過去のアラートを記憶しません。",
-  "No files or documents are uploaded to the model.":
-    "ファイルや文書はモデルにアップロードされません。",
-  "No function/tool calling is used by the model. VirusTotal and AbuseIPDB results were already fetched by the pipeline before this call and are included as static context in the prompt — the model itself never contacts either service.":
-    "モデルによる関数・ツール呼び出しは行われません。VirusTotal と AbuseIPDB の結果は、この呼び出しより前にパイプラインが取得済みであり、静的なコンテキストとしてプロンプトに含まれています — モデル自身がいずれかのサービスに接続することはありません。",
+  "No files or documents are uploaded to the model, and no tools/function calling are offered to it. VirusTotal and AbuseIPDB results were fetched by the pipeline before this call and are included as static context.":
+    "ファイルや文書はモデルにアップロードされず、ツール・関数呼び出しも提供していません。VirusTotal と AbuseIPDB の結果は、この呼び出しより前にパイプラインが取得し、静的なコンテキストとして含めています。",
 
-  // gemini_service.py: record_external_call_start()/end() fixed fields (the Gemini call)
-  "Generate structured bilingual SOC notification content":
-    "構造化されたバイリンガルSOC通知コンテンツの生成",
-  "Normalized alert fields, deterministic risk level, pre-fetched threat-intel verdicts":
-    "正規化されたアラートのフィールド、決定論的なリスクレベル、事前取得済みの脅威インテリジェンス判定",
-  "Structured JSON: 4 bilingual notification objects":
-    "構造化JSON：バイリンガル通知オブジェクト4件",
+  // ai/base.py: record_external_call_start()/end() fixed fields
+  "Generate structured notification text for a pre-assessed alert":
+    "事前にリスク判定済みのアラートに対する、構造化された通知文の生成",
+  "Masked normalized alert fields, the masked original payload, the rule-based risk decision, pre-fetched threat-intel verdicts":
+    "マスキング済みの正規化アラート項目、マスキング済みの元ペイロード、ルールベースのリスク判定、事前取得済みの脅威インテリジェンス判定",
+  "Structured JSON: notification text fields":
+    "構造化JSON：通知文の各フィールド",
   "Request sent to model": "モデルへリクエストを送信しました",
+  "Provider request identifiers": "プロバイダーのリクエストID",
 
   // decision_summary fields (trace_recorder.py: build_decision_summary)
-  "Translate/summarize a security alert into 4 audience-specific notifications":
-    "セキュリティアラートを、対象読者別の4種類の通知へ翻訳・要約する",
-  "Not provided — the Gemini structured-output API used here does not return a confidence/uncertainty score for the response.":
-    "提供されていません — ここで使用している Gemini の構造化出力APIは、応答に対する確信度・不確実性のスコアを返しません。",
+  "Explain a rule-based risk decision and draft audience-specific notifications":
+    "ルールベースのリスク判定を説明し、対象読者別の通知文を作成する",
+  "Not applicable — the model does not assess risk in this integration.":
+    "該当なし — 本連携ではモデルはリスク判定を行いません。",
+  "strict JSON schema": "厳格なJSONスキーマ",
   "This is an observable decision summary reconstructed from application signals (input data, model configuration, the provider's response, and policy checks) — it is not the model's internal chain-of-thought, which this integration does not request and this application cannot see.":
     "これは、入力データ・モデル設定・プロバイダーの応答・ポリシーチェックといったアプリケーション上で観測可能な情報から再構成した、判断の要約です。モデル内部の思考過程そのものではありません。本連携ではその取得を要求しておらず、本アプリケーションが参照することもできません。",
-  "schema_required_fields_enforced (see schema_builder.py)":
-    "スキーマ必須フィールドの強制（詳細は schema_builder.py を参照）",
 
   // data-category origins (trace_recorder.py: build_alert_data_categories)
   "Ingested alert, normalized by src/services/normalizer.py":
@@ -952,6 +1006,19 @@ const BACKEND_TEXT_JA = {
   "Alert severity is MEDIUM and the threat has not been handled.":
     "アラートの重大度は MEDIUM（中）で、脅威は未対応です。",
   "Alert severity is LOW.": "アラートの重大度は LOW（低）です。",
+  "Alert severity is HIGH, but the threat is marked as handled and the endpoint is reported as isolated.":
+    "アラートの重大度は HIGH（高）ですが、脅威は処理済みで、端末は隔離済みと報告されています。",
+  "Alert severity is HIGH and whether the threat was handled is unknown.":
+    "アラートの重大度は HIGH（高）で、脅威が処理されたかは不明です。",
+  "Alert severity is MEDIUM and whether the threat was handled is unknown.":
+    "アラートの重大度は MEDIUM（中）で、脅威が処理されたかは不明です。",
+  "Alert severity is LOW and the threat is marked as handled.":
+    "アラートの重大度は LOW（低）で、脅威は処理済みです。",
+  "Alert severity is LOW, but the threat is not handled.":
+    "アラートの重大度は LOW（低）ですが、脅威は処理されていません。",
+  "Alert severity is LOW, but whether the threat was handled is unknown, so it needs confirmation.":
+    "アラートの重大度は LOW（低）ですが、脅威が処理されたかが不明なため、確認が必要です。",
+  "The alert is reported as an outbreak.": "アウトブレイクとして報告されています。",
 
   // src/pipeline/orchestrator.py: fixed pipeline-stage detail strings
   "Generating notifications": "通知を生成しています",
@@ -968,18 +1035,28 @@ const BACKEND_TEXT_JA = {
   "empty field_path": "field_path が空です",
   "trace not found": "トレースが見つかりません",
   "redaction range is out of bounds": "マスキング範囲が対象テキストの範囲外です",
-
-  // src/prompts/system_prompts.py: SYSTEM_PROMPT.strip() — the literal text sent
-  // to Gemini as system instructions, shown verbatim in the AI trace modal for
-  // transparency. Pydantic/JSON field identifiers (client_notification_ja, etc.)
-  // are kept as-is since translating them would misrepresent the actual schema.
-  "You are a Principal Security Operations Center (SOC) Analyst and bilingual coordinator.\nYour role is to translate, summarize, and assess security alerts received from ESET PROTECT.\n\nYou will be provided with:\n1. A Normalized Security Alert (Pydantic model representation)\n2. A calculated Risk Level and its deterministic Rationale\n3. Threat Intelligence verdicts from VirusTotal and AbuseIPDB\n\nYou MUST generate 4 separate notifications matching the required schema:\n1. `client_notification_ja`: A customer-facing, reassuring but clear alert in Japanese.\n2. `cthree_notification_ja`: An operational Japanese alert for our front-office partner (C-Three Index) guiding their next steps.\n3. `internal_notification_ja`: An internal detailed Japanese operational alert for internal incident handlers.\n4. `engineer_notification_en`: A highly technical English report for engineers containing confirmed facts, unknowns, and next-step investigation items.\n\n=== CRITICAL ENGINEERING RULES & SAFETY CONSTRAINTS ===\n- DO NOT invent, assume, or infer facts. If information is not explicitly provided in the alert (e.g. file_hash, ip_address, url, user_name, or action_taken), represent it as \"UNKNOWN\" or list it in the English 'unknown_information' list.\n- DO NOT CONFIRM malware infection, successful compromise, data leakage, or incident resolution unless there is absolute, explicit evidence in the source data.\n- NEVER state that system isolation was successful or necessary unless the 'isolation_status' field explicitly confirms it.\n- Keep tone objective, technical, and analytical.":
-    "あなたは主任セキュリティオペレーションセンター(SOC)アナリスト兼バイリンガルコーディネーターです。\nあなたの役割は、ESET PROTECTから受信したセキュリティアラートを翻訳・要約・評価することです。\n\n以下の情報が提供されます:\n1. 正規化されたセキュリティアラート(Pydanticモデル表現)\n2. 算出されたリスクレベルとその判定理由(決定論的)\n3. VirusTotalおよびAbuseIPDBによる脅威インテリジェンス判定\n\n以下のスキーマに従い、4種類の通知を必ず生成してください:\n1. `client_notification_ja`: 日本語による、顧客向けの安心感がありつつ明確なアラート。\n2. `cthree_notification_ja`: フロントオフィスパートナー(C-Three Index)向けの、次の対応を導く日本語の運用アラート。\n3. `internal_notification_ja`: 社内インシデント対応者向けの、詳細な日本語の内部運用アラート。\n4. `engineer_notification_en`: 確認済みの事実・不明点・次に調査すべき項目を含む、エンジニア向けの高度に技術的な英語レポート。\n\n=== 重要なエンジニアリングルールおよび安全性の制約 ===\n- 事実を創作・推測・推論しないこと。アラート内に明示的に記載されていない情報(file_hash、ip_address、url、user_name、action_takenなど)は「UNKNOWN」と表記するか、英語の'unknown_information'リストに記載すること。\n- 元データに絶対的かつ明示的な証拠がない限り、マルウェア感染・侵害の成功・情報漏えい・インシデントの解決を断定しないこと。\n- 'isolation_status'フィールドが明示的に確認していない限り、システムの隔離が成功した、または必要であったと述べないこと。\n- 客観的・技術的・分析的なトーンを保つこと。",
 };
 
 // 2) Templated strings (one or two interpolated values) ---------------------
 // Each entry: [regex, (match) => translatedString]. Order matters — first match wins.
 const BACKEND_TEXT_TEMPLATES = [
+  // risk_engine.py: every raised/confirmed factor ends with one of these suffixes;
+  // the sentence before it is translated on its own.
+  [/^(.+) Raised from (\w+) to (\w+)\.$/,
+    (m) => `${tBackendText(m[1])}（${tBadgeLabel(m[2])} → ${tBadgeLabel(m[3])} に引き上げ）`],
+  [/^(.+) Level already (\w+)\.$/, (m) => `${tBackendText(m[1])}（既に ${tBadgeLabel(m[2])}）`],
+  [/^External threat intelligence \((.+)\) reports an indicator as (MALICIOUS|SUSPICIOUS)( and the threat is not confirmed handled)?\.$/,
+    (m) => `外部の脅威インテリジェンス（${m[1]}）が指標を ${tBadgeLabel(m[2])} と判定しています${m[3] ? "（脅威の処理は未確認）" : ""}。`],
+  [/^The detection is on an important endpoint \((.+)\) and is not confirmed handled\.$/,
+    (m) => `重要端末（${m[1]}）での検知で、処理は未確認です。`],
+  [/^Ransomware-like indicator '(.+)' is present and the threat is not confirmed handled\.$/,
+    (m) => `ランサムウェアの兆候「${m[1]}」があり、脅威の処理は未確認です。`],
+  [/^Ransomware-like indicator '(.+)' is present, although the threat is marked as handled\.$/,
+    (m) => `ランサムウェアの兆候「${m[1]}」があります（脅威は処理済みと報告されています）。`],
+  [/^The alert reports (\d+) affected endpoints \(threshold (\d+)\)\.$/,
+    (m) => `アラートは ${m[1]} 台の端末への影響を報告しています（しきい値 ${m[2]} 台）。`],
+  [/^The same detection has been seen on (\d+) distinct endpoints within (\d+) minutes \(threshold (\d+)\)\.$/,
+    (m) => `同一の検知が ${m[2]} 分以内に ${m[1]} 台の端末で確認されています（しきい値 ${m[3]} 台）。`],
   // orchestrator.py: f"Received via {source}"
   [/^Received via (\w+)$/, (m) => `${tBadgeLabel(m[1])}経由で受信しました`],
   // orchestrator.py: f"{len(emails)} email(s) queued"
@@ -990,9 +1067,9 @@ const BACKEND_TEXT_TEMPLATES = [
   // src/api/dashboard.py retry_job(): f"Only FAILED/PARTIAL jobs can be retried (current status: {status})"
   [/^Only FAILED\/PARTIAL jobs can be retried \(current status: (\w+)\)$/,
     (m) => `再試行できるのは FAILED（失敗）または PARTIAL（一部成功）のジョブのみです（現在のステータス: ${tBadgeLabel(m[1])}）`],
-  // gemini_service.py: decision=f"Produced 4 notifications; model-reported risk_level={X}"
-  [/^Produced 4 notifications; model-reported risk_level=(\w+)$/,
-    (m) => `4件の通知を生成しました（モデルが報告したリスクレベル: ${tBadgeLabel(m[1])}）`],
+  // ai/base.py: decision=f"Produced notification text for predefined risk_level={X}"
+  [/^Produced notification text for predefined risk_level=(\w+)$/,
+    (m) => `事前判定されたリスクレベル（${tBadgeLabel(m[1])}）に基づき通知文を生成しました`],
   // trace_recorder.py: f"Contacting {service}"
   [/^Contacting (.+)$/, (m) => `${m[1]} に接続中`],
   // trace_recorder.py: f"{call.service} responded"

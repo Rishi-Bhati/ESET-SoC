@@ -14,7 +14,7 @@ _broadcaster: Any = None
 
 # Pipeline stages, in execution order. The dashboard's flow graph renders one
 # node per stage, so this list is the contract between backend and graph.
-STAGES = ["INGEST", "NORMALIZE", "RISK", "INTEL", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"]
+STAGES = ["INGEST", "NORMALIZE", "INTEL", "RISK", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"]
 
 
 def set_broadcaster(broadcaster: Any) -> None:

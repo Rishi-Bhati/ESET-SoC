@@ -18,7 +18,13 @@ _SECRET_NAMES = {
     "key", "token", "secret", "password", "passwd", "pwd", "apikey",
     "accesskey", "auth", "authorization", "dashboardaccesskey", "geminiapikey",
     "emailapikey", "emailapisecret", "esetwebhookauthtoken", "xdashboardkey",
+    "openaiapikey", "azureopenaiapikey", "apikeyvalue", "secretstring",
 }
+# Credential-shaped values, redacted wherever they appear in a log string: an
+# SDK error message or a stray repr can carry a key regardless of its field name.
+_SECRET_VALUE_RE = re.compile(
+    r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{16,}|\bAIza[0-9A-Za-z\-_]{35}\b|\bAKIA[0-9A-Z]{16}\b"
+)
 
 
 def _secret_name(name: str) -> bool:
@@ -28,6 +34,7 @@ def _secret_name(name: str) -> bool:
 def redact_secrets(value):
     """Redact credentials in nested log data and URL-encoded query names."""
     if isinstance(value, str):
+        value = _SECRET_VALUE_RE.sub("[REDACTED]", value)
         return _QUERY_VALUE_RE.sub(
             lambda m: m[1] + "=[REDACTED]" if _secret_name(m[1]) else m[0], value,
         )

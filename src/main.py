@@ -12,7 +12,8 @@ from src.utils.broadcaster import EventBroadcaster
 from src.utils import events
 from src.storage.database import init_db
 from src.storage import job_store, deduplication
-from src.services import syslog_runtime, email_dispatcher, pipeline_capacity
+from src.services import syslog_runtime, email_dispatcher, pipeline_capacity, secrets
+from src.services.ai.factory import PROVIDER_SETTINGS, ai_provider_configured, supported_providers
 from src.api.router import api_router
 from src.middleware.security import SecurityHeadersMiddleware, build_csp, inline_script_hashes
 
@@ -61,7 +62,8 @@ def warn_on_insecure_exposure() -> None:
             tip="Set DASHBOARD_ACCESS_KEY in .env, or bind APP_HOST=127.0.0.1 and reach it over a tunnel.",
         )
 
-_PLACEHOLDER_SECRETS = {"", "test", "changeme", "change-me", "your_gemini_api_key_here", "secret", "password"}
+_PLACEHOLDER_SECRETS = {"", "test", "changeme", "change-me", "your_gemini_api_key_here",
+                        "your_openai_api_key_here", "sk-...", "secret", "password"}
 _MIN_SECRET_LENGTH = 16
 
 
@@ -79,8 +81,15 @@ def production_config_problems() -> list[str]:
     token = settings.eset_webhook_auth_token
     if token.lower() in _PLACEHOLDER_SECRETS or len(token) < _MIN_SECRET_LENGTH:
         problems.append(f"ESET_WEBHOOK_AUTH_TOKEN is a placeholder or shorter than {_MIN_SECRET_LENGTH} characters")
-    if settings.gemini_api_key.lower() in _PLACEHOLDER_SECRETS:
-        problems.append("GEMINI_API_KEY is not set")
+    provider = settings.ai_provider.strip().lower()
+    if provider not in supported_providers():
+        problems.append(f"AI_PROVIDER '{settings.ai_provider}' is not one of {supported_providers()}")
+    elif not ai_provider_configured():
+        problems.append(f"AI_PROVIDER={provider} is missing its model name or API key / secret ID")
+    else:
+        key_attr = PROVIDER_SETTINGS[provider][1]
+        if getattr(settings, key_attr) and getattr(settings, key_attr).lower() in _PLACEHOLDER_SECRETS:
+            problems.append(f"{key_attr.upper()} is a placeholder")
     if settings.enable_api_docs:
         problems.append("ENABLE_API_DOCS must be false in production (docs cannot be gated by the dashboard key)")
     if settings.email_delivery_enabled and not (settings.email_api_url and settings.email_api_key):
@@ -162,6 +171,11 @@ async def lifespan(app: FastAPI):
         quiet_dashboard_access=not settings.log_dashboard_access,
     )
     logger.info("app_starting", host=settings.app_host, port=settings.app_port, env=settings.app_env)
+    # Platform credentials from AWS Secrets Manager (APP_SECRETS_SECRET_ID), before
+    # anything reads them. A configured-but-unreadable secret stops startup here.
+    applied = secrets.apply_app_secrets()
+    if applied:
+        logger.info("startup_secrets_loaded", count=len(applied))
     check_production_config()
     warn_on_insecure_exposure()
 

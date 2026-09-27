@@ -21,7 +21,7 @@ logger = structlog.get_logger(__name__)
 # real ESET webhook/syslog payloads and anything already mapped by
 # src/ingestion/syslog_handler.py), and when nothing matches, the field stays
 # "UNKNOWN" here. The model still sees the complete, unmodified original payload
-# (see src/services/ai/gemini_service.py) and can extract from whatever shape it
+# (see src/services/ai/base.py) and can extract from whatever shape it
 # actually is — that is the layer that makes an arbitrary JSON shape produce a real
 # alert summary that this alias table cannot.
 _ALIASES: dict[str, tuple[str, ...]] = {
@@ -111,7 +111,7 @@ def normalize(raw: EsetRawPayload, source: str) -> NormalizedAlert:
     data["isolation_status"] = _bool_like_field(raw, "isolation_status")
 
     # Preserve full raw structure for debugging/auditing, and as the source the AI
-    # prompt reads from directly when a field above is "UNKNOWN" (see gemini_service.py).
+    # prompt reads from directly when a field above is "UNKNOWN" (see src/services/ai/base.py).
     data["raw_payload"] = raw.raw_payload or {}
 
     # Audit logging for missing critical fields (warning but non-blocking)

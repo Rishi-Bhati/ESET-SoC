@@ -29,7 +29,7 @@ const state = {
   openAiItem: null,
 };
 
-const STAGES = ["INGEST", "NORMALIZE", "RISK", "INTEL", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"];
+const STAGES = ["INGEST", "NORMALIZE", "INTEL", "RISK", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"];
 // Looked up live (not a static object) so it always reflects the current language —
 // see i18n.js. Keys match src/utils/events.py: STAGES exactly.
 const STAGE_KEY = {
@@ -621,7 +621,7 @@ function renderAiContent() {
         <span class="muted">${esc(t("ai_on_endpoint", it.endpoint_name))}</span>
         <span class="muted mono" style="margin-left:auto">${esc(fmtDateTime(it.processed_at))}</span>
       </div>
-      <div class="snip">${esc(engineerReport(it.ai_output).report.alert_summary || it.ai_output.client_notification_ja.summary)}</div>
+      <div class="snip">${esc(aiSnippet(it.ai_output))}</div>
     </div>`).join("");
   makeRowsFocusable(document.getElementById("aiList"), "[data-ai]");
 }
@@ -651,7 +651,7 @@ document.getElementById("aiList").addEventListener("click", (e) => {
 // generated, in whichever language that particular notification is written in,
 // regardless of the dashboard's own language setting.
 /* The AI's assessment of the alert, as distinct from the notifications it drafts
- * from that assessment. Both come out of the same Gemini call
+ * from that assessment. Both come out of the same AI call
  * (src/models/ai_output.py), but the four notification tabs are audience-specific
  * emails — reading only those, you see what will be *sent* and never the
  * reasoning behind it: what the AI treated as confirmed, what it flagged as
@@ -661,7 +661,7 @@ document.getElementById("aiList").addEventListener("click", (e) => {
  * analytical breakdown, so its fields are the source here. It is rendered as
  * analysis rather than as correspondence — no greeting, no draft reply.
  */
-/* The engineer report is written by Gemini in BOTH languages (see
+/* Legacy results: the engineer report was written in BOTH languages (see
  * src/models/ai_output.py: engineer_notification_en / engineer_notification_ja),
  * and it is the source for the Analysis panel and the AI Content snippet. Picks
  * whichever language the dashboard toggle is currently set to.
@@ -671,6 +671,21 @@ document.getElementById("aiList").addEventListener("click", (e) => {
  * files are never re-generated. `fallback` tells the caller to say so out loud, so
  * a Japanese reader is never left silently staring at English with no explanation.
  */
+/* Results written since the OpenAI integration carry the client's flat output
+ * schema (src/models/ai_output.py: alert_summary_ja, risk_reason_ja, ...).
+ * Older result files carry the previous nested schema; both still render. */
+function isFlatOutput(ai) {
+  return !!(ai && typeof ai.alert_summary_ja === "string");
+}
+
+function aiSnippet(ai) {
+  if (isFlatOutput(ai)) {
+    return state_lang.current === "ja" ? ai.alert_summary_ja : (ai.engineer_summary_en || ai.alert_summary_ja);
+  }
+  const legacy = engineerReport(ai).report.alert_summary;
+  return legacy || (ai && ai.client_notification_ja && ai.client_notification_ja.summary) || "";
+}
+
 function engineerReport(ai) {
   const en = (ai && ai.engineer_notification_en) || null;
   const ja = (ai && ai.engineer_notification_ja) || null;
@@ -682,7 +697,43 @@ function engineerReport(ai) {
   return { report: {}, fallback: false };
 }
 
+function aiList(arr) {
+  return (arr || []).length
+    ? `<ul class="ai-list">${(arr || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
+    : `<p class="muted">${esc(t("ai_none_stated"))}</p>`;
+}
+
+/* Flat schema: the summary follows the language toggle (JA summary, or the EN
+ * engineer summary); the risk reason and action lists exist in Japanese only,
+ * by the client's field specification. */
+function flatAnalysisPanel(ai) {
+  const summary = state_lang.current === "ja" ? ai.alert_summary_ja : ai.engineer_summary_en;
+  return `
+    <div class="ai-analysis">
+      <h4>${esc(t("ai_alert_summary"))}</h4>
+      <p class="ai-prose">${esc(summary)}</p>
+
+      <h4>${esc(t("ai_risk_reason"))}</h4>
+      <p class="ai-prose">${esc(ai.risk_reason_ja)}</p>
+
+      <div class="ai-cols">
+        <div>
+          <h4>${esc(t("ai_initial_actions"))}</h4>
+          ${aiList(ai.recommended_initial_actions_ja)}
+        </div>
+        <div>
+          <h4>${esc(t("ai_confirm_items"))}</h4>
+          ${aiList(ai.additional_confirmation_items_ja)}
+        </div>
+      </div>
+
+      <h4>${esc(t("ai_unknown_items"))}</h4>
+      ${aiList(ai.unknown_items)}
+    </div>`;
+}
+
 function analysisPanel(ai) {
+  if (isFlatOutput(ai)) return flatAnalysisPanel(ai);
   const picked = engineerReport(ai);
   const e = picked.report;
   const notice = picked.fallback
@@ -745,11 +796,13 @@ function alertContext(it) {
       ${kvRow(t("kv_endpoint"), a.endpoint_name ? `${a.endpoint_name} (${a.endpoint_type})` : "")}
       ${kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity))}
       <div>${esc(t("kv_risk_computed"))}</div><div>${badge(it.risk_level)}</div>
-      ${kvRow(t("kv_rationale"), tBackendText(it.risk_rationale))}
+      ${riskFactorsRow(it.risk_factors, it.risk_rationale)}
       ${kvRow(t("kv_handled_isolated"), `${tBadgeLabel(a.threat_handled)} / ${tBadgeLabel(a.isolation_status)}`)}
       ${a.object_uri ? `<div>${esc(t("kv_object_uri"))}</div><div class="mono">${esc(a.object_uri)}</div>` : ""}
       ${a.file_hash ? `<div>${esc(t("kv_file_hash"))}</div><div class="mono">${esc(a.file_hash)}</div>` : ""}
     </div>`;
+
+  if (it.ai_run) html += aiRunKv(it.ai_run);
 
   const ti = it.threat_intel;
   if (ti && ti.virustotal && ti.abuseipdb) {
@@ -763,9 +816,41 @@ function alertContext(it) {
   return html;
 }
 
+function flatNotificationTabs(ai) {
+  const bullets = (a) => (a || []).map((x) => `- ${x}`).join("\n");
+  return [
+    ["client-email", t("tab_client_email"), `件名: ${ai.email_subject_ja}\n\n${ai.email_body_ja}`],
+    ["client", t("tab_client"), ai.client_notification_ja],
+    ["internal", t("tab_internal"),
+      `${ai.internal_summary_ja}\n\n【推奨初動対応】\n${bullets(ai.recommended_initial_actions_ja)}\n\n【追加確認事項】\n${bullets(ai.additional_confirmation_items_ja)}\n\n【不明・要確認事項】\n${bullets(ai.unknown_items)}`],
+    ["engineer", t("tab_engineer"), `${ai.engineer_summary_en}\n\nUNKNOWN / NEEDS CONFIRMATION\n${bullets(ai.unknown_items)}`],
+    ["backlog", t("tab_backlog"), ai.backlog_comment_ja],
+  ];
+}
+
+/* The rules that decided the risk level (src/services/risk_engine.py), one per
+ * line, or the single rationale string for results that predate risk_factors. */
+function riskFactorsRow(factors, rationale) {
+  const applied = (factors || []).filter((f) => f.effect === "base" || f.effect === "raised");
+  if (!applied.length) return kvRow(t("kv_rationale"), tBackendText(rationale));
+  return `<div>${esc(t("kv_rationale"))}</div><div><ul class="ai-list">${applied
+    .map((f) => `<li>${esc(tBackendText(f.detail))}</li>`).join("")}</ul></div>`;
+}
+
+/* Audit record of the AI call: which provider/model explained the alert, and the
+ * provider's request ID for support/audit. */
+function aiRunKv(run) {
+  const usage = run.usage && run.usage.total_tokens ? ` · ${run.usage.total_tokens} tokens` : "";
+  return `<div class="kv" style="margin-top:8px">
+      ${kvRow(t("kv_ai_model"), `${run.provider} / ${run.served_model || run.model}`)}
+      ${kvRow(t("kv_ai_request_id"), run.request_id || "—")}
+      ${kvRow(t("kv_ai_run"), `${run.status} · ${run.attempts} ${t("kv_ai_attempts")} · ${fmtMs(run.duration_ms)}${usage} · prompt ${run.prompt_version}`)}
+    </div>`;
+}
+
 function notificationTabs(ai) {
   const bullets = (a) => (a || []).map((x) => `- ${x}`).join("\n");
-  const tabs = [
+  const tabs = isFlatOutput(ai) ? flatNotificationTabs(ai) : [
     ["client", t("tab_client"),
       `${ai.client_notification_ja.summary}\n\n【現在の状況】\n${ai.client_notification_ja.current_status}\n\n【確認事項】\n${ai.client_notification_ja.required_confirmation}`],
     ["cthree", t("tab_cthree"),
@@ -780,12 +865,12 @@ function notificationTabs(ai) {
   // them side by side rather than behind a global toggle. Each keeps its own
   // language's section headers. Older stored results carry only the English one,
   // so each tab is added only when its content is actually present.
-  const engineerEn = ai.engineer_notification_en;
+  const engineerEn = !isFlatOutput(ai) && ai.engineer_notification_en;
   if (engineerEn) {
     tabs.push(["engineer", t("tab_engineer"),
       `${engineerEn.alert_summary}\n\nASSESSMENT\n${engineerEn.assessment}\n\nCONFIRMED\n${bullets(engineerEn.confirmed_information)}\n\nUNKNOWN\n${bullets(engineerEn.unknown_information)}\n\nINVESTIGATE\n${bullets(engineerEn.investigation_items)}\n\nRECOMMENDED ACTIONS\n${bullets(engineerEn.recommended_actions)}\n\nDRAFT CLIENT RESPONSE\n${engineerEn.draft_client_response}`]);
   }
-  const engineerJa = ai.engineer_notification_ja;
+  const engineerJa = !isFlatOutput(ai) && ai.engineer_notification_ja;
   if (engineerJa) {
     tabs.push(["engineer-ja", t("tab_engineer_ja"),
       `${engineerJa.alert_summary}\n\n【評価】\n${engineerJa.assessment}\n\n【確認済みの情報】\n${bullets(engineerJa.confirmed_information)}\n\n【不明な情報】\n${bullets(engineerJa.unknown_information)}\n\n【調査項目】\n${bullets(engineerJa.investigation_items)}\n\n【推奨アクション】\n${bullets(engineerJa.recommended_actions)}\n\n【クライアント返信案】\n${engineerJa.draft_client_response}`]);
@@ -1740,8 +1825,42 @@ async function loadSettings() {
       Object.entries(s.runtime).map(([k, v]) =>
         `<div>${esc(RUNTIME_KEY_I18N[k] ? t(RUNTIME_KEY_I18N[k]) : k.replace(/_/g, " "))}</div><div class="mono">${esc(v)}</div>`).join("");
     renderPosture(s.security || []);
+    renderAiProvider(s.ai);
   } catch (e) { /* handled */ }
 }
+
+/** Settings → AI provider. Read-only by design: provider and model are per-
+ * environment deployment config, and the API key lives in the secret store —
+ * this shows only where it comes from, never the key. */
+function renderAiProvider(ai) {
+  const box = document.getElementById("aiProviderKv");
+  if (!box || !ai) return;
+  const source = `${t("ai_src_" + ai.key_source)}${ai.key_reference ? ` (${ai.key_reference})` : ""}`;
+  box.innerHTML = `
+    ${kvRow(t("ai_kv_provider"), ai.provider)}
+    ${kvRow(t("ai_kv_model"), ai.model || t("ai_not_set"))}
+    <div>${esc(t("ai_kv_key_source"))}</div><div><span style="display:inline-block;margin-right:6px;vertical-align:middle" class="dot ${ai.key_source === "aws_secrets_manager" ? "ok" : ai.key_source === "environment" ? "warn" : "bad"}"></span> ${esc(source)}</div>
+    ${kvRow(t("ai_kv_limits"), t("ai_limits_value", ai.timeout_seconds, ai.max_attempts, ai.max_output_tokens))}
+    ${kvRow(t("ai_kv_masking"), ai.masking_enabled ? t("ai_masking_on") : t("ai_masking_off"))}
+    ${kvRow(t("ai_kv_prompt_version"), ai.prompt_version)}`;
+}
+
+document.getElementById("testAiConnection").onclick = async (e) => {
+  const out = document.getElementById("aiTestResult");
+  e.target.disabled = true;
+  out.textContent = t("ai_test_running");
+  try {
+    const r = await api("/settings/ai/test", { method: "POST" });
+    out.textContent = r.ok
+      ? t("ai_test_ok", r.detail, fmtMs(r.latency_ms), r.request_id || "—")
+      : t("ai_test_failed", r.detail);
+    out.style.color = r.ok ? "" : "var(--text-danger)";
+  } catch (err) {
+    out.textContent = t("ai_test_failed", tBackendText(err.message));
+    out.style.color = "var(--text-danger)";
+  }
+  e.target.disabled = false;
+};
 
 /** Settings → Security posture: one line per deployment control. */
 function renderPosture(items) {
@@ -1852,7 +1971,7 @@ async function loadHealth() {
   try {
     const h = await (await fetch("/health")).json();
     setDot("dbDot", h.database?.status === "ok");
-    setDot("geminiDot", h.gemini_api?.status === "configured");
+    setDot("aiDot", h.ai_provider?.status === "configured");
     setDot("dirDot", h.output_directory?.status === "ok");
     setDot("udpDot", h.syslog_listener?.udp === "ok");
     setDot("tcpDot", h.syslog_listener?.tcp === "ok");

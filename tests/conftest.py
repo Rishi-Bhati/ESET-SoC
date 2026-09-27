@@ -23,14 +23,7 @@ settings.dashboard_access_key = ""
 from src.storage.database import init_db
 from src.services import email_outbox
 from src.main import app
-from src.models.ai_output import (
-    AIOutput,
-    ClientNotificationJa,
-    CThreeNotificationJa,
-    InternalNotificationJa,
-    EngineerNotificationEn,
-    EngineerNotificationJa,
-)
+from ai_fakes import FakeProvider, default_responder
 
 # email_outbox resolves its paths at import time, so point them at the temp tree too
 email_outbox.OUTBOX_DIR = os.path.join(test_output_dir, "emails")
@@ -67,6 +60,7 @@ async def clean_database() -> AsyncGenerator[None, None]:
         await conn.execute("DELETE FROM jobs")
         await conn.execute("DELETE FROM dedup_log")
         await conn.execute("DELETE FROM app_settings")
+        await conn.execute("DELETE FROM alert_observations")
         await conn.commit()
     yield
 
@@ -83,56 +77,29 @@ def prevent_live_side_effects(monkeypatch):
     monkeypatch.setattr(settings, "use_mock_threat_intel", True)
 
 @pytest.fixture(autouse=True)
-def mock_gemini(monkeypatch) -> None:
+def mock_ai_provider(monkeypatch):
     """
-    Monkeypatches GeminiAIService.generate to return deterministic mock AIOutputs.
-    Avoids actual Gemini API calls and cost during unit/integration tests.
+    Every test gets FakeProvider (tests/ai_fakes.py) as the configured AI
+    provider: no real API call, no cost, but the whole BaseAIProvider.generate()
+    path — masking, pinned schema, parsing, tracing — still runs. Retries wait 0s.
     """
-    from src.services.ai.gemini_service import GeminiAIService
-    
-    async def mock_generate(self, alert, risk_level, threat_intel):
-        return AIOutput(
-            risk_level=risk_level,
-            client_notification_ja=ClientNotificationJa(
-                summary=f"[MOCK] {alert.detection_name} が検知されました。",
-                current_status="隔離および確認中。",
-                required_confirmation="管理者に状況を確認してください。"
-            ),
-            cthree_notification_ja=CThreeNotificationJa(
-                summary=f"[MOCK] 連携用通知: {alert.detection_name}",
-                assessment=f"リスクレベルは {risk_level} です。",
-                front_office_notes="クライアントへの連絡準備をお願いします。",
-                draft_client_response="担当者様、セキュリティアラートを確認しました。"
-            ),
-            internal_notification_ja=InternalNotificationJa(
-                summary=f"[MOCK] 内部通知: {alert.detection_name}",
-                assessment="内部詳細調査を進めます。",
-                recommended_actions=["ログの確認", "端末隔離状態の再確認"],
-                draft_client_response="内部連絡用下書きです。"
-            ),
-            engineer_notification_en=EngineerNotificationEn(
-                alert_summary=f"[MOCK] Technical alert summary for {alert.detection_name}",
-                assessment=f"Calculated risk level is {risk_level}.",
-                confirmed_information=["Endpoint name: " + alert.endpoint_name],
-                unknown_information=["Full network activity log is missing"],
-                investigation_items=["Check registry run keys", "Verify process tree"],
-                recommended_actions=["Scan host with ESET", "Isolate network card if suspicious"],
-                draft_client_response="Security operations are actively triaging the alert."
-            ),
-            # Same report as engineer_notification_en, in Japanese — the dashboard
-            # renders whichever matches its language toggle (src/models/ai_output.py).
-            engineer_notification_ja=EngineerNotificationJa(
-                alert_summary=f"[MOCK] {alert.detection_name} の技術的アラート概要",
-                assessment=f"算出されたリスクレベルは {risk_level} です。",
-                confirmed_information=["エンドポイント名: " + alert.endpoint_name],
-                unknown_information=["ネットワーク通信の全ログが未取得"],
-                investigation_items=["レジストリの Run キーを確認", "プロセスツリーを検証"],
-                recommended_actions=["ESET で端末をスキャン", "不審な場合はネットワークを遮断"],
-                draft_client_response="セキュリティ運用チームがアラートを確認中です。"
-            )
-        )
-        
-    monkeypatch.setattr(GeminiAIService, "generate", mock_generate)
+    from tenacity import wait_none
+    from src.services.ai import base as ai_base, factory as ai_factory
+
+    monkeypatch.setattr(ai_factory, "get_ai_provider", lambda: FakeProvider())
+    monkeypatch.setattr(ai_base, "RETRY_WAIT", wait_none())
+    monkeypatch.setattr(FakeProvider, "responder", staticmethod(default_responder))
+    FakeProvider.requests = []
+    yield FakeProvider
+
+
+@pytest.fixture
+def ai_responder(monkeypatch):
+    """Replace what the fake model returns: ai_responder(fn) where fn(request)
+    returns a ProviderResponse or an exception instance to raise."""
+    def set_responder(fn):
+        monkeypatch.setattr(FakeProvider, "responder", staticmethod(fn))
+    return set_responder
 
 
 @pytest.fixture(autouse=True)

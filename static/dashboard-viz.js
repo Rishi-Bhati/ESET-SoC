@@ -291,7 +291,7 @@ function riskStageBody(result) {
     <p class="muted" style="font-size:11.5px;margin:0 0 10px">${esc(t("stage_risk_desc"))}</p>
     <div class="kv">
       <div>${esc(t("kv_risk_computed"))}</div><div>${badge(result.risk_level)}</div>
-      ${kvRow(t("kv_rationale"), tBackendText(result.risk_rationale))}
+      ${riskFactorsRow(result.risk_factors, result.risk_rationale)}
     </div>`;
 }
 
@@ -304,12 +304,22 @@ function intelStageBody(result) {
 }
 
 function aiStageBody(result) {
-  if (!result || !result.ai_output) return `<p class="muted">${esc(t("stage_ai_not_reached"))}</p>`;
+  if (!result || !result.ai_output) {
+    // An AI failure is recorded too (result.ai_run), so say what happened.
+    const run = result && result.ai_run;
+    if (!run) return `<p class="muted">${esc(t("stage_ai_not_reached"))}</p>`;
+    return `
+      <p style="color:var(--text-danger);font-size:12.5px;margin:0 0 10px">${esc(t("stage_ai_failed", run.error_type || run.status))}</p>
+      ${aiRunKv(run)}
+      ${run.error ? `<p class="muted mono" style="font-size:11.5px">${esc(run.error)}</p>` : ""}
+      ${(run.validation_issues || []).length ? `<ul class="ai-list">${run.validation_issues.map((i) => `<li class="mono">${esc(i)}</li>`).join("")}</ul>` : ""}`;
+  }
   return `
     <p class="muted" style="font-size:11.5px;margin:0 0 10px">${esc(t("stage_ai_desc"))}</p>
     <div class="kv">
       <div>${esc(t("stage_ai_model_risk"))}</div><div>${badge(result.ai_output.risk_level)}</div>
     </div>
+    ${result.ai_run ? aiRunKv(result.ai_run) : ""}
     <button class="small" id="stageViewFullAi">${esc(t("btn_view_full_analysis"))}</button>`;
 }
 
@@ -458,7 +468,7 @@ async function openStageDetail(run, stage) {
  * handoff state — a fabricated queued-vs-sent split on top of it would claim
  * more precision than the data backs up.
  */
-const TIMELINE_STAGES = ["INGEST", "NORMALIZE", "RISK", "INTEL", "AI", "LINT", "OUTPUT", "EMAIL"];
+const TIMELINE_STAGES = ["INGEST", "NORMALIZE", "INTEL", "RISK", "AI", "LINT", "OUTPUT", "EMAIL"];
 
 async function openAlertTimeline(id) {
   showModal(t("modal_alert_timeline"), `<p class="muted">${esc(t("modal_fetching_alert"))}</p>`);

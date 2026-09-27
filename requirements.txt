@@ -27,9 +27,15 @@ aiosqlite==0.22.1
 httpx==0.28.1
 
 # --- AI ---
-# Deprecated upstream in favour of google-genai; pinned here until that
-# migration is done (it warns on every start but still works).
+# OpenAI API (primary provider) and Azure OpenAI — same SDK.
+openai==3.19.2
+# Only for AI_PROVIDER=gemini. Deprecated upstream in favour of google-genai;
+# imported lazily, so an OpenAI deployment can drop it from its image.
 google-generativeai==0.8.6
+
+# --- AWS ---
+# Runtime reads from AWS Secrets Manager (src/services/secrets.py).
+boto3==1.43.103
 
 # --- Logging and retries ---
 structlog==26.1.0

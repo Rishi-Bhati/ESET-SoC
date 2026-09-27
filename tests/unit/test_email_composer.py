@@ -2,34 +2,22 @@ import json
 
 import pytest
 from src.config import settings
-from src.models.ai_output import (
-    AIOutput, ClientNotificationJa, CThreeNotificationJa,
-    InternalNotificationJa, EngineerNotificationEn, EngineerNotificationJa,
-)
+from src.models.ai_output import AIRunMetadata
 from src.models.normalized_alert import NormalizedAlert
 from src.models.pipeline_result import PipelineResult
 from src.services import email_composer, email_outbox
+from ai_fakes import sample_output
 
 
 def _ai_output(risk="HIGH"):
-    return AIOutput(
-        risk_level=risk,
-        client_notification_ja=ClientNotificationJa(
-            summary="要約", current_status="対応中", required_confirmation="確認事項"),
-        cthree_notification_ja=CThreeNotificationJa(
-            summary="要約", assessment="評価", front_office_notes="連絡", draft_client_response="下書き"),
-        internal_notification_ja=InternalNotificationJa(
-            summary="要約", assessment="評価", recommended_actions=["対応1", "対応2"], draft_client_response="下書き"),
-        engineer_notification_en=EngineerNotificationEn(
-            alert_summary="Summary", assessment="Assessment",
-            confirmed_information=["c1"], unknown_information=["u1"],
-            investigation_items=["i1"], recommended_actions=["a1"],
-            draft_client_response="Draft"),
-        engineer_notification_ja=EngineerNotificationJa(
-            alert_summary="概要", assessment="評価",
-            confirmed_information=["c1"], unknown_information=["u1"],
-            investigation_items=["i1"], recommended_actions=["a1"],
-            draft_client_response="返信案"),
+    return sample_output(
+        risk, "Win32/Example.A",
+        recommended_initial_actions_ja=["対応1", "対応2"],
+        additional_confirmation_items_ja=["確認事項1"],
+        unknown_items=["file_hash: Unknown", "threat_handled: Needs confirmation"],
+        email_subject_ja=f"【{risk}】セキュリティアラートのご報告",
+        email_body_ja="お世話になっております。確認事項がございます。",
+        backlog_comment_ja="Backlog下書き",
     )
 
 
@@ -41,7 +29,12 @@ def _result(status="SUCCESS", ai=True, risk="HIGH"):
         normalized_alert=NormalizedAlert(
             detection_name="Win32/Example.A", endpoint_name="HOST-01", severity=risk),
         risk_level=risk, risk_rationale="because",
+        risk_factors=[{"rule": "severity_high_unhandled", "effect": "base",
+                       "detail": "Alert severity is HIGH and the threat is not handled."}],
         ai_output=_ai_output(risk) if ai else None,
+        ai_run=None if ai else AIRunMetadata(
+            provider="openai", model="gpt-test", prompt_version="v2.0", status="FAILED",
+            error_type="Timeout", error="No response within 60s", request_id="req_abc"),
     )
 
 
@@ -72,8 +65,19 @@ async def test_email_ids_are_unique_and_deterministic(all_recipients):
 
 @pytest.mark.asyncio
 async def test_subject_carries_risk_detection_and_endpoint(all_recipients):
-    emails = await email_composer.compose_emails(_result(risk="CRITICAL"))
-    assert all(e.subject == "[CRITICAL] Win32/Example.A — HOST-01" for e in emails)
+    emails = {e.notification_type: e for e in await email_composer.compose_emails(_result(risk="CRITICAL"))}
+    for kind in ("CTHREE_JA", "INTERNAL_JA", "ENGINEER_EN"):
+        assert emails[kind].subject == "[CRITICAL] Win32/Example.A — HOST-01"
+    # The client gets the AI-drafted subject, which carries the risk label.
+    assert emails["CLIENT_JA"].subject == "【CRITICAL】セキュリティアラートのご報告"
+
+
+@pytest.mark.asyncio
+async def test_client_subject_gets_the_risk_label_if_the_model_left_it_out(all_recipients):
+    result = _result()
+    result.ai_output.email_subject_ja = "セキュリティアラートのご報告"
+    client_mail = next(e for e in await email_composer.compose_emails(result) if e.notification_type == "CLIENT_JA")
+    assert client_mail.subject == "【HIGH】セキュリティアラートのご報告"
 
 
 @pytest.mark.asyncio
@@ -86,10 +90,27 @@ async def test_multiple_recipients_are_split(all_recipients):
 @pytest.mark.asyncio
 async def test_bodies_contain_their_notification_content(all_recipients):
     emails = {e.notification_type: e.body for e in await email_composer.compose_emails(_result())}
-    assert "確認事項" in emails["CLIENT_JA"]
-    assert "下書き" in emails["CTHREE_JA"]
+    assert emails["CLIENT_JA"] == "お世話になっております。確認事項がございます。"
+    # C-Three reviews the client draft before it matters: draft + reasons + open items.
+    assert "お世話になっております。確認事項がございます。" in emails["CTHREE_JA"]
+    assert "確認事項1" in emails["CTHREE_JA"] and "threat_handled: Needs confirmation" in emails["CTHREE_JA"]
     assert "対応1" in emails["INTERNAL_JA"] and "対応2" in emails["INTERNAL_JA"]
-    assert "Investigation Items" in emails["ENGINEER_EN"] and "i1" in emails["ENGINEER_EN"]
+    assert "Backlog下書き" in emails["INTERNAL_JA"]
+    assert "[MOCK] Technical summary" in emails["ENGINEER_EN"]
+    assert "Alert severity is HIGH" in emails["ENGINEER_EN"]
+    assert "file_hash: Unknown" in emails["ENGINEER_EN"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_notice_goes_to_our_team_only(all_recipients):
+    emails = await email_composer.compose_fallback_emails(_result(status="PARTIAL", ai=False))
+    assert [e.notification_type for e in emails] == ["INTERNAL_JA", "ENGINEER_EN"]
+    assert all(e.email_id.endswith("-AI_FALLBACK") for e in emails)
+    assert all("[AI要約生成失敗]" in e.subject and e.subject.startswith("[HIGH]") for e in emails)
+    internal, engineer = emails
+    assert "Win32/Example.A" in internal.body and "Alert severity is HIGH" in internal.body
+    assert "Timeout" in engineer.body and "req_abc" in engineer.body
+    assert "no client notification was sent" in engineer.body
 
 
 @pytest.mark.asyncio

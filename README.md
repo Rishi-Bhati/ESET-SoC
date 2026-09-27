@@ -24,7 +24,7 @@ stay down, and webhook ingestion is unaffected. Either run with `sudo`, or set
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-cp .env.example .env   # fill in GEMINI_API_KEY, ESET_WEBHOOK_AUTH_TOKEN, recipients
+cp .env.example .env   # fill in OPENAI_MODEL + OPENAI_API_KEY, ESET_WEBHOOK_AUTH_TOKEN, recipients
 .venv/bin/python run.py
 ```
 
@@ -140,8 +140,11 @@ two-layer lookup:
 | Field | Effect |
 |---|---|
 | `severity` | `LOW`/`MEDIUM`/`HIGH`/`CRITICAL` — primary risk-engine input; anything else falls back to a `MEDIUM` safety default |
-| `threat_handled` | bool/string — downgrades risk when true |
+| `threat_handled` | bool/string — downgrades risk when true; a LOW alert is only LOW once handled |
 | `isolation_status` | bool/string — downgrades HIGH further when true |
+| `endpoint_type`, `endpoint_name` | important endpoints (servers, DCs, `IMPORTANT_ENDPOINT_PATTERNS`) raise an unhandled detection one level, up to HIGH |
+| `detection_name`, `event_type`, `raw_subject`, `raw_content` | ransomware-like indicators (e.g. ESET's `Filecoder` family) or an outbreak → CRITICAL |
+| `affected_endpoints` / `endpoint_count` | the same detection on `OUTBREAK_ENDPOINT_THRESHOLD`+ endpoints → CRITICAL (also detected across separate alerts within `OUTBREAK_WINDOW_SECONDS`) |
 | `alert_id` + `occurred_at` | deduplication key (falls back to a hash of the whole payload) |
 | `file_hash`, `ip_address`, `url` | threat-intel lookups (VirusTotal / AbuseIPDB) — validated as a well-formed hash/IP/URL before use; anything else is skipped, not sent to the third party |
 
@@ -215,7 +218,7 @@ values without re-validating it.
 The ingest routes were built around ESET PROTECT's webhook/syslog shape, but
 neither one *requires* it — see [Field reference](#field-reference) above. The
 part of the pipeline that makes an unrecognized shape still produce a useful
-result is what Gemini is actually sent (`src/services/ai/gemini_service.py`):
+result is what the AI provider is actually sent (`src/services/ai/base.py`):
 
 - `normalized_alert` — the platform's own best-effort structured extraction
   (exact field name, then common synonyms; see Field reference).
@@ -233,45 +236,39 @@ same `<<<BEGIN/END_UNTRUSTED_ALERT_DATA>>>` block as everything else in the
 prompt.
 
 Two things stay deterministic and are **not** handed to the AI to decide:
-- **Risk level** (`src/services/risk_engine.py`) still reads only `severity`/
-  `threat_handled`/`isolation_status` (via the same two-layer field lookup) and
-  falls back to a `MEDIUM` safety default when it cannot determine severity at
-  all — this is a rule-based engine on purpose, and an unrecognized shape does
-  not change that.
+- **Risk level** (`src/services/risk_engine.py`) — rule-based: severity and
+  handling status, then threat intel, endpoint importance and event pattern
+  (see Field reference). The AI receives the level as input and its output
+  schema admits only that one value.
 - **Threat-intel indicators** (`file_hash`/`ip_address`/`url`) are validated as
   well-formed before any third-party lookup; an unrecognized or malformed value
   is skipped rather than sent to VirusTotal/AbuseIPDB.
 
-Masking (`AI_MASKING_ENABLED`) covers both objects too:
-`src/services/ai/prompt_masking.py` masks `original_submitted_payload` by key
-name at any nesting depth (`user_name`/`username`/`user`/`owner`/`account`,
-case-insensitive) — broader than `normalized_alert`'s single known
-`user_name` field, since the whole point of the raw copy is that its key names
-aren't known in advance.
+Masking (`AI_MASKING_ENABLED`) covers both objects: user names, email
+addresses, `DOMAIN\user` references and internal identifiers — see
+`src/services/ai/prompt_masking.py` and the technical note below.
 
-### Bilingual AI output
+### AI integration (OpenAI)
 
-Gemini returns the engineer report twice — `engineer_notification_en` and
-`engineer_notification_ja` (`src/models/ai_output.py`) — as one report in two
-languages, not two independent analyses: the system prompt requires the same facts,
-the same conclusions, and the same number of list items in the same order, with
-hostnames, hashes, paths and detection names kept verbatim in both.
+The full description — key storage, what is sent and masked, output
+validation, failure behavior — is in
+**[docs/OPENAI_INTEGRATION.md](docs/OPENAI_INTEGRATION.md)**.
+In short:
 
-It exists because the engineer report is the only one of the four notifications that
-carries the AI's full analytical breakdown (confirmed / unknown / investigate /
-recommended), so the dashboard uses it — not the client, C-Three or internal emails —
-as the "AI assessment" panel and the AI Content list snippet. While it was
-English-only, that panel stayed English no matter what the language toggle said.
-
-Both languages are also offered as their own tab in the AI Content modal, side by
-side, since the engineer email that actually goes out is the English one and a
-reviewer comparing them needs both at once.
-
-This is display content, not a fifth email: `src/services/email_composer.py` still
-sends exactly four notifications, and `ENGINEER_EN` still carries the English text.
-Result files written before this field existed carry only the English report; the
-dashboard falls back to it and says so in the panel rather than rendering an empty
-one.
+- `AI_PROVIDER=openai` (or `azure_openai`, `gemini`), `OPENAI_MODEL` required,
+  key from `OPENAI_API_KEY_SECRET_ID` (AWS Secrets Manager) or `OPENAI_API_KEY`.
+- Output is the client's flat JSON schema (`src/models/ai_output.py`), enforced
+  with OpenAI strict structured outputs, the risk level pinned to the rule
+  engine's value, then validated for prohibited claims before anything is sent.
+- If the AI fails, the alert is still recorded (`PARTIAL`) and the internal
+  team and engineers get a deterministic "AI要約生成失敗" notice; nothing goes to
+  the client automatically.
+- Each result file records the AI run: provider, model, OpenAI request ID,
+  attempts, usage, masked fields, errors.
+- The dashboard shows the AI configuration read-only (Settings → AI Provider)
+  with a connection test; the key is never shown or editable there.
+- PoC cases: `tests/fixtures/poc_cases/`, run against the real API with
+  `python scripts/run_poc_cases.py`.
 
 ### Live updates
 
@@ -424,12 +421,19 @@ Generate secrets first:
 python -c "import secrets; print(secrets.token_urlsafe(32))"   # run twice
 ```
 
-Required variables: `GEMINI_API_KEY`, `ESET_WEBHOOK_AUTH_TOKEN` and
+Required variables: `OPENAI_MODEL` plus `OPENAI_API_KEY_SECRET_ID` (or
+`OPENAI_API_KEY`), `ESET_WEBHOOK_AUTH_TOKEN` and
 `DASHBOARD_ACCESS_KEY` (both 16+ characters), plus the recipient lists and,
 for live mail, `EMAIL_DELIVERY_ENABLED=true` with `EMAIL_API_URL` /
 `EMAIL_API_KEY` / `EMAIL_API_SECRET`. With `APP_ENV=production` the process
 **refuses to start** and logs `unsafe_production_config` for each problem
 rather than coming up insecure.
+
+**AWS (recommended)** — `deploy/aws/cloudformation.yaml` + `deploy/aws/release.sh`:
+one EC2 host per environment behind Caddy (TLS), EBS with daily snapshots,
+credentials in Secrets Manager read at runtime through the instance role,
+CloudWatch Logs, SSM instead of SSH. Step by step in
+**[docs/AWS_DEPLOYMENT.md](docs/AWS_DEPLOYMENT.md)**.
 
 **Docker / a VM** — `docker compose up -d --build`. The compose file reads
 `.env`, runs the container read-only with all capabilities dropped, publishes

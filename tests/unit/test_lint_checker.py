@@ -1,69 +1,45 @@
 import pytest
-from src.models.ai_output import (
-    AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa,
-    EngineerNotificationEn, EngineerNotificationJa,
-)
-from src.services.ai.lint_checker import lint_ai_output, LintFailureException
+from src.services.ai.lint_checker import find_prohibited_phrases, lint_ai_output, LintFailureException
+from ai_fakes import sample_output
 
-def get_base_ai_output() -> AIOutput:
-    return AIOutput(
-        risk_level="MEDIUM",
-        client_notification_ja=ClientNotificationJa(
-            summary="通知の要約",
-            current_status="現在の状況",
-            required_confirmation="特になし"
-        ),
-        cthree_notification_ja=CThreeNotificationJa(
-            summary="要約",
-            assessment="アセスメント",
-            front_office_notes="メモ",
-            draft_client_response="返信案"
-        ),
-        internal_notification_ja=InternalNotificationJa(
-            summary="要約",
-            assessment="アセスメント",
-            recommended_actions=["対応1"],
-            draft_client_response="返信案"
-        ),
-        engineer_notification_en=EngineerNotificationEn(
-            alert_summary="Alert summary",
-            assessment="Assessment",
-            confirmed_information=["Fact 1"],
-            unknown_information=["None"],
-            investigation_items=["Item 1"],
-            recommended_actions=["Action 1"],
-            draft_client_response="Draft response"
-        ),
-        engineer_notification_ja=EngineerNotificationJa(
-            alert_summary="アラート概要",
-            assessment="評価",
-            confirmed_information=["事実 1"],
-            unknown_information=["なし"],
-            investigation_items=["項目 1"],
-            recommended_actions=["アクション 1"],
-            draft_client_response="返信案"
-        )
-    )
 
 def test_lint_pass():
-    output = get_base_ai_output()
-    # Should not raise exception
-    lint_ai_output(output)
+    lint_ai_output(sample_output("MEDIUM"))
+
 
 def test_lint_fail_english():
-    output = get_base_ai_output()
-    # Inject prohibited phrase in English
-    output.engineer_notification_en.assessment = "We have an infection confirmed on host 01."
-    
+    output = sample_output(engineer_summary_en="We have an infection confirmed on host 01.")
     with pytest.raises(LintFailureException) as exc_info:
         lint_ai_output(output)
     assert "infection confirmed" in exc_info.value.found_phrases
 
+
 def test_lint_fail_japanese():
-    output = get_base_ai_output()
-    # Inject prohibited phrase in Japanese
-    output.client_notification_ja.current_status = "端末での感染を確認しました。"
-    
+    output = sample_output(client_notification_ja="端末での感染を確認しました。")
     with pytest.raises(LintFailureException) as exc_info:
         lint_ai_output(output)
-    assert "感染を確認" in exc_info.value.found_phrases
+    assert "感染を確認しました" in exc_info.value.found_phrases
+
+
+@pytest.mark.parametrize("text", [
+    "The environment is safe and no further action is required.",
+    "現在、環境は安全です。",
+    "情報漏えいが確認されました。",
+])
+def test_safety_and_leakage_claims_are_blocked(text):
+    assert find_prohibited_phrases(sample_output(internal_summary_ja=text))
+
+
+@pytest.mark.parametrize("text", [
+    "端末の感染有無を確認してください。",                 # a confirmation request, not a claim
+    "現時点で感染が確認されたわけではありません。",        # explicitly negated
+    "No infection confirmed at this time; needs confirmation.",
+    "Whether data was exfiltrated is Unknown.",
+])
+def test_cautious_wording_is_not_blocked(text):
+    assert find_prohibited_phrases(sample_output(internal_summary_ja=text)) == []
+
+
+def test_list_fields_are_scanned():
+    output = sample_output(recommended_initial_actions_ja=["確認", "隔離成功を報告する"])
+    assert "隔離成功" in find_prohibited_phrases(output)

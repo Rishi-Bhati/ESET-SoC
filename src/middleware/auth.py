@@ -34,7 +34,12 @@ async def validate_eset_token(
         token = api_key[7:].strip()
         
     expected_token = settings.eset_webhook_auth_token
-    
+    if not expected_token:
+        # Not configured (e.g. APP_SECRETS_SECRET_ID not loaded yet): refuse
+        # everything rather than accept an empty token.
+        logger.error("auth_failed_token_not_configured", client_ip=client_ip)
+        raise HTTPException(status_code=401)
+
     # Timing-safe comparison to prevent side-channel analysis
     if not hmac.compare_digest(token.encode("utf-8"), expected_token.encode("utf-8")):
         auth_limiter.record_failure(client_ip)

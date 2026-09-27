@@ -68,8 +68,8 @@ class AITrace(BaseModel):
     correlation_id: str
     component: str                 # e.g. "pipeline.ai_generate"
     action: str                    # e.g. "generate_bilingual_notifications"
-    provider: str                  # e.g. "google_gemini"
-    model: str                     # e.g. "gemini-3.1-flash-lite"
+    provider: str                  # e.g. "openai"
+    model: str                     # e.g. the configured OPENAI_MODEL
     status: str = "STARTED"        # STARTED | SUCCESS | BLOCKED | FAILED | ERROR
     risk: str = "REVIEW"           # SAFE | REVIEW | SENSITIVE_DATA_DETECTED | SECRET_DETECTED |
                                     # FAILED_SECURITY_CHECK | BLOCKED | ERROR
@@ -87,7 +87,7 @@ class AITrace(BaseModel):
     output_redacted: dict[str, Any] | None = None
 
     events: list[AITraceEvent] = Field(default_factory=list)
-    tool_calls: list[dict[str, Any]] = Field(default_factory=list)   # always [] today — see gemini_service.py
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)   # always [] today — see src/services/ai/base.py
     external_calls: list[AIExternalCall] = Field(default_factory=list)
 
     security_findings: list[AISecurityFinding] = Field(default_factory=list)

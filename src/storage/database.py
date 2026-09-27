@@ -113,6 +113,21 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_ai_traces_started ON ai_traces(started_at)"
         )
 
+        # Recent detection sightings for the risk engine's multiple-endpoint rule
+        # (see storage/observation_store.py).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_observations (
+                correlation_id TEXT PRIMARY KEY,
+                detection_name TEXT NOT NULL,
+                endpoint_name TEXT NOT NULL,
+                observed_at REAL NOT NULL
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_observations_detection "
+            "ON alert_observations(detection_name, observed_at)"
+        )
+
         await conn.commit()
         
     logger.info("database_init_success")

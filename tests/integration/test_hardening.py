@@ -108,7 +108,8 @@ def test_limiter_memory_is_bounded():
 
 def _prod(monkeypatch, **overrides):
     values = dict(app_env="production", dashboard_access_key="k" * 32,
-                  eset_webhook_auth_token="t" * 32, gemini_api_key="real-key",
+                  eset_webhook_auth_token="t" * 32, ai_provider="openai",
+                  openai_model="gpt-test", openai_api_key="", openai_api_key_secret_id="eset-soc-lite/prod/openai",
                   enable_api_docs=False, email_delivery_enabled=False)
     values.update(overrides)
     for k, v in values.items():
@@ -124,7 +125,10 @@ def test_production_guard_accepts_a_safe_config(monkeypatch):
     ({"dashboard_access_key": ""}, "DASHBOARD_ACCESS_KEY is blank"),
     ({"dashboard_access_key": "123456"}, "DASHBOARD_ACCESS_KEY is shorter"),
     ({"eset_webhook_auth_token": "test"}, "ESET_WEBHOOK_AUTH_TOKEN"),
-    ({"gemini_api_key": "your_gemini_api_key_here"}, "GEMINI_API_KEY"),
+    ({"openai_api_key_secret_id": ""}, "AI_PROVIDER=openai is missing"),
+    ({"openai_model": ""}, "AI_PROVIDER=openai is missing"),
+    ({"openai_api_key_secret_id": "", "openai_api_key": "your_openai_api_key_here"}, "OPENAI_API_KEY is a placeholder"),
+    ({"ai_provider": "skynet"}, "AI_PROVIDER 'skynet'"),
     ({"enable_api_docs": True}, "ENABLE_API_DOCS"),
     ({"email_delivery_enabled": True, "email_api_url": "", "email_api_key": ""}, "EMAIL_DELIVERY_ENABLED"),
 ])
@@ -158,3 +162,10 @@ def _access_record(method, path, status):
 ])
 def test_quiet_filter_keeps_what_matters(method, path, status, kept):
     assert QuietDashboardAccessFilter().filter(_access_record(method, path, status)) is kept
+
+
+def test_unconfigured_webhook_token_refuses_everything(client, monkeypatch):
+    monkeypatch.setattr(settings, "eset_webhook_auth_token", "")
+    for header in ("Bearer ", "Bearer", ""):
+        res = client.post("/webhook/eset", headers={"Authorization": header}, json={"alert_id": "x"})
+        assert res.status_code == 401

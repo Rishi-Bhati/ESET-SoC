@@ -45,7 +45,12 @@ async def test_full_pipeline_success():
     # Verify AI mock output populated
     assert result["ai_output"] is not None
     assert result["ai_output"]["risk_level"] == "HIGH"
-    assert "Conficker" in result["ai_output"]["client_notification_ja"]["summary"]
+    assert "Conficker" in result["ai_output"]["alert_summary_ja"]
+    # Audit trail: the rules that decided the level, the AI request that explained it.
+    assert result["risk_factors"][0]["rule"] == "severity_high_unhandled"
+    assert result["ai_run"]["status"] == "SUCCESS"
+    assert result["ai_run"]["request_id"] == "req_mock_0001"
+    assert result["ai_run"]["prompt_version"]
     
     # 6. Verify index.json exists and contains record
     index_file = os.path.join(settings.output_dir, "index.json")

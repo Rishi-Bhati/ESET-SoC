@@ -1,24 +1,18 @@
 """
 End-to-end coverage for AI Visibility: real ingest -> real pipeline -> the real
-GeminiAIService.generate() body (including instrumentation) -> the dashboard API
+BaseAIProvider.generate() body (including instrumentation) -> the dashboard API
 and WebSocket.
 
-The autouse `mock_gemini` fixture in tests/conftest.py replaces
-GeminiAIService.generate() ENTIRELY, which is exactly the method this feature
-instruments — so it would never run under that mock. This module overrides that
-fixture (same name, module scope, also autouse) to patch one level deeper instead:
-GeminiAIService._call_gemini_with_retry(), which returns the raw SDK response object.
-That means generate()'s real body — normalization of the prompt, redaction, trace
-recording, the safety lint hookup — actually executes here, against a fake but
-realistic SDK response, with no real network call.
+The autouse `mock_ai_provider` fixture in tests/conftest.py installs FakeProvider,
+which replaces only the network call (`_invoke`) — so generate()'s real body
+(prompt assembly, masking, redaction, trace recording) and the orchestrator's
+output validation actually execute here. Tests that need the model to misbehave
+swap the responder via the `ai_responder` fixture.
 """
-import pytest
 from fastapi.testclient import TestClient
 from src.config import settings
-from src.models.ai_output import (
-    AIOutput, ClientNotificationJa, CThreeNotificationJa, InternalNotificationJa,
-    EngineerNotificationEn, EngineerNotificationJa,
-)
+from src.services.ai.base import ProviderResponse
+from ai_fakes import sample_output
 
 AUTH = {"Authorization": "Bearer test_token"}
 
@@ -39,48 +33,10 @@ def _payload(alert_id: str, **extra):
     return base
 
 
-def _fake_ai_output(risk: str = "HIGH") -> AIOutput:
-    return AIOutput(
-        risk_level=risk,
-        client_notification_ja=ClientNotificationJa(summary="s", current_status="c", required_confirmation="r"),
-        cthree_notification_ja=CThreeNotificationJa(
-            summary="s", assessment="a", front_office_notes="f", draft_client_response="d"),
-        internal_notification_ja=InternalNotificationJa(
-            summary="s", assessment="a", recommended_actions=["x"], draft_client_response="d"),
-        engineer_notification_en=EngineerNotificationEn(
-            alert_summary="s", assessment="a", confirmed_information=["c"], unknown_information=["u"],
-            investigation_items=["i"], recommended_actions=["r"], draft_client_response="d",
-        ),
-        engineer_notification_ja=EngineerNotificationJa(
-            alert_summary="概要", assessment="評価", confirmed_information=["確認"],
-            unknown_information=["不明"], investigation_items=["調査"],
-            recommended_actions=["対応"], draft_client_response="返信案",
-        ),
-    )
-
-
-class _FakeUsage:
-    def __init__(self):
-        self.prompt_token_count = 123
-        self.candidates_token_count = 45
-        self.total_token_count = 168
-
-
-class _FakeResponse:
-    def __init__(self, text: str, with_usage: bool = True):
-        self.text = text
-        self.usage_metadata = _FakeUsage() if with_usage else None
-
-
-@pytest.fixture(autouse=True)
-def mock_gemini(monkeypatch):
-    """Overrides the session-wide autouse mock for this module only — see module docstring."""
-    from src.services.ai.gemini_service import GeminiAIService
-
-    async def fake_call(self, prompt, generation_config):
-        return _FakeResponse(_fake_ai_output().model_dump_json())
-
-    monkeypatch.setattr(GeminiAIService, "_call_gemini_with_retry", fake_call)
+def _respond(output):
+    """A responder returning `output` (an AIOutput, or raw text) as the model's answer."""
+    text = output if isinstance(output, str) else output.model_dump_json()
+    return lambda request: ProviderResponse(text=text, request_id="req_test_1")
 
 
 # --------------------------- happy path ---------------------------
@@ -92,8 +48,8 @@ def test_successful_generation_produces_a_visible_trace(client: TestClient):
     traces = client.get("/dashboard/api/ai/traces").json()["traces"]
     assert len(traces) >= 1
     t = traces[0]
-    assert t["provider"] == "google_gemini"
-    assert t["model"] == "gemini-3.1-flash-lite"
+    assert t["provider"] == "mock"
+    assert t["model"] == "mock-model"
     assert t["component"] == "pipeline.ai_generate"
     assert t["status"] == "SUCCESS"
 
@@ -105,10 +61,10 @@ def test_trace_detail_exposes_full_lifecycle(client: TestClient):
     detail = client.get(f"/dashboard/api/ai/traces/{trace_id}").json()["trace"]
     assert detail["objective"]
     assert detail["data_categories"], "input data must be categorized"
-    assert detail["external_calls"], "the Gemini call itself must appear as an external contact"
+    assert detail["external_calls"], "the provider call itself must appear as an external contact"
     ext = detail["external_calls"][0]
-    assert ext["service"] == "Google Generative AI (Gemini)"
-    assert ext["domain"] == "generativelanguage.googleapis.com"
+    assert ext["service"] == "Mock AI"
+    assert ext["domain"] == "mock.invalid"
     assert ext["status"] == "OK"
     assert detail["output_redacted"] is not None
     assert detail["usage"] == {"prompt_tokens": 123, "output_tokens": 45, "total_tokens": 168}
@@ -138,15 +94,8 @@ def test_sensitive_input_is_detected_and_redacted_before_storage(client: TestCli
 
 # --------------------------- policy blocking (safety lint) ---------------------------
 
-def test_lint_failure_blocks_the_trace_without_changing_pipeline_behavior(client: TestClient, monkeypatch):
-    from src.services.ai.gemini_service import GeminiAIService
-
-    async def fake_call(self, prompt, generation_config):
-        blocked = _fake_ai_output()
-        blocked.engineer_notification_en.assessment = "Infection confirmed on this host."
-        return _FakeResponse(blocked.model_dump_json())
-
-    monkeypatch.setattr(GeminiAIService, "_call_gemini_with_retry", fake_call)
+def test_lint_failure_blocks_the_trace_without_changing_pipeline_behavior(client: TestClient, ai_responder):
+    ai_responder(_respond(sample_output("HIGH", engineer_summary_en="Infection confirmed on this host.")))
 
     res = client.post("/webhook/eset", headers=AUTH, json=_payload("aivis-4"))
     cid = res.json()["correlation_id"]
@@ -168,13 +117,8 @@ def test_lint_failure_blocks_the_trace_without_changing_pipeline_behavior(client
 
 # --------------------------- provider failure ---------------------------
 
-def test_provider_error_produces_error_trace_and_partial_job(client: TestClient, monkeypatch):
-    from src.services.ai.gemini_service import GeminiAIService
-
-    async def failing_call(self, prompt, generation_config):
-        raise TimeoutError("Gemini did not respond in time")
-
-    monkeypatch.setattr(GeminiAIService, "_call_gemini_with_retry", failing_call)
+def test_provider_error_produces_error_trace_and_partial_job(client: TestClient, ai_responder):
+    ai_responder(lambda request: TimeoutError("provider did not respond in time"))
 
     res = client.post("/webhook/eset", headers=AUTH, json=_payload("aivis-5"))
     cid = res.json()["correlation_id"]
@@ -188,17 +132,13 @@ def test_provider_error_produces_error_trace_and_partial_job(client: TestClient,
     assert mine[0]["risk"] == "ERROR"
 
     detail = client.get(f"/dashboard/api/ai/traces/{mine[0]['trace_id']}").json()["trace"]
-    assert "Gemini did not respond" in detail["error"]
+    assert "Timeout" in detail["error"]
     assert detail["external_calls"][0]["status"] == "ERROR"
 
 
-def test_empty_response_produces_error_trace(client: TestClient, monkeypatch):
-    from src.services.ai.gemini_service import GeminiAIService
-
-    async def empty_call(self, prompt, generation_config):
-        raise ValueError("Gemini returned an empty response")
-
-    monkeypatch.setattr(GeminiAIService, "_call_gemini_with_retry", empty_call)
+def test_empty_response_produces_error_trace(client: TestClient, ai_responder):
+    from src.services.ai.base import AIOutputRejected
+    ai_responder(lambda request: AIOutputRejected("The model returned an empty response"))
 
     res = client.post("/webhook/eset", headers=AUTH, json=_payload("aivis-empty"))
     cid = res.json()["correlation_id"]
@@ -209,13 +149,8 @@ def test_empty_response_produces_error_trace(client: TestClient, monkeypatch):
     assert any(t["correlation_id"] == cid for t in traces)
 
 
-def test_malformed_response_produces_error_trace(client: TestClient, monkeypatch):
-    from src.services.ai.gemini_service import GeminiAIService
-
-    async def malformed_call(self, prompt, generation_config):
-        return _FakeResponse("{not valid json at all")
-
-    monkeypatch.setattr(GeminiAIService, "_call_gemini_with_retry", malformed_call)
+def test_malformed_response_produces_error_trace(client: TestClient, ai_responder):
+    ai_responder(_respond("{not valid json at all"))
 
     res = client.post("/webhook/eset", headers=AUTH, json=_payload("aivis-malformed"))
     cid = res.json()["correlation_id"]

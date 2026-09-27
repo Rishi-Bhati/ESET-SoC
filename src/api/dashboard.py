@@ -18,6 +18,10 @@ from src.services import pipeline_capacity
 from src.services import log_reader
 from src.services.output_writer import alert_labels
 from src.api.webhook import run_pipeline_task
+from src.prompts.system_prompts import PROMPT_VERSION
+from src.services import secrets
+from src.services.ai import factory as ai_factory
+from src.services.ai.base import AIConfigurationError
 from src.middleware.security import auth_limiter, client_key
 
 router = APIRouter(prefix="/dashboard/api", tags=["Dashboard"])
@@ -185,6 +189,8 @@ async def get_ai_content(request: Request, limit: int = 25) -> dict[str, Any]:
             # Why the risk engine decided that, so the AI's summary can be read
             # against the determination it was given rather than in isolation.
             "risk_rationale": result.get("risk_rationale"),
+            "risk_factors": result.get("risk_factors") or [],
+            "ai_run": result.get("ai_run"),
             "detection_name": alert.get("detection_name"),
             "endpoint_name": alert.get("endpoint_name"),
             "alert": alert,
@@ -391,6 +397,70 @@ async def get_settings(request: Request) -> dict[str, Any]:
         },
         "delivery": email_dispatcher.delivery_status(),
         "security": _security_posture(request),
+        "ai": _ai_status(),
+    }
+
+
+def _ai_status() -> dict[str, Any]:
+    """
+    The AI provider configuration, read-only. Reports WHERE the API key comes
+    from (Secrets Manager secret name, or an environment variable name) and
+    never the key itself, its length, or any part of it.
+
+    Deliberately not editable from the dashboard: the key must live in the
+    secret store (client security requirements #3-#5), and provider/model are
+    deployment configuration that differs between PoC/staging and production.
+    See docs/OPENAI_INTEGRATION.md.
+    """
+    name = ai_factory.configured_provider_name()
+    info: dict[str, Any] = {
+        "provider": name,
+        "supported_providers": ai_factory.supported_providers(),
+        "configured": ai_factory.ai_provider_configured(),
+        "editable": False,
+        "prompt_version": PROMPT_VERSION,
+        "timeout_seconds": settings.ai_timeout_seconds,
+        "max_attempts": settings.ai_max_attempts,
+        "max_output_tokens": settings.ai_max_output_tokens,
+        "masking_enabled": settings.ai_masking_enabled,
+        "model": "",
+        "key_source": "missing",
+        "key_reference": "",
+    }
+    attrs = ai_factory.PROVIDER_SETTINGS.get(name)
+    if attrs:
+        model_attr, key_attr, secret_attr = attrs
+        source = secrets.describe_source(key_attr.upper(), getattr(settings, key_attr), getattr(settings, secret_attr))
+        info.update(model=getattr(settings, model_attr), key_source=source.kind, key_reference=source.reference)
+    return info
+
+
+_last_ai_test = 0.0
+
+
+@router.post("/settings/ai/test")
+async def test_ai_connection(request: Request) -> dict[str, Any]:
+    """
+    Verifies the configured provider accepts the key and serves the model —
+    for OpenAI, by retrieving the model (no tokens generated, nothing sent
+    about any alert). Returns only a pass/fail summary and the provider's
+    request ID.
+    """
+    _check_access(request)
+    global _last_ai_test
+    now = time.monotonic()
+    if now - _last_ai_test < 5:
+        raise HTTPException(status_code=429, detail="Connection test already ran in the last 5 seconds")
+    _last_ai_test = now
+    try:
+        provider = ai_factory.get_ai_provider()
+    except AIConfigurationError as exc:
+        return {"ok": False, "detail": f"ConfigurationError: {exc}", "provider": ai_factory.configured_provider_name()}
+    check = await provider.check_connection()
+    logger.info("ai_connection_test", provider=provider.provider_name, ok=check.ok, request_id=check.request_id)
+    return {
+        "ok": check.ok, "detail": check.detail, "latency_ms": check.latency_ms,
+        "request_id": check.request_id, "provider": provider.provider_name, "model": provider.model,
     }
 
 
@@ -413,6 +483,9 @@ def _security_posture(request: Request) -> list[dict[str, str]]:
         {"id": "auth_throttle", "status": "ok" if settings.auth_max_failures > 0 else "warn"},
         {"id": "syslog_allowlist", "status": "ok" if settings.syslog_allowed_sources.strip() else "warn"},
         {"id": "ai_masking", "status": "ok" if settings.ai_masking_enabled else "warn"},
+        {"id": "threat_intel", "status": "warn" if settings.use_mock_threat_intel else "ok"},
+        {"id": "ai_key_store", "status": {"aws_secrets_manager": "ok", "environment": "warn"}.get(
+            _ai_status()["key_source"], "bad")},
         {"id": "email_delivery", "status": "ok" if settings.email_delivery_enabled else "warn"},
     ]
 

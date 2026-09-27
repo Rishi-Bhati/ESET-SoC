@@ -1,80 +1,68 @@
 """
-Regression guard for the Gemini structured-output bug.
+Structured-output schemas built from AIOutput.
 
-The SDK's own Pydantic->Schema converter drops every `required` array, which let
-Gemini return objects like {"risk_level": "HIGH"} and pushed every alert down the
-PARTIAL path. build_gemini_schema must preserve `required` at every level.
+OpenAI strict mode rejects a schema unless every object lists all of its
+properties in `required` and sets additionalProperties=false; Gemini rejects
+$ref/$defs/additionalProperties and its SDK drops `required` when handed a
+Pydantic class. Both builders must also pin risk_level to one value.
 """
-import google.generativeai as genai
+import json
+import pytest
 from src.models.ai_output import AIOutput
-from src.services.ai.schema_builder import build_gemini_schema
+from src.services.ai.schema_builder import build_gemini_schema, build_strict_json_schema
+
+CLIENT_FIELDS = {
+    "risk_level", "alert_summary_ja", "risk_reason_ja", "client_notification_ja",
+    "internal_summary_ja", "engineer_summary_en", "recommended_initial_actions_ja",
+    "additional_confirmation_items_ja", "unknown_items", "backlog_comment_ja",
+    "email_subject_ja", "email_body_ja",
+}
 
 
-def test_required_preserved_at_top_level():
-    schema = build_gemini_schema(AIOutput)
-    assert set(schema["required"]) == {
-        "risk_level",
-        "client_notification_ja",
-        "cthree_notification_ja",
-        "internal_notification_ja",
-        "engineer_notification_en",
-        "engineer_notification_ja",
-    }
+def test_output_fields_are_exactly_the_clients_field_list():
+    assert set(AIOutput.model_fields) == CLIENT_FIELDS
 
 
-def test_required_preserved_in_nested_models():
-    props = build_gemini_schema(AIOutput)["properties"]
-
-    assert set(props["client_notification_ja"]["required"]) == {
-        "summary", "current_status", "required_confirmation"}
-    assert set(props["cthree_notification_ja"]["required"]) == {
-        "summary", "assessment", "front_office_notes", "draft_client_response"}
-    assert set(props["internal_notification_ja"]["required"]) == {
-        "summary", "assessment", "recommended_actions", "draft_client_response"}
-    # The two engineer reports are one report in two languages, so they must carry
-    # exactly the same required fields — a section required in only one language would
-    # let the model return a report that is complete in EN and truncated in JA.
-    engineer_fields = {
-        "alert_summary", "assessment", "confirmed_information", "unknown_information",
-        "investigation_items", "recommended_actions", "draft_client_response"}
-    assert set(props["engineer_notification_en"]["required"]) == engineer_fields
-    assert set(props["engineer_notification_ja"]["required"]) == engineer_fields
+def test_strict_schema_requires_every_property_and_forbids_extras():
+    schema = build_strict_json_schema(AIOutput)
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"]) == CLIENT_FIELDS
+    raw = json.dumps(schema)
+    assert "$ref" not in raw and "$defs" not in raw and '"title"' not in raw and '"default"' not in raw
 
 
-def test_refs_are_inlined_and_unsupported_keys_stripped():
-    import json
-    raw = json.dumps(build_gemini_schema(AIOutput))
-    # Gemini rejects JSON-Schema references and unknown keywords
-    assert "$ref" not in raw
-    assert "$defs" not in raw
-    assert "additionalProperties" not in raw
-    assert '"title"' not in raw
+def test_strict_schema_risk_level_is_an_enum_and_can_be_pinned():
+    assert build_strict_json_schema(AIOutput)["properties"]["risk_level"]["enum"] == [
+        "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    pinned = build_strict_json_schema(AIOutput, pin={"risk_level": ["MEDIUM"]})
+    assert pinned["properties"]["risk_level"]["enum"] == ["MEDIUM"]
 
 
 def test_list_fields_keep_item_types():
-    props = build_gemini_schema(AIOutput)["properties"]
-    actions = props["internal_notification_ja"]["properties"]["recommended_actions"]
-    assert actions["type"] == "array"
-    assert actions["items"]["type"] == "string"
+    for build in (build_strict_json_schema, build_gemini_schema):
+        prop = build(AIOutput)["properties"]["unknown_items"]
+        assert prop["type"] == "array" and prop["items"]["type"] == "string"
 
 
-def test_sdk_generation_config_preserves_required():
-    """The schema must still carry `required` after the SDK ingests it."""
+def test_pinning_an_unknown_property_is_an_error():
+    with pytest.raises(KeyError):
+        build_strict_json_schema(AIOutput, pin={"not_a_field": ["x"]})
+
+
+def test_gemini_schema_keeps_required_and_strips_unsupported_keys():
+    schema = build_gemini_schema(AIOutput, pin={"risk_level": ["HIGH"]})
+    assert set(schema["required"]) == CLIENT_FIELDS
+    assert schema["properties"]["risk_level"]["enum"] == ["HIGH"]
+    raw = json.dumps(schema)
+    assert "$ref" not in raw and "additionalProperties" not in raw and '"title"' not in raw
+
+
+def test_gemini_sdk_generation_config_preserves_required():
+    genai = pytest.importorskip("google.generativeai")
     cfg = genai.types.GenerationConfig(
         response_mime_type="application/json",
         response_schema=build_gemini_schema(AIOutput),
-        temperature=0.1,
         max_output_tokens=8192,
     )
     assert "required" in str(cfg.response_schema)
-
-
-def test_sdk_native_conversion_still_drops_required():
-    """
-    Documents *why* build_gemini_schema exists. If a future SDK version fixes this,
-    this test fails and the workaround can be reconsidered.
-    """
-    import google.generativeai.types.content_types as ct
-    import json
-    native = json.dumps(ct._schema_for_class(AIOutput), default=str)
-    assert '"required"' not in native

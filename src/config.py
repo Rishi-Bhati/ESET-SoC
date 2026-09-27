@@ -3,11 +3,76 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 class Settings(BaseSettings):
-    # --- AI ---
-    gemini_api_key: str = Field(..., validation_alias="GEMINI_API_KEY")
+    # --- AI provider (see src/services/ai/factory.py) ---
+    # Which provider generates the notification text. The AI never decides the
+    # risk level (src/services/risk_engine.py does); it only explains and formats.
+    #   openai       - OpenAI API (primary for the PoC)
+    #   azure_openai - Azure OpenAI Service, same SDK and schema handling
+    #   gemini       - Google Gemini (the pre-OpenAI implementation, kept as a fallback)
+    ai_provider: str = Field("openai", validation_alias="AI_PROVIDER")
+
+    # --- OpenAI ---
+    # No default model on purpose: the model is a cost/quality decision the client
+    # makes per environment, not something the code should pick silently.
+    openai_model: str = Field("", validation_alias="OPENAI_MODEL")
+    # Key resolution order (src/services/secrets.py):
+    #   1. OPENAI_API_KEY_SECRET_ID set -> fetched from AWS Secrets Manager at
+    #      runtime, cached for SECRET_CACHE_TTL_SECONDS, re-fetched after a 401 so
+    #      a rotated key is picked up without a restart.
+    #   2. otherwise OPENAI_API_KEY from the environment (e.g. injected by ECS
+    #      from Secrets Manager, or a local .env for development).
+    # Never hard-code either one, and never commit a real value.
+    openai_api_key: str = Field("", validation_alias="OPENAI_API_KEY")
+    openai_api_key_secret_id: str = Field("", validation_alias="OPENAI_API_KEY_SECRET_ID")
+    # Dedicated OpenAI project for this platform (sent as the OpenAI-Project
+    # header). Optional: a project-scoped key already implies its project.
+    openai_project_id: str = Field("", validation_alias="OPENAI_PROJECT_ID")
+    openai_organization_id: str = Field("", validation_alias="OPENAI_ORG_ID")
+    # Blank = api.openai.com. Only for a proxy/gateway in front of the API.
+    openai_base_url: str = Field("", validation_alias="OPENAI_BASE_URL")
+    # Optional model tuning. Blank = not sent, so the model's own default applies —
+    # several current models reject a non-default temperature outright.
+    openai_temperature: str = Field("", validation_alias="OPENAI_TEMPERATURE")
+    openai_reasoning_effort: str = Field("", validation_alias="OPENAI_REASONING_EFFORT")
+
+    # --- Azure OpenAI (AI_PROVIDER=azure_openai) ---
+    azure_openai_endpoint: str = Field("", validation_alias="AZURE_OPENAI_ENDPOINT")
+    azure_openai_api_version: str = Field("2024-10-21", validation_alias="AZURE_OPENAI_API_VERSION")
+    # The deployment name is what Azure routes on; it plays the role of the model name.
+    azure_openai_deployment: str = Field("", validation_alias="AZURE_OPENAI_DEPLOYMENT")
+    azure_openai_api_key: str = Field("", validation_alias="AZURE_OPENAI_API_KEY")
+    azure_openai_api_key_secret_id: str = Field("", validation_alias="AZURE_OPENAI_API_KEY_SECRET_ID")
+
+    # --- Google Gemini (AI_PROVIDER=gemini) ---
+    gemini_api_key: str = Field("", validation_alias="GEMINI_API_KEY")
+    gemini_api_key_secret_id: str = Field("", validation_alias="GEMINI_API_KEY_SECRET_ID")
+    gemini_model: str = Field("gemini-3.1-flash-lite", validation_alias="GEMINI_MODEL")
+
+    # --- AI call limits (all providers) ---
+    # Per-attempt timeout. Japanese output is token-dense and reasoning models
+    # think before answering, so this is longer than a typical API timeout.
+    ai_timeout_seconds: int = Field(60, gt=0, validation_alias="AI_TIMEOUT_SECONDS")
+    # Total attempts per alert, first try included. Only transient failures
+    # (timeouts, connection errors, 429, 5xx) are retried; a bad key, a missing
+    # model or an invalid request fails at once. Hard-capped in code at 5.
+    ai_max_attempts: int = Field(3, ge=1, validation_alias="AI_MAX_ATTEMPTS")
+    # Upper bound on generated tokens (reasoning tokens included on reasoning models).
+    ai_max_output_tokens: int = Field(16000, gt=0, validation_alias="AI_MAX_OUTPUT_TOKENS")
+
+    # --- AWS ---
+    # Region for Secrets Manager. Blank = boto3's normal lookup (AWS_REGION /
+    # AWS_DEFAULT_REGION), or the region embedded in a full secret ARN.
+    aws_region: str = Field("", validation_alias="AWS_REGION")
+    # Optional JSON secret whose keys overlay the settings below at startup
+    # (ESET_WEBHOOK_AUTH_TOKEN, DASHBOARD_ACCESS_KEY, EMAIL_API_KEY, ...), so no
+    # platform credential needs to exist in the environment or on disk.
+    app_secrets_secret_id: str = Field("", validation_alias="APP_SECRETS_SECRET_ID")
+    secret_cache_ttl_seconds: int = Field(300, ge=0, validation_alias="SECRET_CACHE_TTL_SECONDS")
 
     # --- Webhook Auth ---
-    eset_webhook_auth_token: str = Field(..., validation_alias="ESET_WEBHOOK_AUTH_TOKEN")
+    # May instead come from the APP_SECRETS_SECRET_ID secret at startup. While it
+    # is empty every ingest request is refused (src/middleware/auth.py).
+    eset_webhook_auth_token: str = Field("", validation_alias="ESET_WEBHOOK_AUTH_TOKEN")
 
     # --- App ---
     # "production" turns configuration mistakes that are merely risky in
@@ -48,7 +113,7 @@ class Settings(BaseSettings):
     # listeners are unauthenticated by protocol, and forward_to_api() attaches the
     # real webhook token on their behalf — so without an allowlist anyone who can
     # reach the port can inject an authenticated alert, and each injected alert
-    # costs a Gemini generation and an outbound notification. Blank = accept from
+    # costs an AI generation and an outbound notification. Blank = accept from
     # anywhere, which is only safe when the port is already behind a network
     # boundary. Set it to the ESET PROTECT exporter's address(es) in production.
     syslog_allowed_sources: str = Field("", validation_alias="SYSLOG_ALLOWED_SOURCES")
@@ -77,15 +142,33 @@ class Settings(BaseSettings):
     # Includes pipelines queued in HTTP BackgroundTasks, not only running AI calls.
     max_concurrent_pipelines: int = Field(4, gt=0, validation_alias="MAX_CONCURRENT_PIPELINES")
     threat_intel_timeout_seconds: int = Field(5, validation_alias="THREAT_INTEL_TIMEOUT_SECONDS")
-    ai_timeout_seconds: int = Field(30, validation_alias="AI_TIMEOUT_SECONDS")
-    max_retries: int = Field(3, validation_alias="MAX_RETRIES")
+
+    # --- Rule-based risk assessment (src/services/risk_engine.py) ---
+    # Endpoint importance: an endpoint whose type contains one of these words
+    # (case-insensitive), or whose name matches one of the glob patterns, is
+    # treated as important — an unhandled detection on it is raised one level
+    # (never above HIGH by this rule alone).
+    important_endpoint_types: str = Field(
+        "server,domain controller", validation_alias="IMPORTANT_ENDPOINT_TYPES",
+    )
+    important_endpoint_patterns: str = Field("", validation_alias="IMPORTANT_ENDPOINT_PATTERNS")
+    # Event pattern: the same detection on this many distinct endpoints within the
+    # window (as reported in the payload, or as observed by this platform) is an
+    # outbreak and is always CRITICAL.
+    outbreak_endpoint_threshold: int = Field(3, ge=2, validation_alias="OUTBREAK_ENDPOINT_THRESHOLD")
+    outbreak_window_seconds: int = Field(3600, gt=0, validation_alias="OUTBREAK_WINDOW_SECONDS")
 
     # --- Feature Flags for Testing ---
-    use_mock_threat_intel: bool = True  # Defaults to True for prototype
+    # Simulated VirusTotal/AbuseIPDB verdicts for demos. While on, the verdicts
+    # are shown on the dashboard but are NOT used by the risk rules and are NOT
+    # given to the AI as facts (they would otherwise surface in client emails).
+    # Set false, with VIRUSTOTAL_API_KEY / ABUSEIPDB_API_KEY, for real lookups.
+    use_mock_threat_intel: bool = Field(True, validation_alias="USE_MOCK_THREAT_INTEL")
 
     # --- AI Data Minimization ---
     # Masks fields the audit (docs/SOC_LITE_AUDIT.md §9) judged unnecessary for AI
-    # reasoning (e.g. user_name) before they are sent to Gemini. Engineering default
+    # reasoning (e.g. user_name, email addresses, internal identifiers) before they
+    # are sent to the AI provider (see src/services/ai/prompt_masking.py). Engineering default
     # is ON; the exact field policy still needs client sign-off before production.
     ai_masking_enabled: bool = Field(True, validation_alias="AI_MASKING_ENABLED")
 

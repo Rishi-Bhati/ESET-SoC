@@ -1,0 +1,18 @@
+{
+  "_poc_case": "CRITICAL — the same detection on multiple endpoints (outbreak pattern). ESET reports HIGH per endpoint.",
+  "source": "ESET_PROTECT_CLOUD",
+  "event_type": "Threat Detection",
+  "alert_id": "poc-critical-0002",
+  "occurred_at": "2026-09-20T05:10:00Z",
+  "severity": "HIGH",
+  "detection_name": "Win32/Qbot.AX trojan",
+  "endpoint_name": "MAC-PC-040",
+  "endpoint_type": "Workstation",
+  "os_name": "Windows 11 Pro",
+  "action_taken": "Blocked",
+  "threat_handled": false,
+  "isolation_status": false,
+  "affected_endpoints": ["MAC-PC-040", "MAC-PC-041", "MAC-PC-044", "MAC-PC-052"],
+  "raw_subject": "Qbot detected on 4 computers",
+  "raw_content": "The same detection was reported on four computers within ten minutes."
+}

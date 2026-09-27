@@ -84,7 +84,7 @@ _RULES: list[tuple[str, "re.Pattern[str]", Callable[["re.Match[str]"], str]]] = 
     ("GOOGLE_API_KEY", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"), _mask_partial("GOOGLE_API_KEY")),
     ("GITHUB_TOKEN", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"), _mask_partial("GITHUB_TOKEN")),
     ("SLACK_TOKEN", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), _mask_partial("SLACK_TOKEN")),
-    ("GENERIC_API_KEY", re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"), _mask_partial("GENERIC_API_KEY")),
+    ("GENERIC_API_KEY", re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{16,}"), _mask_partial("GENERIC_API_KEY")),
     ("CREDIT_CARD", re.compile(r"\b(?:\d[ -]?){13,16}\b"), _mask_full("CREDIT_CARD")),
     ("EMAIL_PII", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), _mask_email),
 ]

@@ -1,0 +1,22 @@
+{
+  "_poc_case": "MEDIUM — a detection that was blocked but not cleaned; handling is incomplete and needs confirmation.",
+  "source": "ESET_PROTECT_CLOUD",
+  "event_type": "Threat Detection",
+  "alert_id": "poc-medium-0001",
+  "occurred_at": "2026-09-20T02:40:00Z",
+  "severity": "MEDIUM",
+  "detection_name": "JS/Agent.QXN trojan",
+  "endpoint_name": "MAC-PC-027",
+  "endpoint_type": "Workstation",
+  "user_name": "suzuki.aya",
+  "os_name": "Windows 10 Pro",
+  "action_taken": "Blocked; cleaning failed — file still present",
+  "threat_handled": false,
+  "isolation_status": false,
+  "object_type": "File",
+  "object_uri": "C:\\Users\\suzuki.aya\\AppData\\Local\\Temp\\invoice_0920.js",
+  "url": "http://cdn-files.example.net/invoice_0920.js",
+  "domain": "cdn-files.example.net",
+  "raw_subject": "Threat blocked on MAC-PC-027",
+  "raw_content": "ESET blocked execution of a script downloaded from an email link. Automatic cleaning failed and the file remains on disk."
+}

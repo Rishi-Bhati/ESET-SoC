@@ -4,6 +4,8 @@ from fastapi import APIRouter, Request
 import aiosqlite
 import structlog
 from src.config import settings
+from src.services.ai.factory import ai_provider_configured
+
 
 router = APIRouter(prefix="/health", tags=["Health"])
 logger = structlog.get_logger(__name__)
@@ -39,15 +41,19 @@ async def health_check(request: Request) -> dict[str, Any]:
         dir_error = str(e)
         logger.error("health_check_dir_failed", error=dir_error)
 
-    # 3. Gemini Config Check
-    gemini_configured = bool(settings.gemini_api_key)
+    # 3. AI provider configuration. Deliberately does not contact the provider or
+    # Secrets Manager: this endpoint is polled by load balancers every few seconds.
+    ai_configured = ai_provider_configured()
 
     # 4. Syslog Listener Check (embedded in this process, see src.services.syslog_runtime)
     syslog_handles = getattr(request.app.state, "syslog_handles", None)
     udp_ok = bool(syslog_handles and syslog_handles.udp_transport)
     tcp_ok = bool(syslog_handles and syslog_handles.tcp_server)
 
-    is_healthy = db_ok and dir_ok and gemini_configured
+    # An unconfigured AI provider degrades notifications, not ingestion: alerts are
+    # still recorded and the fallback notice still goes out. It is reported, but it
+    # does not fail the probe (which would make a load balancer stop sending alerts).
+    is_healthy = db_ok and dir_ok
     status = "ok" if is_healthy else "degraded"
 
     # This endpoint is deliberately unauthenticated so a load balancer or
@@ -62,8 +68,9 @@ async def health_check(request: Request) -> dict[str, Any]:
         "output_directory": {
             "status": "ok" if dir_ok else "error"
         },
-        "gemini_api": {
-            "status": "configured" if gemini_configured else "missing"
+        "ai_provider": {
+            "provider": settings.ai_provider,
+            "status": "configured" if ai_configured else "missing"
         },
         "syslog_listener": {
             "udp": "ok" if udp_ok else "down",
