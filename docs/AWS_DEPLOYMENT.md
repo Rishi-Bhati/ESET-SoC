@@ -61,7 +61,9 @@ aws cloudformation deploy --region $AWS_REGION \
       DomainName=soc-poc.example.com \
       AdminCidr=203.0.113.0/24 \
       ImageUri=123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/eset-soc-lite:20260927-0900-abc1234 \
-      OpenAIModel=gpt-5-mini
+      OpenAIModel=gpt-5-mini \
+      EmailApiUrl=https://<mail-worker>/api/send
+      # EmailApiUrl blank = email handoff off (alerts still processed and kept in the outbox)
       # SyslogSourceCidr=198.51.100.10/32   # only if using syslog export
 ```
 
@@ -117,7 +119,7 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
    python scripts/run_poc_cases.py --url https://soc-poc.example.com \
      --token "$ESET_WEBHOOK_AUTH_TOKEN" --dashboard-key "$DASHBOARD_ACCESS_KEY"
    ```
-   The cases go through the real pipeline, so **configured recipients receive the emails**. Point the recipients at your own team before running them.
+   The cases go through the real pipeline, so when `EmailApiUrl` is set **configured recipients receive the emails**. Set the recipients to your own team first, in the dashboard under Settings.
 4. In ESET PROTECT Cloud, register the `WebhookUrl` output with the header `Authorization: Bearer <ESET_WEBHOOK_AUTH_TOKEN>`, then send a test webhook.
 
 ## Operations
