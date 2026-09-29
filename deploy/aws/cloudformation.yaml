@@ -35,6 +35,10 @@ Parameters:
   OpenAIModel:
     Type: String
     Description: OPENAI_MODEL for this environment (must support structured outputs), e.g. gpt-5-mini.
+  EmailApiUrl:
+    Type: String
+    Default: ""
+    Description: Optional. ESET Mail service send endpoint (EMAIL_API_URL), e.g. https://<worker>.workers.dev/api/send. Blank = email handoff disabled (alerts are still processed and kept in the outbox). The API key/secret go in the app secret.
   InstanceType:
     Type: String
     Default: t3.small
@@ -52,6 +56,7 @@ Parameters:
 
 Conditions:
   SyslogEnabled: !Not [!Equals [!Ref SyslogSourceCidr, ""]]
+  EmailEnabled: !Not [!Equals [!Ref EmailApiUrl, ""]]
 
 Resources:
   # ---------------------------------------------------------------- secrets
@@ -187,114 +192,118 @@ Resources:
         - Key: Name
           Value: !Sub eset-soc-lite-${EnvName}
       UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -euo pipefail
-          exec > >(tee /var/log/soc-lite-bootstrap.log) 2>&1
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee /var/log/soc-lite-bootstrap.log) 2>&1
 
-          dnf install -y docker
-          systemctl enable --now docker
+            dnf install -y docker
+            systemctl enable --now docker
 
-          # ---- data volume, attached as /dev/sdf by DataVolumeAttachment (possibly
-          # after boot). AL2023's udev rules link /dev/sdf to the NVMe device.
-          DEV=""
-          for i in $(seq 1 90); do
-            for candidate in /dev/sdf /dev/xvdf; do
-              [ -e "$candidate" ] && DEV=$(readlink -f "$candidate") && break 2
+            # ---- data volume, attached as /dev/sdf by DataVolumeAttachment (possibly
+            # after boot). AL2023's udev rules link /dev/sdf to the NVMe device.
+            DEV=""
+            for i in $(seq 1 90); do
+              for candidate in /dev/sdf /dev/xvdf; do
+                [ -e "$candidate" ] && DEV=$(readlink -f "$candidate") && break 2
+              done
+              sleep 5
             done
-            sleep 5
-          done
-          [ -n "$DEV" ] || { echo "data volume not attached"; exit 1; }
-          blkid "$DEV" >/dev/null || mkfs -t xfs "$DEV"
-          mkdir -p /srv/soc-data
-          grep -q /srv/soc-data /etc/fstab || echo "UUID=$(blkid -s UUID -o value "$DEV") /srv/soc-data xfs defaults,nofail 0 2" >> /etc/fstab
-          mount -a
-          mkdir -p /srv/soc-data/app /srv/soc-data/caddy
-          chown -R 10001:10001 /srv/soc-data/app
+            [ -n "$DEV" ] || { echo "data volume not attached"; exit 1; }
+            blkid "$DEV" >/dev/null || mkfs -t xfs "$DEV"
+            mkdir -p /srv/soc-data
+            grep -q /srv/soc-data /etc/fstab || echo "UUID=$(blkid -s UUID -o value "$DEV") /srv/soc-data xfs defaults,nofail 0 2" >> /etc/fstab
+            mount -a
+            mkdir -p /srv/soc-data/app /srv/soc-data/caddy
+            chown -R 10001:10001 /srv/soc-data/app
 
-          # ---- configuration (no secrets in here: they are read from Secrets Manager at runtime)
-          mkdir -p /opt/soc-lite
-          cat > /opt/soc-lite/app.env <<'EOF'
-          APP_ENV=production
-          AWS_REGION=${AWS::Region}
-          AWS_DEFAULT_REGION=${AWS::Region}
-          AI_PROVIDER=openai
-          OPENAI_MODEL=${OpenAIModel}
-          OPENAI_API_KEY_SECRET_ID=${OpenAIApiKeySecret}
-          APP_SECRETS_SECRET_ID=${AppSecret}
-          AI_MASKING_ENABLED=true
-          FORWARDED_ALLOW_IPS=*
-          SQLITE_DB_PATH=/data/soc_lite.db
-          OUTPUT_DIR=/data/output/alerts
-          LOG_FILE=/data/logs/app.log
-          SYSLOG_UDP_PORT=5514
-          SYSLOG_TCP_PORT=5601
-          SYSLOG_ALLOWED_SOURCES=${SyslogSourceCidr}
-          EOF
-          echo "IMAGE_URI=${ImageUri}" > /opt/soc-lite/image.env
+            # ---- configuration (no secrets in here: they are read from Secrets Manager at runtime)
+            mkdir -p /opt/soc-lite
+            cat > /opt/soc-lite/app.env <<'EOF'
+            APP_ENV=production
+            AWS_REGION=${AWS::Region}
+            AWS_DEFAULT_REGION=${AWS::Region}
+            AI_PROVIDER=openai
+            OPENAI_MODEL=${OpenAIModel}
+            OPENAI_API_KEY_SECRET_ID=${OpenAIApiKeySecret}
+            APP_SECRETS_SECRET_ID=${AppSecret}
+            AI_MASKING_ENABLED=true
+            FORWARDED_ALLOW_IPS=*
+            SQLITE_DB_PATH=/data/soc_lite.db
+            OUTPUT_DIR=/data/output/alerts
+            LOG_FILE=/data/logs/app.log
+            SYSLOG_UDP_PORT=5514
+            SYSLOG_TCP_PORT=5601
+            SYSLOG_ALLOWED_SOURCES=${SyslogSourceCidr}
+            EMAIL_DELIVERY_ENABLED=${EmailDeliveryEnabled}
+            EMAIL_API_URL=${EmailApiUrl}
+            EOF
+            echo "IMAGE_URI=${ImageUri}" > /opt/soc-lite/image.env
 
-          cat > /opt/soc-lite/Caddyfile <<'EOF'
-          ${DomainName} {
-            encode gzip
-            # ESET PROTECT Cloud has no fixed source address: the ingest routes
-            # (token-authenticated) and the health probe are public.
-            @public path /webhook/* /health
-            handle @public {
-              reverse_proxy soc-lite:8000
+            cat > /opt/soc-lite/Caddyfile <<'EOF'
+            ${DomainName} {
+              encode gzip
+              # ESET PROTECT Cloud has no fixed source address: the ingest routes
+              # (token-authenticated) and the health probe are public.
+              @public path /webhook/* /health
+              handle @public {
+                reverse_proxy soc-lite:8000
+              }
+              # Everything else — the dashboard and its API — only from AdminCidr.
+              @admin remote_ip ${AdminCidr}
+              handle @admin {
+                reverse_proxy soc-lite:8000
+              }
+              handle {
+                respond "Forbidden" 403
+              }
             }
-            # Everything else — the dashboard and its API — only from AdminCidr.
-            @admin remote_ip ${AdminCidr}
-            handle @admin {
-              reverse_proxy soc-lite:8000
-            }
-            handle {
-              respond "Forbidden" 403
-            }
-          }
-          EOF
+            EOF
 
-          cat > /opt/soc-lite/run.sh <<'EOF'
-          #!/bin/bash
-          # (Re)starts the platform and Caddy. Used by systemd and by deploy/aws/update.sh.
-          set -euo pipefail
-          source /opt/soc-lite/image.env
-          REGISTRY=$(echo "$IMAGE_URI" | cut -d/ -f1)
-          aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin "$REGISTRY"
-          docker pull "$IMAGE_URI"
-          docker network inspect soc-net >/dev/null 2>&1 || docker network create soc-net
-          docker rm -f soc-lite caddy >/dev/null 2>&1 || true
-          docker run -d --name soc-lite --restart unless-stopped --network soc-net \
-            --env-file /opt/soc-lite/app.env \
-            -v /srv/soc-data/app:/data \
-            -p 514:5514/udp -p 601:5601/tcp \
-            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
-            --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
-            --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=soc-lite \
-            "$IMAGE_URI"
-          docker run -d --name caddy --restart unless-stopped --network soc-net \
-            -p 80:80 -p 443:443 \
-            -v /opt/soc-lite/Caddyfile:/etc/caddy/Caddyfile:ro \
-            -v /srv/soc-data/caddy:/data \
-            --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
-            --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=caddy \
-            caddy:2
-          EOF
-          chmod +x /opt/soc-lite/run.sh
+            cat > /opt/soc-lite/run.sh <<'EOF'
+            #!/bin/bash
+            # (Re)starts the platform and Caddy. Used by systemd and by deploy/aws/release.sh.
+            set -euo pipefail
+            source /opt/soc-lite/image.env
+            REGISTRY=$(echo "$IMAGE_URI" | cut -d/ -f1)
+            aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin "$REGISTRY"
+            docker pull "$IMAGE_URI"
+            docker network inspect soc-net >/dev/null 2>&1 || docker network create soc-net
+            docker rm -f soc-lite caddy >/dev/null 2>&1 || true
+            docker run -d --name soc-lite --restart unless-stopped --network soc-net \
+              --env-file /opt/soc-lite/app.env \
+              -v /srv/soc-data/app:/data \
+              -p 514:5514/udp -p 601:5601/tcp \
+              --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+              --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
+              --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=soc-lite \
+              "$IMAGE_URI"
+            docker run -d --name caddy --restart unless-stopped --network soc-net \
+              -p 80:80 -p 443:443 \
+              -v /opt/soc-lite/Caddyfile:/etc/caddy/Caddyfile:ro \
+              -v /srv/soc-data/caddy:/data \
+              --log-driver awslogs --log-opt awslogs-region=${AWS::Region} \
+              --log-opt awslogs-group=${LogGroup} --log-opt awslogs-stream=caddy \
+              caddy:2
+            EOF
+            chmod +x /opt/soc-lite/run.sh
 
-          cat > /etc/systemd/system/soc-lite.service <<'EOF'
-          [Unit]
-          Description=ESET SOC Lite
-          After=docker.service network-online.target
-          Requires=docker.service
-          [Service]
-          Type=oneshot
-          RemainAfterExit=yes
-          ExecStart=/opt/soc-lite/run.sh
-          [Install]
-          WantedBy=multi-user.target
-          EOF
-          systemctl daemon-reload
-          systemctl enable --now soc-lite.service
+            cat > /etc/systemd/system/soc-lite.service <<'EOF'
+            [Unit]
+            Description=ESET SOC Lite
+            After=docker.service network-online.target
+            Requires=docker.service
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/opt/soc-lite/run.sh
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            systemctl daemon-reload
+            systemctl enable --now soc-lite.service
+          - EmailDeliveryEnabled: !If [EmailEnabled, "true", "false"]
 
   DataVolume:
     Type: AWS::EC2::Volume
@@ -380,7 +389,7 @@ Outputs:
   DashboardUrl:
     Value: !Sub https://${DomainName}/
   InstanceId:
-    Description: For `aws ssm start-session --target <id>` and deploy/aws/update.sh.
+    Description: For `aws ssm start-session --target <id>` and deploy/aws/release.sh.
     Value: !Ref Instance
   OpenAIApiKeySecretArn:
     Value: !Ref OpenAIApiKeySecret
