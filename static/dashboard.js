@@ -27,6 +27,12 @@ const state = {
   // the language re-renders the open analysis instead of leaving a Japanese
   // reader looking at the English text until they close and reopen it.
   openAiItem: null,
+  // Rebuilds whichever other modal is open, so a language switch does not leave
+  // it in the old language. Set by each modal opener; cleared by showModal().
+  reopenModal: null,
+  // Last Emails-tab responses, re-rendered on a language switch.
+  delivery: null,
+  serviceStatus: null,
 };
 
 const STAGES = ["INGEST", "NORMALIZE", "INTEL", "RISK", "AI", "LINT", "OUTPUT", "EMAIL", "SEND"];
@@ -56,11 +62,9 @@ const BADGES = new Set([
   "OK","STARTED","BLOCKED","ERROR",
   "SAFE","REVIEW","SENSITIVE_DATA_DETECTED","SECRET_DETECTED","FAILED_SECURITY_CHECK",
 ]);
-/** noTranslate=true is used by the Emails section's own rendering, which must keep
- * its current wording regardless of the dashboard language toggle. */
-function badge(value, noTranslate) {
+function badge(value) {
   const v = value && BADGES.has(value) ? value : "UNKNOWN";
-  return `<span class="badge b-${v}"><span class="g"></span>${esc(tBadgeLabel(value || "UNKNOWN", noTranslate))}</span>`;
+  return `<span class="badge b-${v}"><span class="g"></span>${esc(tBadgeLabel(value || "UNKNOWN"))}</span>`;
 }
 const DASH = '<span class="dim">—</span>';
 
@@ -101,17 +105,9 @@ function fmtCount(n) {
   return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
 }
 
-/** noTranslate=true is used by the Emails section's own rendering (Handoff
- * History), which must keep its current English wording regardless of language. */
-function timeAgo(ts, noTranslate) {
+function timeAgo(ts) {
   if (!ts) return "—";
   const s = Math.max(0, Date.now() / 1000 - ts);
-  if (noTranslate) {
-    if (s < 60) return Math.floor(s) + "s ago";
-    if (s < 3600) return Math.floor(s / 60) + "m ago";
-    if (s < 86400) return Math.floor(s / 3600) + "h ago";
-    return Math.floor(s / 86400) + "d ago";
-  }
   if (s < 60) return t("timeago_seconds", Math.floor(s));
   if (s < 3600) return t("timeago_minutes", Math.floor(s / 60));
   if (s < 86400) return t("timeago_hours", Math.floor(s / 3600));
@@ -193,26 +189,22 @@ document.getElementById("lockBtn").onclick = lock;
 
 /* ══════════════ navigation ══════════════ */
 
-// Translation-key pairs, looked up live at render time — Emails is deliberately
-// literal English (not keys), since that section's wording must never change.
+// Translation-key pairs, looked up live at render time.
 const VIEW_META = {
   overview: ["view_overview_title", "view_overview_sub"],
   flow:     ["view_flow_title", "view_flow_sub"],
   alerts:   ["view_alerts_title", "view_alerts_sub"],
   ai:       ["view_ai_title", "view_ai_sub"],
   "ai-visibility": ["view_aivis_title", "view_aivis_sub"],
-  emails:   null,   // rendered literally below — see updateViewHeader()
+  emails:   ["view_emails_title", "view_emails_sub"],
   logs:     ["view_logs_title", "view_logs_sub"],
   settings: ["view_settings_title", "view_settings_sub"],
   api:      ["view_api_title", "view_api_sub"],
 };
-const EMAILS_VIEW_HEADER = ["Emails", "Pending outbox awaiting delivery"];
-
 function updateViewHeader(name) {
-  const meta = VIEW_META[name];
-  const [title, sub] = meta ? [t(meta[0]), t(meta[1])] : EMAILS_VIEW_HEADER;
-  document.getElementById("viewTitle").textContent = title;
-  document.getElementById("viewSub").textContent = sub;
+  const meta = VIEW_META[name] || VIEW_META.overview;
+  document.getElementById("viewTitle").textContent = t(meta[0]);
+  document.getElementById("viewSub").textContent = t(meta[1]);
 }
 
 function showView(name) {
@@ -238,12 +230,13 @@ function showView(name) {
 
 /** Called by i18n.js's setLang() after the language changes. Re-renders whatever
  * the current tab already has cached, WITHOUT re-fetching from the network, except
- * where a fetch is cheap and already the normal render path (settings, api docs).
- * The Emails tab is deliberately excluded — its content never changes with language. */
+ * where a fetch is cheap and already the normal render path (settings, api docs). */
 function refreshCurrentViewTranslations() {
   updateViewHeader(state.view);
   renderCards();
   renderAlerts();
+  renderEmails();
+  renderHealth();
   if (state.view === "flow") renderFlow();
   if (state.view === "overview" && state.stats) {
     drawSeries(state.stats.series);
@@ -264,8 +257,19 @@ function refreshCurrentViewTranslations() {
   }
   if (state.view === "logs" && logState.res) renderLogs();
   if (state.view === "settings") loadSettings();
-  if (state.view === "api") renderApiDocs();
-  // state.view === "emails": intentionally does nothing.
+  // Built once at boot and not on tab switch, so it has to follow the toggle
+  // whichever tab is open (no network involved).
+  renderApiDocs();
+  if (state.view === "emails") {
+    if (state.delivery) renderDelivery(state.delivery);
+    if (state.serviceStatus) renderServiceStatus(state.serviceStatus);
+  }
+  // A modal built from the old language would otherwise stay in it until
+  // closed. The AI analysis modal is re-rendered in place above; any other open
+  // modal is cheap to rebuild from the server.
+  if (!state.openAiItem && state.reopenModal && document.getElementById("overlay").classList.contains("show")) {
+    state.reopenModal();
+  }
 }
 document.querySelectorAll("nav a.tab").forEach((a) => {
   // These are page navigation links, not a tablist. A real href gives them
@@ -326,10 +330,30 @@ function upsertJob(patch) {
   state.jobs.set(id, { ...(state.jobs.get(id) || { correlation_id: id }), ...patch });
 }
 
-/** The normalizer writes "UNKNOWN" for fields it could not find; show those as blank. */
+/** A field the alert actually carried. Absent fields are simply missing from the
+ * result; result files written before that change still hold "UNKNOWN"
+ * placeholders, which are treated as absent too. */
 function knownValue(v) {
-  return v && v !== "UNKNOWN" ? v : undefined;
+  return v !== null && v !== undefined && v !== "" && v !== "UNKNOWN" ? v : undefined;
 }
+
+/** "HOST (Server)", "HOST", or "Server" — whichever parts the alert carried. */
+function endpointLabel(a) {
+  const name = knownValue(a.endpoint_name), type = knownValue(a.endpoint_type);
+  return name && type ? `${name} (${type})` : name || type;
+}
+
+/** Handled / isolated, each half only when reported: "はい / いいえ", "はい", … */
+function handledIsolatedLabel(a) {
+  const parts = [knownValue(a.threat_handled), knownValue(a.isolation_status)];
+  if (!parts.some(Boolean)) return undefined;
+  return parts.map((v) => (v ? tBadgeLabel(v) : "—")).join(" / ");
+}
+
+/** A key/value row only when the value exists — absent fields get no row at all. */
+const kvRowIf = (k, v) => (knownValue(v) !== undefined ? kvRow(k, v) : "");
+const kvMonoRowIf = (k, v) => (knownValue(v) !== undefined
+  ? `<div>${esc(k)}</div><div class="mono">${esc(v)}</div>` : "");
 
 function jobFromRow(row) {
   const rp = row.raw_payload || {};
@@ -472,16 +496,16 @@ document.getElementById("alertRows").addEventListener("click", async (e) => {
 
 function renderEmails() {
   const es = state.emails;
-  document.getElementById("emailCount").textContent = es.length ? `${es.length} pending` : "";
+  document.getElementById("emailCount").textContent = es.length ? t("email_pending_count", es.length) : "";
   document.getElementById("emailsEmpty").style.display = es.length ? "none" : "block";
   document.getElementById("emailRows").innerHTML = es.map((m) => `
     <tr class="clickable" data-email="${esc(m.email_id)}">
-      <td>${badge(m.notification_type, true)}</td>
+      <td>${badge(m.notification_type)}</td>
       <td>${(m.to || []).length ? esc((m.to || []).join(", ")) : DASH}</td>
       <td>${esc(m.subject)}</td>
-      <td>${badge(m.risk_level, true)}</td>
+      <td>${badge(m.risk_level)}</td>
       <td class="muted">${m.created_at ? esc(fmtDateTime(m.created_at)) : "—"}</td>
-      <td><button class="small danger" data-del="${esc(m.email_id)}">Discard</button></td>
+      <td><button class="small danger" data-del="${esc(m.email_id)}">${esc(t("btn_discard"))}</button></td>
     </tr>`).join("");
   makeRowsFocusable(document.getElementById("emailRows"), "tr.clickable");
   renderCards();
@@ -495,8 +519,8 @@ document.getElementById("emailRows").addEventListener("click", async (e) => {
     try {
       await api(`/emails/${encodeURIComponent(del)}`, { method: "DELETE" });
       state.emails = state.emails.filter((m) => m.email_id !== del);
-      renderEmails(); toast("Email discarded");
-    } catch (err) { toast("Discard failed: " + err.message, true); e.target.disabled = false; }
+      renderEmails(); toast(t("toast_email_discarded"));
+    } catch (err) { toast(t("toast_discard_failed") + tBackendText(err.message), true); e.target.disabled = false; }
     return;
   }
   const tr = e.target.closest("tr[data-email]");
@@ -506,18 +530,19 @@ document.getElementById("emailRows").addEventListener("click", async (e) => {
 function openEmail(id) {
   const m = state.emails.find((x) => x.email_id === id);
   if (!m) return;
-  showModal("Queued Email", `
+  showModal(t("modal_queued_email"), `
     <div class="kv">
-      <div>Type</div><div>${badge(m.notification_type, true)}</div>
-      <div>To</div><div>${esc((m.to || []).join(", "))}</div>
-      <div>Subject</div><div>${esc(m.subject)}</div>
-      <div>Risk</div><div>${badge(m.risk_level, true)}</div>
-      <div>Endpoint</div><div>${esc(m.endpoint_name)}</div>
-      <div>Detection</div><div>${esc(m.detection_name)}</div>
-      <div>Correlation ID</div><div class="mono">${esc(m.correlation_id)}</div>
-      <div>Status</div><div>${badge(m.status, true)}</div>
+      <div>${esc(t("kv_type"))}</div><div>${badge(m.notification_type)}</div>
+      <div>${esc(t("kv_to"))}</div><div>${esc((m.to || []).join(", "))}</div>
+      <div>${esc(t("kv_subject"))}</div><div>${esc(m.subject)}</div>
+      <div>${esc(t("kv_risk"))}</div><div>${badge(m.risk_level)}</div>
+      ${m.endpoint_name ? kvRow(t("kv_endpoint"), m.endpoint_name) : ""}
+      ${m.detection_name ? kvRow(t("kv_detection"), m.detection_name) : ""}
+      <div>${esc(t("kv_correlation_id2"))}</div><div class="mono">${esc(m.correlation_id)}</div>
+      <div>${esc(t("kv_status2"))}</div><div>${badge(m.status)}</div>
     </div>
     <div class="notif">${esc(m.body)}</div>`);
+  state.reopenModal = () => openEmail(id);
 }
 
 /* ══════════════ mail delivery ══════════════ */
@@ -526,46 +551,50 @@ async function loadDelivery() {
   const filter = document.getElementById("deliveryFilter").value;
   try {
     const d = await api("/delivery" + (filter ? `?status=${encodeURIComponent(filter)}` : ""));
+    state.delivery = d;
     renderDelivery(d);
   } catch (e) { return; }
 
   try {
-    const svc = await api("/delivery/service-status");
-    const foot = document.getElementById("serviceStatus");
-    if (svc.available && svc.queue) {
-      const q = svc.queue;
-      foot.innerHTML = `Mail service queue — queued <strong>${esc(q.queued ?? 0)}</strong> · ` +
-        `sending <strong>${esc(q.sending ?? 0)}</strong> · sent <strong>${esc(q.sent ?? 0)}</strong> · ` +
-        `failed <strong>${esc(q.failed ?? 0)}</strong> <span class="dim">(delivery and retries are handled there)</span>`;
-    } else if (svc.reachable) {
-      // The service answered its health probe, so this is a configuration
-      // problem on our side, not an outage on theirs — say which, because the
-      // two have opposite fixes.
-      foot.innerHTML = `<span style="color:var(--text-warn)">●</span> ` +
-        `Mail service is up, but this platform could not read its queue: ${esc(svc.error || "unknown")}`;
-    } else {
-      foot.innerHTML = `<span style="color:var(--text-danger)">●</span> ` +
-        `Mail service unreachable: ${esc(svc.error || "unknown")}`;
-    }
+    state.serviceStatus = await api("/delivery/service-status");
+    renderServiceStatus(state.serviceStatus);
   } catch (e) { /* non-fatal */ }
+}
+
+function renderServiceStatus(svc) {
+  const foot = document.getElementById("serviceStatus");
+  if (svc.available && svc.queue) {
+    const q = svc.queue;
+    foot.innerHTML = t("mail_queue_status",
+      esc(q.queued ?? 0), esc(q.sending ?? 0), esc(q.sent ?? 0), esc(q.failed ?? 0));
+  } else if (svc.reachable) {
+    // The service answered its health probe, so this is a configuration
+    // problem on our side, not an outage on theirs — say which, because the
+    // two have opposite fixes.
+    foot.innerHTML = `<span style="color:var(--text-warn)">●</span> ` +
+      esc(t("mail_service_unreadable") + tBackendText(svc.error || t("health_unknown")));
+  } else {
+    foot.innerHTML = `<span style="color:var(--text-danger)">●</span> ` +
+      esc(t("mail_service_unreachable") + tBackendText(svc.error || t("health_unknown")));
+  }
 }
 
 function renderDelivery(d) {
   const cfg = d.config || {};
   const cfgEl = document.getElementById("deliveryConfig");
   if (!cfg.enabled) {
-    cfgEl.innerHTML = '<span style="color:var(--warning)">Delivery disabled</span> — set EMAIL_DELIVERY_ENABLED=true';
+    cfgEl.innerHTML = `<span style="color:var(--warning)">${esc(t("delivery_disabled"))}</span>${esc(t("delivery_disabled_hint"))}`;
   } else if (!cfg.configured) {
-    cfgEl.innerHTML = `<span style="color:var(--text-danger)">Not configured</span> — ${esc(cfg.reason)}`;
+    cfgEl.innerHTML = `<span style="color:var(--text-danger)">${esc(t("delivery_not_configured"))}</span> — ${esc(tBackendText(cfg.reason))}`;
   } else {
-    cfgEl.innerHTML = `<span style="color:var(--text-good)">●</span> ${esc(cfg.provider)} · ${esc(cfg.security_mode)} mode`;
+    cfgEl.innerHTML = `<span style="color:var(--text-good)">●</span> ${esc(t("delivery_mode", cfg.provider, cfg.security_mode))}`;
   }
 
   const c = d.counts || {};
   const cards = [
-    ["Awaiting Handoff", d.pending_in_outbox || 0],
-    ["Accepted", c.ACCEPTED || 0],
-    ["Failed", c.FAILED || 0],
+    [t("card_awaiting_handoff"), d.pending_in_outbox || 0],
+    [t("card_accepted"), c.ACCEPTED || 0],
+    [t("card_delivery_failed"), c.FAILED || 0],
   ];
   document.getElementById("deliveryCards").innerHTML = cards
     .map(([l, n]) => `<div class="card"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`)
@@ -575,13 +604,13 @@ function renderDelivery(d) {
   document.getElementById("deliveryEmpty").style.display = rows.length ? "none" : "block";
   document.getElementById("deliveryRows").innerHTML = rows.map((r) => `
     <tr>
-      <td>${badge(r.status, true)}</td>
-      <td>${badge(r.notification_type, true)}</td>
+      <td>${badge(r.status)}</td>
+      <td>${badge(r.notification_type)}</td>
       <td>${esc((r.recipients || []).join(", "))}</td>
       <td>${esc(r.subject)}</td>
       <td class="muted">${esc(r.attempts)}</td>
       <td class="mono muted">${r.remote_id ? "#" + esc(r.remote_id) : DASH}</td>
-      <td class="muted">${r.updated_at ? timeAgo(r.updated_at, true) : "—"}</td>
+      <td class="muted">${r.updated_at ? timeAgo(r.updated_at) : "—"}</td>
     </tr>`).join("");
 }
 
@@ -591,11 +620,11 @@ document.getElementById("dispatchNow").onclick = async (e) => {
   e.target.disabled = true;
   try {
     const r = await api("/delivery/dispatch", { method: "POST" });
-    if (r.skipped) toast(`Nothing sent: ${r.skipped}`, true);
-    else toast(`Accepted ${r.accepted} · failed ${r.failed} · still queued ${r.pending}`);
+    if (r.skipped) toast(t("toast_nothing_sent", tBackendText(r.skipped)), true);
+    else toast(t("toast_dispatch_result", r.accepted, r.failed, r.pending));
     await boot();
     loadDelivery();
-  } catch (err) { toast("Dispatch failed: " + err.message, true); }
+  } catch (err) { toast(t("toast_dispatch_failed") + tBackendText(err.message), true); }
   e.target.disabled = false;
 };
 
@@ -617,8 +646,8 @@ function renderAiContent() {
     <div class="aiitem" data-ai="${i}" data-ai-id="${esc(it.correlation_id)}">
       <div class="t">
         ${badge(it.risk_level)}
-        <strong>${esc(it.detection_name)}</strong>
-        <span class="muted">${esc(t("ai_on_endpoint", it.endpoint_name))}</span>
+        ${knownValue(it.detection_name) ? `<strong>${esc(it.detection_name)}</strong>` : ""}
+        ${knownValue(it.endpoint_name) ? `<span class="muted">${esc(t("ai_on_endpoint", it.endpoint_name))}</span>` : ""}
         <span class="muted mono" style="margin-left:auto">${esc(fmtDateTime(it.processed_at))}</span>
       </div>
       <div class="snip">${esc(aiSnippet(it.ai_output))}</div>
@@ -682,8 +711,12 @@ function aiSnippet(ai) {
   if (isFlatOutput(ai)) {
     return state_lang.current === "ja" ? ai.alert_summary_ja : (ai.engineer_summary_en || ai.alert_summary_ja);
   }
-  const legacy = engineerReport(ai).report.alert_summary;
-  return legacy || (ai && ai.client_notification_ja && ai.client_notification_ja.summary) || "";
+  const picked = engineerReport(ai);
+  const clientJa = ai && ai.client_notification_ja && ai.client_notification_ja.summary;
+  // A Japanese reader of an old result with only the English engineer report
+  // gets the (always Japanese) client summary instead of English.
+  if (picked.fallback && state_lang.current === "ja" && clientJa) return clientJa;
+  return picked.report.alert_summary || clientJa || "";
 }
 
 function engineerReport(ai) {
@@ -727,8 +760,7 @@ function flatAnalysisPanel(ai) {
         </div>
       </div>
 
-      <h4>${esc(t("ai_unknown_items"))}</h4>
-      ${aiList(ai.unknown_items)}
+      ${(ai.unknown_items || []).length ? `<h4>${esc(t("ai_unknown_items"))}</h4>${aiList(ai.unknown_items)}` : ""}
     </div>`;
 }
 
@@ -776,12 +808,19 @@ function analysisPanel(ai) {
  * shows in the AI Content modal, without duplicating it inline a third time. */
 function threatIntelBlock(ti) {
   if (!ti || !ti.virustotal || !ti.abuseipdb) return "";
-  return `<div class="intel-row">
-      <div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>
-      <div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>
-    </div>`;
+  // A provider the alert gave nothing to look up with (query "NONE",
+  // src/models/threat_intel.py: NO_INDICATOR_QUERY) has no verdict to show.
+  const ran = (r) => r.query !== "NONE";
+  const boxes = [];
+  if (ran(ti.virustotal)) {
+    boxes.push(`<div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
+        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>`);
+  }
+  if (ran(ti.abuseipdb)) {
+    boxes.push(`<div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
+        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>`);
+  }
+  return boxes.length ? `<div class="intel-row">${boxes.join("")}</div>` : "";
 }
 
 /* The alert the assessment was made from: the deterministic risk call and its
@@ -792,38 +831,35 @@ function threatIntelBlock(ti) {
 function alertContext(it) {
   const a = it.alert || {};
   let html = `<div class="kv">
-      ${kvRow(t("kv_detection"), a.detection_name)}
-      ${kvRow(t("kv_endpoint"), a.endpoint_name ? `${a.endpoint_name} (${a.endpoint_type})` : "")}
-      ${kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity))}
+      ${kvRowIf(t("kv_detection"), a.detection_name)}
+      ${kvRowIf(t("kv_endpoint"), endpointLabel(a))}
+      ${knownValue(a.severity) ? kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity)) : ""}
       <div>${esc(t("kv_risk_computed"))}</div><div>${badge(it.risk_level)}</div>
       ${riskFactorsRow(it.risk_factors, it.risk_rationale)}
-      ${kvRow(t("kv_handled_isolated"), `${tBadgeLabel(a.threat_handled)} / ${tBadgeLabel(a.isolation_status)}`)}
-      ${a.object_uri ? `<div>${esc(t("kv_object_uri"))}</div><div class="mono">${esc(a.object_uri)}</div>` : ""}
-      ${a.file_hash ? `<div>${esc(t("kv_file_hash"))}</div><div class="mono">${esc(a.file_hash)}</div>` : ""}
+      ${kvRowIf(t("kv_handled_isolated"), handledIsolatedLabel(a))}
+      ${kvMonoRowIf(t("kv_object_uri"), a.object_uri)}
+      ${kvMonoRowIf(t("kv_file_hash"), a.file_hash)}
     </div>`;
 
   if (it.ai_run) html += aiRunKv(it.ai_run);
 
-  const ti = it.threat_intel;
-  if (ti && ti.virustotal && ti.abuseipdb) {
-    html += `<div class="intel-row">
-      <div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>
-      <div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>
-    </div>`;
-  }
+  html += threatIntelBlock(it.threat_intel);
   return html;
 }
 
 function flatNotificationTabs(ai) {
   const bullets = (a) => (a || []).map((x) => `- ${x}`).join("\n");
+  // Mirrors src/services/email_composer.py: the section exists only when the AI
+  // listed something to confirm.
+  const confirm = ai.unknown_items || [];
   return [
     ["client-email", t("tab_client_email"), `件名: ${ai.email_subject_ja}\n\n${ai.email_body_ja}`],
     ["client", t("tab_client"), ai.client_notification_ja],
     ["internal", t("tab_internal"),
-      `${ai.internal_summary_ja}\n\n【推奨初動対応】\n${bullets(ai.recommended_initial_actions_ja)}\n\n【追加確認事項】\n${bullets(ai.additional_confirmation_items_ja)}\n\n【不明・要確認事項】\n${bullets(ai.unknown_items)}`],
-    ["engineer", t("tab_engineer"), `${ai.engineer_summary_en}\n\nUNKNOWN / NEEDS CONFIRMATION\n${bullets(ai.unknown_items)}`],
+      `${ai.internal_summary_ja}\n\n【推奨初動対応】\n${bullets(ai.recommended_initial_actions_ja)}\n\n【追加確認事項】\n${bullets(ai.additional_confirmation_items_ja)}` +
+      (confirm.length ? `\n\n【要確認事項】\n${bullets(confirm)}` : "")],
+    ["engineer", t("tab_engineer"),
+      ai.engineer_summary_en + (confirm.length ? `\n\nNEEDS CONFIRMATION\n${bullets(confirm)}` : "")],
     ["backlog", t("tab_backlog"), ai.backlog_comment_ja],
   ];
 }
@@ -840,11 +876,11 @@ function riskFactorsRow(factors, rationale) {
 /* Audit record of the AI call: which provider/model explained the alert, and the
  * provider's request ID for support/audit. */
 function aiRunKv(run) {
-  const usage = run.usage && run.usage.total_tokens ? ` · ${run.usage.total_tokens} tokens` : "";
+  const usage = run.usage && run.usage.total_tokens ? ` · ${t("kv_ai_tokens", run.usage.total_tokens)}` : "";
   return `<div class="kv" style="margin-top:8px">
       ${kvRow(t("kv_ai_model"), `${run.provider} / ${run.served_model || run.model}`)}
       ${kvRow(t("kv_ai_request_id"), run.request_id || "—")}
-      ${kvRow(t("kv_ai_run"), `${run.status} · ${run.attempts} ${t("kv_ai_attempts")} · ${fmtMs(run.duration_ms)}${usage} · prompt ${run.prompt_version}`)}
+      ${kvRow(t("kv_ai_run"), `${tBadgeLabel(run.status)} · ${run.attempts} ${t("kv_ai_attempts")} · ${fmtMs(run.duration_ms)}${usage} · ${t("kv_ai_prompt", run.prompt_version)}`)}
     </div>`;
 }
 
@@ -1108,7 +1144,7 @@ function renderAiTraceModal(tr) {
   // ds.context_used lists raw pipeline field names (technical identifiers) and stays
   // as-is, same as any other field-name value shown elsewhere in this modal.
   html += `<h4 style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("h_decision_summary"))}</h4>
-    <div class="notif">${esc(t("ds_task"))}: ${esc(tBackendText(ds.task) || tr.objective || "—")}
+    <div class="notif">${esc(t("ds_task"))}: ${esc(tBackendText(ds.task || tr.objective) || "—")}
 ${esc(t("ds_context"))}: ${esc((ds.context_used || []).join(", ") || "—")}
 ${esc(t("ds_decision"))}: ${esc(tBackendText(ds.decision) || "—")}
 ${esc(t("ds_confidence"))}: ${esc(tBackendText(ds.confidence) || t("fallback_not_available"))}
@@ -1146,7 +1182,8 @@ ${esc(t("ds_policy"))}: ${esc((ds.policy_checks || []).map((p) => tBackendText(p
     <p class="muted" style="font-size:12px;margin-top:0">${esc(t("redact_hint_intro"))}</p>
     ${aiRedactionFields(tr)}`;
 
-  showModal(`AI Trace — ${tr.trace_id}`, html);
+  showModal(t("modal_ai_trace", tr.trace_id), html);
+  state.reopenModal = () => renderAiTraceModal(tr);
 
   document.querySelectorAll("[data-redact-btn]").forEach((btn) => {
     btn.onclick = async () => {
@@ -1179,8 +1216,10 @@ function showModal(title, bodyHtml) {
   if (!overlay.classList.contains("show")) {
     state.modalReturnFocus = document.activeElement;
   }
-  // Any modal opening replaces whatever was open; openAiModal re-sets this.
+  // Any modal opening replaces whatever was open; openAiModal and the other
+  // openers re-set these after calling showModal.
   state.openAiItem = null;
+  state.reopenModal = null;
   const box = document.getElementById("modalBox");
   box.innerHTML = `
     <div class="head"><h3 id="modalTitle">${esc(title)}</h3><button class="small" id="closeModal">${esc(t("btn_close"))}</button></div>
@@ -1286,6 +1325,7 @@ function closeModal() {
   if (!document.getElementById("overlay").classList.contains("show")) return;
   document.getElementById("overlay").classList.remove("show");
   state.openAiItem = null;
+  state.reopenModal = null;
   // Put focus back where it was, so closing a modal does not dump a keyboard
   // user at the top of the document.
   const target = state.modalReturnFocus;
@@ -1324,41 +1364,36 @@ async function openAlert(id) {
       <div>${esc(t("kv_source"))}</div><div>${badge(job.source)}</div>
       ${kvRow(t("kv_created"), fmtDateTime(job.created_at * 1000))}
       ${kvRow(t("kv_updated"), fmtDateTime(job.updated_at * 1000))}
-      ${job.error ? `<div>${esc(t("kv_error2"))}</div><div style="color:var(--text-danger)">${esc(job.error)}</div>` : ""}
+      ${job.error ? `<div>${esc(t("kv_error2"))}</div><div style="color:var(--text-danger)">${esc(tBackendText(job.error))}</div>` : ""}
     </div>`;
 
   if (a) {
     html += `<div class="kv">
-      ${kvRow(t("kv_detection"), a.detection_name)}
-      ${kvRow(t("kv_endpoint"), `${a.endpoint_name} (${a.endpoint_type})`)}
-      ${kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity))}
+      ${kvRowIf(t("kv_detection"), a.detection_name)}
+      ${kvRowIf(t("kv_endpoint"), endpointLabel(a))}
+      ${knownValue(a.severity) ? kvRow(t("kv_severity_reported"), tBadgeLabel(a.severity)) : ""}
       <div>${esc(t("kv_risk_computed"))}</div><div>${badge(r.risk_level)}</div>
-      ${kvRow(t("kv_rationale"), tBackendText(r.risk_rationale))}
-      ${kvRow(t("kv_user"), a.user_name)}
-      ${kvRow(t("kv_os"), a.os_name)}
-      ${kvRow(t("kv_action_taken"), a.action_taken)}
-      ${kvRow(t("kv_handled_isolated"), `${tBadgeLabel(a.threat_handled)} / ${tBadgeLabel(a.isolation_status)}`)}
-      <div>${esc(t("kv_object_uri"))}</div><div class="mono">${esc(a.object_uri)}</div>
-      <div>${esc(t("kv_file_hash"))}</div><div class="mono">${esc(a.file_hash)}</div>
-      <div>${esc(t("kv_ip_domain"))}</div><div class="mono">${esc(a.ip_address)} / ${esc(a.domain)}</div>
+      ${riskFactorsRow(r.risk_factors, r.risk_rationale)}
+      ${kvRowIf(t("kv_user"), a.user_name)}
+      ${kvRowIf(t("kv_os"), a.os_name)}
+      ${kvRowIf(t("kv_action_taken"), a.action_taken)}
+      ${kvRowIf(t("kv_handled_isolated"), handledIsolatedLabel(a))}
+      ${kvMonoRowIf(t("kv_object_uri"), a.object_uri)}
+      ${kvMonoRowIf(t("kv_file_hash"), a.file_hash)}
+      ${kvMonoRowIf(t("field_url"), a.url)}
+      ${kvMonoRowIf(t("kv_ip_domain"),
+        [knownValue(a.ip_address), knownValue(a.domain)].filter(Boolean).join(" / "))}
     </div>`;
   }
 
-  if (r && r.threat_intel) {
-    const ti = r.threat_intel;
-    html += `<div class="intel-row">
-      <div class="intel-box"><h4>VirusTotal</h4>${badge(ti.virustotal.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.virustotal.positives)}/${esc(ti.virustotal.total)} ${esc(t("engines_flagged"))}</div></div>
-      <div class="intel-box"><h4>AbuseIPDB</h4>${badge(ti.abuseipdb.status)}
-        <div class="muted" style="margin-top:7px">${esc(ti.abuseipdb.abuse_confidence_score)}${esc(t("intel_confidence"))} · ${esc(ti.abuseipdb.total_reports)} ${esc(t("intel_reports"))}</div></div>
-    </div>`;
-  }
+  if (r) html += threatIntelBlock(r.threat_intel);
 
   html += r && r.ai_output
     ? notificationTabs(r.ai_output)
     : `<p class="muted">${esc(t("no_ai_output"))}</p>`;
 
   showModal(t("modal_alert_detail"), html);
+  state.reopenModal = () => openAlert(id);
 }
 
 /* job.raw_payload (from GET /jobs/{id}) is NOT literally the bytes that arrived
@@ -1413,6 +1448,7 @@ async function openRawPayload(id) {
 
   showModal(t("modal_raw_request"), rawPayloadHtml(originalRequestPayload(data.job)));
   wireRawPayloadCopy(document.getElementById("modalBox"));
+  state.reopenModal = () => openRawPayload(id);
 }
 
 /* ══════════════ logs ══════════════ */
@@ -1823,7 +1859,7 @@ async function loadSettings() {
     }
     document.getElementById("runtimeKv").innerHTML =
       Object.entries(s.runtime).map(([k, v]) =>
-        `<div>${esc(RUNTIME_KEY_I18N[k] ? t(RUNTIME_KEY_I18N[k]) : k.replace(/_/g, " "))}</div><div class="mono">${esc(v)}</div>`).join("");
+        `<div>${esc(RUNTIME_KEY_I18N[k] ? t(RUNTIME_KEY_I18N[k]) : k.replace(/_/g, " "))}</div><div class="mono">${esc(typeof v === "boolean" ? tBadgeLabel(String(v)) : v)}</div>`).join("");
     renderPosture(s.security || []);
     renderAiProvider(s.ai);
   } catch (e) { /* handled */ }
@@ -1956,27 +1992,36 @@ function renderApiDocs() {
 
 /* A health dot's only visual state is its colour, so the same fact is written
  * into aria-label as text — otherwise "is the database up?" is unanswerable
- * without colour vision. The service name is read from the markup so the two
- * can never drift apart. */
-const setDot = (id, ok) => {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.className = "dot " + (ok ? "ok" : "bad");
-  const name = (el.getAttribute("aria-label") || id).split(":")[0];
-  el.setAttribute("aria-label", `${name}: ${t(ok ? "health_ok" : "health_down")}`);
-  el.setAttribute("title", `${name}: ${t(ok ? "health_ok" : "health_down")}`);
-};
+ * without colour vision. The service name is the markup's data-health-name
+ * translation key, so it follows the language toggle. */
+const HEALTH_DOTS = ["dbDot", "aiDot", "dirDot", "udpDot", "tcpDot"];
+const healthState = {};   // dot id -> true | false; absent = not checked yet
+
+function renderHealth() {
+  for (const id of HEALTH_DOTS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const ok = healthState[id];
+    el.className = "dot" + (ok === undefined ? "" : ok ? " ok" : " bad");
+    const label = `${t(el.dataset.healthName)}: ${
+      ok === undefined ? t("health_unknown") : t(ok ? "health_ok" : "health_down")}`;
+    el.setAttribute("aria-label", label);
+    el.setAttribute("title", label);
+  }
+}
 
 async function loadHealth() {
   try {
     const h = await (await fetch("/health")).json();
-    setDot("dbDot", h.database?.status === "ok");
-    setDot("aiDot", h.ai_provider?.status === "configured");
-    setDot("dirDot", h.output_directory?.status === "ok");
-    setDot("udpDot", h.syslog_listener?.udp === "ok");
-    setDot("tcpDot", h.syslog_listener?.tcp === "ok");
+    healthState.dbDot = h.database?.status === "ok";
+    healthState.aiDot = h.ai_provider?.status === "configured";
+    healthState.dirDot = h.output_directory?.status === "ok";
+    healthState.udpDot = h.syslog_listener?.udp === "ok";
+    healthState.tcpDot = h.syslog_listener?.tcp === "ok";
   } catch (e) { /* transient */ }
+  renderHealth();
 }
+renderHealth();
 
 /* ══════════════ websocket ══════════════ */
 
@@ -2065,13 +2110,13 @@ function handleEvent(msg) {
     state.emails = state.emails.filter((m) => m.email_id !== d.email_id);
     renderEmails();
     if (state.view === "emails") loadDelivery();
-    toast(`Email accepted by mail service (#${d.remote_id ?? "?"})`);
+    toast(t("toast_email_accepted", d.remote_id ?? "?"));
 
   } else if (msg.type === "email_failed") {
     state.emails = state.emails.filter((m) => m.email_id !== d.email_id);
     renderEmails();
     if (state.view === "emails") loadDelivery();
-    toast(`Email handoff failed: ${d.error || "unknown error"}`, true);
+    toast(t("toast_email_failed", d.error ? tBackendText(d.error) : t("unknown_error")), true);
 
   } else if (msg.type === "ai_trace_started") {
     pushAiLiveEvent({ ts: d.started_at, type: "request_started", label: t("live_ai_request_started"),

@@ -41,8 +41,9 @@ class AIOutput(BaseModel):
                     "and what to prepare before responding to the client.",
     )
     engineer_summary_en: str = Field(
-        description="English technical summary for overseas engineers: detection, endpoint, "
-                    "indicators, handling status, risk basis, unknowns, and investigation pointers.",
+        description="English technical summary for overseas engineers: the reported detection, "
+                    "endpoint, indicators and handling status, the risk basis, points needing "
+                    "confirmation, and investigation pointers.",
     )
     recommended_initial_actions_ja: list[str] = Field(
         description="Japanese list of cautious, non-destructive initial actions. Any containment or "
@@ -52,8 +53,9 @@ class AIOutput(BaseModel):
         description="Japanese list of items that should be confirmed with the client or in ESET PROTECT.",
     )
     unknown_items: list[str] = Field(
-        description="Missing or unclear information, one entry per item, in the form "
-                    "'<field or topic>: Unknown' or '<field or topic>: Needs confirmation'.",
+        description="Reported information that is unclear, conflicting or needs verification, "
+                    "one entry per item, in the form '<field or topic>: Needs confirmation'. "
+                    "Never an entry for a field the alert simply did not include.",
     )
     backlog_comment_ja: str = Field(
         description="Japanese Backlog issue comment draft for tracking this alert.",

@@ -5,7 +5,7 @@ import httpx
 import structlog
 from src.services.threat_intel.base import BaseThreatIntelProvider
 from src.models.normalized_alert import NormalizedAlert
-from src.models.threat_intel import VirusTotalResult
+from src.models.threat_intel import NO_INDICATOR_QUERY, VirusTotalResult
 from src.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -64,7 +64,7 @@ class VirusTotalProvider(BaseThreatIntelProvider):
             
         if indicator_type is None:
             logger.debug("vt_no_indicator_found")
-            return VirusTotalResult(status="UNKNOWN", query="NONE")
+            return VirusTotalResult(status="UNKNOWN", query=NO_INDICATOR_QUERY)
             
         if settings.use_mock_threat_intel:
             return self._query_mock(indicator, indicator_type)

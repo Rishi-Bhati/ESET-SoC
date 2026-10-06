@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 import structlog
 from src.config import settings
+from src.models.normalized_alert import NormalizedAlert
 from src.storage import job_store, settings_store, delivery_store
 from src.services import email_outbox, email_dispatcher
 from src.services.email_delivery import get_provider
@@ -54,6 +55,26 @@ def _check_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing dashboard key")
 
 
+# Every NormalizedAlert field. A stored normalized_alert that carries all of them
+# was written before absent fields were omitted (src/models/normalized_alert.py).
+_ALERT_FIELDS = frozenset(NormalizedAlert.model_fields) - {"raw_payload"}
+
+
+def _reported_alert_fields(alert: Any) -> Any:
+    """
+    The stored normalized_alert with only the fields the alert reported.
+    Result files written before absent fields were omitted carry every field,
+    with the normalizer's "UNKNOWN" placeholder for the ones the sender never
+    sent; those placeholders are dropped here so the API does not present them
+    as reported values. Current result files already omit absent fields and
+    are returned unchanged.
+    """
+    if not isinstance(alert, dict) or not _ALERT_FIELDS <= alert.keys():
+        return alert
+    return {key: value for key, value in alert.items()
+            if key == "raw_payload" or value not in (None, "UNKNOWN")}
+
+
 @router.get("/jobs")
 async def get_jobs(request: Request, limit: int = 50, offset: int = 0, status: str | None = None) -> dict[str, Any]:
     _check_access(request)
@@ -77,6 +98,8 @@ async def get_job_detail(request: Request, correlation_id: str) -> dict[str, Any
         try:
             with open(output_path, "r", encoding="utf-8") as f:
                 result = json.load(f)
+            if isinstance(result, dict) and "normalized_alert" in result:
+                result["normalized_alert"] = _reported_alert_fields(result["normalized_alert"])
         except Exception as e:
             logger.warning("dashboard_job_detail_output_read_failed", error=str(e))
 
@@ -180,7 +203,7 @@ async def get_ai_content(request: Request, limit: int = 25) -> dict[str, Any]:
     for result in _read_results(limit * 3):
         if not result.get("ai_output"):
             continue
-        alert = result.get("normalized_alert", {})
+        alert = _reported_alert_fields(result.get("normalized_alert") or {})
         items.append({
             "correlation_id": result["correlation_id"],
             "processed_at": result.get("processed_at"),

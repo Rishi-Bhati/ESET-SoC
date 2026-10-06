@@ -4,7 +4,7 @@ import httpx
 import structlog
 from src.services.threat_intel.base import BaseThreatIntelProvider
 from src.models.normalized_alert import NormalizedAlert
-from src.models.threat_intel import AbuseIPDBResult
+from src.models.threat_intel import AbuseIPDBResult, NO_INDICATOR_QUERY
 from src.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -20,7 +20,7 @@ class AbuseIPDBProvider(BaseThreatIntelProvider):
         ip = alert.ip_address
         if not ip or ip == "UNKNOWN":
             logger.debug("abuseipdb_no_ip_found")
-            return AbuseIPDBResult(status="UNKNOWN", query="NONE")
+            return AbuseIPDBResult(status="UNKNOWN", query=NO_INDICATOR_QUERY)
             
         if settings.use_mock_threat_intel:
             return self._query_mock(ip)

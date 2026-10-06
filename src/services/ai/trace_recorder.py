@@ -147,10 +147,8 @@ def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) 
     """
     out: list[AIDataCategory] = []
     try:
-        dump = alert.model_dump(exclude={"raw_payload"})
-        for field, value in dump.items():
-            if value in (None, "", "UNKNOWN"):
-                continue
+        # Only the fields the alert reported — the same set ai/base.py sends.
+        for field, value in alert.present_fields().items():
             preview, _ = redact_value(str(value), f"normalized_alert.{field}")
             out.append(AIDataCategory(
                 category=_FIELD_CATEGORY.get(field, "Other"),
@@ -180,19 +178,23 @@ def build_alert_data_categories(alert: Any, risk_level: str, threat_intel: Any) 
             value_preview=risk_level,
         ))
 
+        # A provider with no indicator to look up is not sent (see ai/base.py).
         ti = threat_intel.model_dump()
-        out.append(AIDataCategory(
-            category="Retrieved data (third-party)", field="threat_intelligence.virustotal",
-            origin="VirusTotal lookup, pre-fetched by the pipeline before the AI call "
-                   "(src/services/threat_intel/virustotal.py)",
-            value_preview=f"status={ti['virustotal']['status']}",
-        ))
-        out.append(AIDataCategory(
-            category="Retrieved data (third-party)", field="threat_intelligence.abuseipdb",
-            origin="AbuseIPDB lookup, pre-fetched by the pipeline before the AI call "
-                   "(src/services/threat_intel/abuseipdb.py)",
-            value_preview=f"status={ti['abuseipdb']['status']}",
-        ))
+        looked_up = threat_intel.looked_up_providers()
+        if "virustotal" in looked_up:
+            out.append(AIDataCategory(
+                category="Retrieved data (third-party)", field="threat_intelligence.virustotal",
+                origin="VirusTotal lookup, pre-fetched by the pipeline before the AI call "
+                       "(src/services/threat_intel/virustotal.py)",
+                value_preview=f"status={ti['virustotal']['status']}",
+            ))
+        if "abuseipdb" in looked_up:
+            out.append(AIDataCategory(
+                category="Retrieved data (third-party)", field="threat_intelligence.abuseipdb",
+                origin="AbuseIPDB lookup, pre-fetched by the pipeline before the AI call "
+                       "(src/services/threat_intel/abuseipdb.py)",
+                value_preview=f"status={ti['abuseipdb']['status']}",
+            ))
     except Exception as e:
         logger.warning("ai_trace_categorize_failed", error=str(e))
     return out

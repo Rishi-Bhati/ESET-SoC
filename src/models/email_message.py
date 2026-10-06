@@ -14,7 +14,8 @@ class EmailMessage(BaseModel):
     subject: str
     body: str
     risk_level: str
-    endpoint_name: str
-    detection_name: str
+    # None when the alert did not report it (never a placeholder).
+    endpoint_name: str | None = None
+    detection_name: str | None = None
     created_at: str
     status: str = Field(default="PENDING")  # forward-compat with real sending later

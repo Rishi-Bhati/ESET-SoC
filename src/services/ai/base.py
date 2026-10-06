@@ -61,11 +61,14 @@ SCHEMA_NAME = "eset_soc_notification"
 # Honest, explicit notes about what every integration does and does not send,
 # surfaced verbatim in the AI Visibility trace detail (Data Flow section).
 CONTEXT_NOTES = [
+    "normalized_alert carries only the fields the submitted alert actually contained. "
+    "A field the sender did not include is left out entirely, never sent as a "
+    "placeholder such as 'UNKNOWN', so the model is not prompted to report it.",
     "original_submitted_payload (the original JSON exactly as submitted to the ingest "
     "route, masked and length-capped the same way normalized_alert is) is included "
     "alongside normalized_alert. This platform accepts alerts in any JSON shape, not "
-    "only ESET's field names, so normalized_alert can legitimately read 'UNKNOWN' for "
-    "a field a sender reported under a different key.",
+    "only ESET's field names, so a fact can be in the payload under a key the field "
+    "mapping did not recognize.",
     "predefined_risk (level, rationale and the rules that fired) is computed by the "
     "rule engine before this call. The model is asked to explain it, and the output "
     "schema only admits that one level.",
@@ -170,11 +173,6 @@ class ConnectionCheck:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-def unknown_fields(alert: NormalizedAlert) -> list[str]:
-    return [name for name, value in alert.model_dump(exclude={"raw_payload", "source"}).items()
-            if value == "UNKNOWN"]
-
-
 class BaseAIProvider(ABC):
     """
     Subclasses set the class attributes and implement `_invoke()`; they may
@@ -228,7 +226,9 @@ class BaseAIProvider(ABC):
         risk_factors: list[dict[str, Any]], threat_intel: ThreatIntelResult,
     ) -> tuple[dict[str, Any], str, list[str], list[str]]:
         """(prompt_data, user_prompt, masked_fields, truncated_fields)"""
-        normalized, truncated = _truncate_free_text(alert.model_dump(exclude={"raw_payload"}))
+        # Only the fields the alert actually reported: an absent field is not
+        # sent at all, so the model has no placeholder to repeat as "Unknown".
+        normalized, truncated = _truncate_free_text(alert.present_fields())
         masked: list[str] = []
         if settings.ai_masking_enabled:
             normalized, masked = mask_alert_for_prompt(normalized)
@@ -239,14 +239,18 @@ class BaseAIProvider(ABC):
         original, raw_truncated = _truncate_free_text(original)
         truncated += [f"original_submitted_payload.{p}" for p in raw_truncated]
 
-        if settings.use_mock_threat_intel:
+        # A provider the alert gave no indicator to (no hash, URL or IP) is left
+        # out: it has no verdict, and an UNKNOWN one would be echoed back as a fact.
+        looked_up = threat_intel.looked_up_providers()
+        intel: dict[str, Any] | None = None
+        if looked_up and settings.use_mock_threat_intel:
             # Simulated verdicts are demo data, not facts: sent as such, the model
             # would report "VirusTotal: clean" to the client.
             intel = {"status": "NOT_CHECKED",
                      "note": "Threat-intelligence lookups are not enabled in this environment; "
                              "no VirusTotal or AbuseIPDB verdict is available."}
-        else:
-            intel, intel_truncated = _truncate_free_text(threat_intel.model_dump())
+        elif looked_up:
+            intel, intel_truncated = _truncate_free_text(threat_intel.model_dump(include=set(looked_up)))
             truncated += [f"threat_intelligence.{p}" for p in intel_truncated]
 
         predefined_risk, risk_truncated = _truncate_free_text({
@@ -262,13 +266,13 @@ class BaseAIProvider(ABC):
         })
         truncated += [f"predefined_risk.{p}" for p in risk_truncated]
 
-        prompt_data = {
+        prompt_data: dict[str, Any] = {
             "predefined_risk": predefined_risk,
             "normalized_alert": normalized,
             "original_submitted_payload": original,
-            "threat_intelligence": intel,
-            "unknown_fields": unknown_fields(alert),
         }
+        if intel is not None:
+            prompt_data["threat_intelligence"] = intel
 
         # The payload is fenced in an explicit delimiter block rather than pasted
         # in as bare JSON: every field inside it originates with whatever an

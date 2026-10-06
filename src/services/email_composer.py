@@ -6,15 +6,16 @@ Two paths:
 * compose_emails() — the AI output is present and passed validation. Four
   audience-specific emails are built from its fields:
     CLIENT_JA   (Mac Systems)     the AI-drafted client email: email_subject_ja / email_body_ja
-    CTHREE_JA   (C-Three Index)   review request: the client draft plus risk reason,
-                                  confirmation items and unknowns, for front-office review
+    CTHREE_JA   (C-Three Index)   review request: the client draft plus risk reason and
+                                  confirmation items, for front-office review
     INTERNAL_JA (our team)        internal summary, initial actions, open items, Backlog draft
     ENGINEER_EN (our engineers)   English technical summary plus the rule engine's factors
 
 * compose_fallback_emails() — the AI call failed or its output was blocked.
   The alert is still recorded, and our own team (INTERNAL_JA, ENGINEER_EN) is
   told so with a deterministic template built only from the normalized alert
-  and the rule engine's decision. Nothing goes to the client or C-Three on
+  and the rule engine's decision. Only the alert fields the raw request
+  actually carried are listed; an absent field gets no row at all. Nothing goes to the client or C-Three on
   this path: client-facing text without the AI draft would need a human to
   write it anyway.
 
@@ -23,6 +24,7 @@ the .env values (see src/storage/settings_store.py).
 """
 from datetime import datetime, timezone
 import structlog
+from src.models.normalized_alert import NormalizedAlert
 from src.models.pipeline_result import PipelineResult
 from src.models.email_message import EmailMessage
 from src.storage import settings_store
@@ -36,9 +38,16 @@ def _parse_recipients(raw: str) -> list[str]:
     return [addr.strip() for addr in raw.split(",") if addr.strip()]
 
 
-def _subject(result: PipelineResult) -> str:
+def _alert_label(result: PipelineResult) -> str:
+    """'<detection> — <endpoint>' from whichever of the two the alert reported.
+    Falls back to the correlation ID, never to a placeholder for the names."""
     alert = result.normalized_alert
-    return f"[{result.risk_level}] {alert.detection_name} — {alert.endpoint_name}"
+    names = [name for name in (alert.detection_name, alert.endpoint_name) if name]
+    return " — ".join(names) or result.correlation_id
+
+
+def _subject(result: PipelineResult) -> str:
+    return f"[{result.risk_level}] {_alert_label(result)}"
 
 
 def _bullets(items: list[str]) -> str:
@@ -64,6 +73,13 @@ def _client_body(result: PipelineResult) -> str:
     return result.ai_output.email_body_ja.strip()
 
 
+def _optional_section(heading: str, items: list[str]) -> str:
+    """A bulleted section, or nothing at all when there is nothing to list —
+    an empty section would read as a field with no value."""
+    cleaned = [item for item in items if item and item.strip()]
+    return f"{heading}\n{_bullets(cleaned)}\n\n" if cleaned else ""
+
+
 def _cthree_body(result: PipelineResult) -> str:
     ai = result.ai_output
     return (
@@ -72,7 +88,7 @@ def _cthree_body(result: PipelineResult) -> str:
         f"【概要】\n{ai.alert_summary_ja}\n\n"
         f"【リスク判定の理由】\n{ai.risk_reason_ja}\n\n"
         f"【クライアントへの追加確認事項】\n{_bullets(ai.additional_confirmation_items_ja)}\n\n"
-        f"【不明・要確認事項】\n{_bullets(ai.unknown_items)}\n\n"
+        f"{_optional_section('【要確認事項】', ai.unknown_items)}"
         "―――― クライアント向けメール案 ――――\n"
         f"件名: {_client_subject(result)}\n\n"
         f"{ai.email_body_ja.strip()}"
@@ -87,7 +103,7 @@ def _internal_body(result: PipelineResult) -> str:
         f"【リスク判定の理由】\n{ai.risk_reason_ja}\n\n"
         f"【推奨初動対応】\n{_bullets(ai.recommended_initial_actions_ja)}\n\n"
         f"【追加確認事項】\n{_bullets(ai.additional_confirmation_items_ja)}\n\n"
-        f"【不明・要確認事項】\n{_bullets(ai.unknown_items)}\n\n"
+        f"{_optional_section('【要確認事項】', ai.unknown_items)}"
         f"【クライアント向け通知文】\n{ai.client_notification_ja}\n\n"
         f"【Backlogコメント案】\n{ai.backlog_comment_ja}\n\n"
         f"相関ID: {result.correlation_id}"
@@ -100,7 +116,7 @@ def _engineer_body(result: PipelineResult) -> str:
         f"{ai.engineer_summary_en}\n\n"
         f"RISK LEVEL: {result.risk_level} (rule-based)\n"
         f"RULES APPLIED:\n{_factor_lines(result)}\n\n"
-        f"UNKNOWN / NEEDS CONFIRMATION:\n{_bullets(ai.unknown_items)}\n\n"
+        f"{_optional_section('NEEDS CONFIRMATION:', ai.unknown_items)}"
         f"Correlation ID: {result.correlation_id}"
     )
 
@@ -114,15 +130,25 @@ _NOTIFICATION_SPECS = [
 ]
 
 
-def _alert_fact_lines(result: PipelineResult) -> str:
+def _endpoint_fact(a: NormalizedAlert) -> str | None:
+    if a.endpoint_name and a.endpoint_type:
+        return f"{a.endpoint_name} ({a.endpoint_type})"
+    return a.endpoint_name or a.endpoint_type
+
+
+def _alert_facts_section(result: PipelineResult, heading: str) -> str:
+    """One row per fact the alert actually reported — an absent field gets no
+    row, not an "UNKNOWN" one — or nothing when it reported none of them."""
     a = result.normalized_alert
     rows = [
-        ("Detection", a.detection_name), ("Endpoint", f"{a.endpoint_name} ({a.endpoint_type})"),
+        ("Detection", a.detection_name), ("Endpoint", _endpoint_fact(a)),
         ("Occurred at", a.occurred_at), ("ESET severity", a.severity), ("Action taken", a.action_taken),
         ("Threat handled", a.threat_handled), ("Isolated", a.isolation_status),
-        ("Object", a.object_uri), ("File hash", a.file_hash), ("IP", a.ip_address), ("Domain", a.domain),
+        ("Object", a.object_uri), ("File hash", a.file_hash), ("URL", a.url),
+        ("IP", a.ip_address), ("Domain", a.domain),
     ]
-    return "\n".join(f"- {label}: {value}" for label, value in rows)
+    lines = [f"- {label}: {value}" for label, value in rows if value and value.strip()]
+    return f"{heading}\n" + "\n".join(lines) + "\n\n" if lines else ""
 
 
 def _ai_failure_reason(result: PipelineResult) -> str:
@@ -146,7 +172,7 @@ def _fallback_internal_body(result: PipelineResult) -> str:
         "ダッシュボードで内容を確認のうえ、対応をお願いいたします。\n\n"
         f"【リスクレベル】{result.risk_level}（ルールベース判定）\n\n"
         f"【リスク判定の根拠】\n{_factor_lines(result)}\n\n"
-        f"【アラート情報】\n{_alert_fact_lines(result)}\n\n"
+        f"{_alert_facts_section(result, '【アラート情報】')}"
         f"【AI生成失敗の理由】\n{_ai_failure_reason(result)}\n\n"
         f"相関ID: {result.correlation_id}"
     )
@@ -158,15 +184,14 @@ def _fallback_engineer_body(result: PipelineResult) -> str:
         "no client notification was sent. Review it in the dashboard.\n\n"
         f"RISK LEVEL: {result.risk_level} (rule-based)\n"
         f"RULES APPLIED:\n{_factor_lines(result)}\n\n"
-        f"ALERT FACTS:\n{_alert_fact_lines(result)}\n\n"
+        f"{_alert_facts_section(result, 'ALERT FACTS:')}"
         f"AI FAILURE: {_ai_failure_reason(result)}\n\n"
         f"Correlation ID: {result.correlation_id}"
     )
 
 
 def _fallback_subject(result: PipelineResult) -> str:
-    alert = result.normalized_alert
-    return f"[{result.risk_level}][AI要約生成失敗] {alert.detection_name} — {alert.endpoint_name}"
+    return f"[{result.risk_level}][AI要約生成失敗] {_alert_label(result)}"
 
 
 _FALLBACK_SPECS = [
