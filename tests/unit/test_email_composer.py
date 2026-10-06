@@ -130,6 +130,75 @@ async def test_no_emails_without_ai_output(all_recipients):
     assert await email_composer.compose_emails(_result(status="FAILED", ai=False)) == []
 
 
+# --------------------------- only the fields the alert reported ---------------------------
+
+def _minimal_result(alert: NormalizedAlert, ai=True, **ai_overrides) -> PipelineResult:
+    return PipelineResult(
+        correlation_id="cid-min", source="WEBHOOK",
+        received_at="2026-01-01T00:00:00Z", processed_at="2026-01-01T00:00:05Z",
+        pipeline_status="SUCCESS" if ai else "PARTIAL", normalized_alert=alert,
+        risk_level="HIGH", risk_rationale="Alert severity is HIGH and the threat is not reported as handled.",
+        ai_output=sample_output("HIGH", **ai_overrides) if ai else None,
+        ai_run=None if ai else AIRunMetadata(
+            provider="openai", model="gpt-test", prompt_version="v2.2", status="FAILED", error_type="Timeout"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_lists_only_the_reported_alert_facts(all_recipients):
+    alert = NormalizedAlert(source="WEBHOOK", detection_name="Win32/Agent.X", severity="HIGH")
+    internal, engineer = await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False))
+    for body in (internal.body, engineer.body):
+        assert "- Detection: Win32/Agent.X" in body and "- ESET severity: HIGH" in body
+        for absent in ("Endpoint", "Occurred at", "Action taken", "Threat handled", "Isolated",
+                       "Object", "File hash", "URL", "- IP", "Domain"):
+            assert absent not in body, absent
+        assert "UNKNOWN" not in body and "Unknown" not in body and "None" not in body
+    assert engineer.subject == "[HIGH][AI要約生成失敗] Win32/Agent.X"
+    assert engineer.endpoint_name is None and engineer.detection_name == "Win32/Agent.X"
+
+
+@pytest.mark.asyncio
+async def test_reported_false_is_shown_but_absent_is_not(all_recipients):
+    alert = NormalizedAlert(detection_name="Win32/Agent.X", threat_handled="false")
+    _, engineer = await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False))
+    assert "- Threat handled: false" in engineer.body
+    assert "Isolated" not in engineer.body
+
+
+@pytest.mark.asyncio
+async def test_endpoint_row_has_no_placeholder_for_a_missing_type(all_recipients):
+    alert = NormalizedAlert(endpoint_name="HOST-01")
+    _, engineer = await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False))
+    assert "- Endpoint: HOST-01\n" in engineer.body
+
+
+@pytest.mark.asyncio
+async def test_alert_with_no_recognized_fields_has_no_facts_section(all_recipients):
+    internal, engineer = await email_composer.compose_fallback_emails(_minimal_result(NormalizedAlert(), ai=False))
+    assert "ALERT FACTS" not in engineer.body and "【アラート情報】" not in internal.body
+    # The subject never carries a placeholder for the missing names.
+    assert engineer.subject == "[HIGH][AI要約生成失敗] cid-min"
+
+
+@pytest.mark.asyncio
+async def test_subjects_use_only_the_reported_names(all_recipients):
+    alert = NormalizedAlert(endpoint_name="HOST-01")
+    emails = {e.notification_type: e for e in await email_composer.compose_emails(_minimal_result(alert))}
+    assert emails["ENGINEER_EN"].subject == "[HIGH] HOST-01"
+    assert emails["ENGINEER_EN"].detection_name is None
+
+
+@pytest.mark.asyncio
+async def test_empty_confirmation_list_adds_no_section(all_recipients):
+    result = _minimal_result(NormalizedAlert(detection_name="Win32/Agent.X"), unknown_items=[])
+    emails = {e.notification_type: e.body for e in await email_composer.compose_emails(result)}
+    assert "NEEDS CONFIRMATION" not in emails["ENGINEER_EN"]
+    assert "【要確認事項】" not in emails["INTERNAL_JA"] and "【要確認事項】" not in emails["CTHREE_JA"]
+    for body in emails.values():
+        assert "不明" not in body and "Unknown" not in body and "UNKNOWN" not in body
+
+
 # --------------------------- outbox persistence ---------------------------
 
 @pytest.fixture

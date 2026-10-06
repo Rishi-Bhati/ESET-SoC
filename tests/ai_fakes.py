@@ -24,7 +24,7 @@ def sample_output(risk_level: str = "HIGH", detection: str = "Win32/Test.Threat"
         engineer_summary_en=f"[MOCK] Technical summary for {detection}.",
         recommended_initial_actions_ja=["ESET PROTECT で検知内容を確認する"],
         additional_confirmation_items_ja=["端末利用者への状況確認"],
-        unknown_items=["file_hash: Unknown"],
+        unknown_items=["action_taken: Needs confirmation"],
         backlog_comment_ja=f"【{risk_level}】{detection} を検知。確認中。",
         email_subject_ja=f"【{risk_level}】セキュリティアラートのご報告",
         email_body_ja="お世話になっております。セキュリティアラートについてご報告いたします。",
@@ -41,7 +41,7 @@ def prompt_data(request: ProviderRequest) -> dict[str, Any]:
 
 def default_responder(request: ProviderRequest) -> ProviderResponse:
     risk = request.json_schema["properties"]["risk_level"]["enum"][0]
-    detection = prompt_data(request)["normalized_alert"]["detection_name"]
+    detection = prompt_data(request)["normalized_alert"].get("detection_name", "Win32/Test.Threat")
     return ProviderResponse(
         text=sample_output(risk, detection).model_dump_json(),
         request_id="req_mock_0001", response_id="chatcmpl-mock-0001", served_model="mock-model-2026",

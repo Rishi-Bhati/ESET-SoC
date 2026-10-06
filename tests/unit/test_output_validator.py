@@ -35,3 +35,28 @@ def test_unknown_items_may_be_empty():
 def test_prohibited_claims_are_rejected():
     output = sample_output("HIGH", client_notification_ja="ご安心ください。環境は安全です。")
     assert "prohibited_phrase: 環境は安全です" in validate_ai_output(output, "HIGH")
+
+
+def test_simplified_chinese_characters_are_rejected():
+    # 检 / 测 / 应 are simplified-Chinese forms of 検 / 測 / 応 — never valid Japanese.
+    output = sample_output("HIGH", alert_summary_ja="ESETが脅威を检测しました。対应をお願いします。")
+    issues = validate_ai_output(output, "HIGH")
+    assert "non_japanese_characters: alert_summary_ja contains 检测应" in issues
+
+
+def test_chinese_characters_in_list_fields_are_rejected():
+    output = sample_output("HIGH", recommended_initial_actions_ja=["端末の状态を確認する"])
+    assert any(i.startswith("non_japanese_characters: recommended_initial_actions_ja")
+               for i in validate_ai_output(output, "HIGH"))
+
+
+def test_ordinary_japanese_kanji_pass():
+    output = sample_output("HIGH", alert_summary_ja="髙橋様の端末で検出された脅威への対応状況を確認しています。")
+    assert validate_ai_output(output, "HIGH") == []
+
+
+def test_characters_quoted_verbatim_from_the_alert_are_allowed():
+    # A host name or path from the alert is kept as-is, whatever its script.
+    output = sample_output("HIGH", alert_summary_ja="端末「财务-PC」で脅威が検出されました。")
+    assert any(i.startswith("non_japanese_characters") for i in validate_ai_output(output, "HIGH"))
+    assert validate_ai_output(output, "HIGH", source_text='{"endpoint_name": "财务-PC"}') == []

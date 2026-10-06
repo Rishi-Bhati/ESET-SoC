@@ -143,7 +143,7 @@ function renderFlow() {
     // Lane header: correlation id + source + risk
     const head = el("text", {
       x: FLOW.padL, y: yTop - 8, fill: "var(--muted)", "font-size": "10.5",
-      "font-family": "ui-monospace,SFMono-Regular,Menlo,monospace",
+      style: "font-family:var(--font-mono)",
     });
     head.textContent =
       `${run.correlation_id.slice(0, 8)}  ${run.source ? tBadgeLabel(run.source) : ""}` +
@@ -199,7 +199,7 @@ function renderFlow() {
       // stage-detail modal, so nothing is lost by shortening it here.
       let sub = st === "waiting" ? "—" : tPipelineState(st);
       if (info && info.detail) {
-        const detailJa = tBackendText(info.detail);
+        const detailJa = tStageDetail(stage, info.detail);
         sub = fitText(detailJa, FLOW.nodeW - 10, 9.5);
       }
       g.appendChild(el("text", {
@@ -209,7 +209,7 @@ function renderFlow() {
 
       if (info) {
         const title = el("title");
-        title.textContent = `${STAGE_LABEL[stage]} — ${tPipelineState(info.state)}${info.detail ? "\n" + tBackendText(info.detail) : ""}`;
+        title.textContent = `${STAGE_LABEL[stage]} — ${tPipelineState(info.state)}${info.detail ? "\n" + tStageDetail(stage, info.detail) : ""}`;
         g.appendChild(title);
       }
       g.addEventListener("click", () => openStageDetail(run, stage));
@@ -268,21 +268,16 @@ function ingestStageBody(job) {
 function normalizeStageBody(result) {
   if (!result || !result.normalized_alert) return stageNotReached();
   const a = result.normalized_alert;
-  let unknownCount = 0;
-  const rows = NORMALIZED_FIELD_ORDER.map((field) => {
-    const value = a[field];
-    const isUnknown = value === "UNKNOWN" || value === null || value === undefined || value === "";
-    if (isUnknown) unknownCount++;
+  // Only the fields the alert actually carried — an absent field is not a row.
+  const rows = NORMALIZED_FIELD_ORDER.filter((field) => knownValue(a[field]) !== undefined).map((field) => {
     const labelKey = NORMALIZED_FIELD_LABEL_KEY[field] || field;
-    return `<div>${esc(t(labelKey))}</div><div>${
-      isUnknown ? `<span class="dim">${esc(tBadgeLabel("UNKNOWN"))}</span>`
-                : `<span class="mono">${esc(value)}</span>`}</div>`;
+    const value = ["threat_handled", "isolation_status"].includes(field) ? tBadgeLabel(a[field]) : a[field];
+    return `<div>${esc(t(labelKey))}</div><div><span class="mono">${esc(value)}</span></div>`;
   }).join("");
 
   return `
     <p class="muted" style="font-size:11.5px;margin:0 0 10px">${esc(t("stage_normalize_desc"))}</p>
-    <div class="kv">${rows}</div>
-    ${unknownCount ? `<p class="muted" style="font-size:11.5px">${esc(t("stage_normalize_unknown_note", unknownCount))}</p>` : ""}`;
+    ${rows ? `<div class="kv">${rows}</div>` : `<p class="muted">${esc(t("stage_normalize_empty"))}</p>`}`;
 }
 
 function riskStageBody(result) {
@@ -332,7 +327,7 @@ function lintStageBody(job, info) {
       <div>${esc(t("kv_state"))}</div><div>${badge(stageBadgeKey(info.state))}</div>
     </div>
     ${failed && job && job.error
-        ? `<p style="color:var(--text-danger);font-size:12.5px">${esc(job.error)}</p>`
+        ? `<p style="color:var(--text-danger);font-size:12.5px">${esc(tBackendText(job.error))}</p>`
         : `<p class="muted">${esc(t("stage_lint_pass"))}</p>`}`;
 }
 
@@ -364,7 +359,7 @@ async function fetchDeliveries(correlationId) {
 function emailStageBodyFromDeliveries(deliveries) {
   const rows = deliveries.map((d) => `
     <tr>
-      <td>${badge(d.notification_type, true)}</td>
+      <td>${badge(d.notification_type)}</td>
       <td>${esc((d.recipients || []).join(", "))}</td>
       <td>${badge(d.status)}</td>
     </tr>`).join("");
@@ -412,7 +407,7 @@ async function openStageDetail(run, stage) {
     case "OUTPUT": body = outputStageBody(run.correlation_id, result); break;
     case "EMAIL":
     case "SEND": body = await emailStageBody(run.correlation_id); break;
-    default: body = info && info.detail ? `<p class="muted">${esc(tBackendText(info.detail))}</p>` : stageNotReached();
+    default: body = info && info.detail ? `<p class="muted">${esc(tStageDetail(stage, info.detail))}</p>` : stageNotReached();
   }
 
   showModal(title, `${stateLine}${body}
@@ -422,6 +417,7 @@ async function openStageDetail(run, stage) {
   if (btn) btn.onclick = () => openAlert(run.correlation_id);
 
   wireRawPayloadCopy(document.getElementById("modalBox"));
+  state.reopenModal = () => openStageDetail(run, stage);
 
   const viewFullAi = document.getElementById("stageViewFullAi");
   if (viewFullAi && result) {
@@ -539,6 +535,7 @@ async function openAlertTimeline(id) {
     <button class="small" id="openFullAlert" style="margin-top:14px">${esc(t("stage_open_alert"))}</button>`;
 
   showModal(t("modal_alert_timeline"), html);
+  state.reopenModal = () => openAlertTimeline(id);
 
   const btn = document.getElementById("openFullAlert");
   if (btn) btn.onclick = () => openAlert(id);

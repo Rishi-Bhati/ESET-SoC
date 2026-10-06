@@ -95,16 +95,18 @@ def _raise_to(current: str, floor: str) -> str:
 
 
 def _handled(alert: NormalizedAlert) -> str:
-    """'true' | 'false' | 'unknown'"""
-    value = alert.threat_handled.strip().lower()
-    return value if value in ("true", "false") else "unknown"
+    """'true' | 'false' | 'not_reported'. A threat_handled the alert did not carry
+    (or carried in an unrecognized form) is neutral: never read as 'false', and
+    never as 'true' either."""
+    value = (alert.threat_handled or "").strip().lower()
+    return value if value in ("true", "false") else "not_reported"
 
 
 def _base_level(alert: NormalizedAlert) -> tuple[str, RiskFactor]:
-    reported = alert.severity.strip().upper()
+    reported = (alert.severity or "").strip().upper()
     severity = _SEVERITY_ALIASES.get(reported, reported)
     handled = _handled(alert)
-    isolated = alert.isolation_status.strip().lower() == "true"
+    isolated = (alert.isolation_status or "").strip().lower() == "true"
 
     if severity == "CRITICAL":
         return "CRITICAL", RiskFactor("severity_critical", "base",
@@ -120,7 +122,7 @@ def _base_level(alert: NormalizedAlert) -> tuple[str, RiskFactor]:
         return "HIGH", RiskFactor("severity_high_unhandled", "base",
             "Alert severity is HIGH and the threat is not handled."
             if handled == "false" else
-            "Alert severity is HIGH and whether the threat was handled is unknown.")
+            "Alert severity is HIGH and the threat is not reported as handled.")
 
     if severity == "MEDIUM":
         if handled == "true":
@@ -129,7 +131,7 @@ def _base_level(alert: NormalizedAlert) -> tuple[str, RiskFactor]:
         return "MEDIUM", RiskFactor("severity_medium_unhandled", "base",
             "Alert severity is MEDIUM and the threat has not been handled."
             if handled == "false" else
-            "Alert severity is MEDIUM and whether the threat was handled is unknown.")
+            "Alert severity is MEDIUM and the threat is not reported as handled.")
 
     if severity == "LOW":
         if handled == "true":
@@ -138,7 +140,14 @@ def _base_level(alert: NormalizedAlert) -> tuple[str, RiskFactor]:
         return "MEDIUM", RiskFactor("severity_low_not_confirmed_handled", "base",
             "Alert severity is LOW, but the threat is not handled."
             if handled == "false" else
-            "Alert severity is LOW, but whether the threat was handled is unknown, so it needs confirmation.")
+            "Alert severity is LOW, but the threat is not reported as handled, so it needs confirmation.")
+
+    if not reported:
+        # Not reported at all: the safety default applies, and the rationale says
+        # so without presenting the absent severity as a value.
+        logger.info("risk_engine_severity_not_reported")
+        return "MEDIUM", RiskFactor("severity_unknown", "base",
+            "The alert does not report a severity. Applying the MEDIUM risk safety default.")
 
     logger.warning("risk_engine_unknown_severity", severity=alert.severity)
     return "MEDIUM", RiskFactor("severity_unknown", "base",
@@ -147,7 +156,7 @@ def _base_level(alert: NormalizedAlert) -> tuple[str, RiskFactor]:
 
 def _text_fields(alert: NormalizedAlert) -> str:
     return " ".join(v for v in (alert.detection_name, alert.event_type, alert.raw_subject, alert.raw_content)
-                    if v and v != "UNKNOWN")
+                    if v)
 
 
 def reported_endpoint_count(alert: NormalizedAlert) -> int:
@@ -156,7 +165,7 @@ def reported_endpoint_count(alert: NormalizedAlert) -> int:
     payload: Any = alert.raw_payload if isinstance(alert.raw_payload, dict) else {}
     lower = {str(k).lower(): v for k, v in payload.items()}
     names: set[str] = set()
-    if alert.endpoint_name and alert.endpoint_name != "UNKNOWN":
+    if alert.endpoint_name and alert.endpoint_name.strip():
         names.add(alert.endpoint_name.strip().lower())
     for key in _AFFECTED_LIST_KEYS:
         value = lower.get(key)
@@ -178,13 +187,13 @@ def reported_endpoint_count(alert: NormalizedAlert) -> int:
 
 def is_important_endpoint(alert: NormalizedAlert) -> str | None:
     """Why the endpoint counts as important, or None."""
-    endpoint_type = alert.endpoint_type.strip().lower()
-    if endpoint_type and endpoint_type != "unknown":
+    endpoint_type = (alert.endpoint_type or "").strip().lower()
+    if endpoint_type:
         for word in (w.strip().lower() for w in settings.important_endpoint_types.split(",")):
             if word and word in endpoint_type:
                 return f"endpoint type '{alert.endpoint_type}'"
-    name = alert.endpoint_name.strip()
-    if name and name != "UNKNOWN":
+    name = (alert.endpoint_name or "").strip()
+    if name:
         for pattern in (p.strip() for p in settings.important_endpoint_patterns.split(",")):
             if pattern and fnmatch.fnmatch(name.lower(), pattern.lower()):
                 return f"endpoint name '{name}' matches important-asset pattern '{pattern}'"

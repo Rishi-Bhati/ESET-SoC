@@ -164,3 +164,29 @@ def test_every_decision_is_explained():
 def test_severity_aliases():
     assert compute_risk(NormalizedAlert(severity="Warning", threat_handled="true"))[0] == "LOW"
     assert compute_risk(NormalizedAlert(severity="information", threat_handled="true"))[0] == "LOW"
+
+
+# --------------------------- fields the alert did not report ---------------------------
+
+def test_missing_threat_handled_is_neutral_not_false():
+    # The level matches the unhandled case (nothing says it was handled), but the
+    # rationale must not claim the threat was reported as unhandled...
+    level, rationale = compute_risk(NormalizedAlert(severity="HIGH"))
+    assert level == "HIGH"
+    assert "not handled." not in rationale
+    # ...and must never surface as an "unknown" field in the text the AI and the
+    # emails are built from.
+    assert "unknown" not in rationale.lower()
+
+
+def test_missing_severity_uses_the_safety_default_without_inventing_a_value():
+    level, rationale = compute_risk(NormalizedAlert())
+    assert level == "MEDIUM"
+    assert "None" not in rationale and "unknown" not in rationale.lower()
+    assert "does not report a severity" in rationale
+
+
+def test_assess_risk_handles_an_alert_with_no_fields_at_all():
+    assessment = assess_risk(NormalizedAlert(), _intel())
+    assert assessment.level == "MEDIUM"
+    assert [f.rule for f in assessment.factors] == ["severity_unknown"]

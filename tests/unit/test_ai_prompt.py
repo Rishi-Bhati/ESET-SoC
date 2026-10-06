@@ -16,13 +16,12 @@ from ai_fakes import FakeProvider, prompt_data
 def _sample_alert(**overrides) -> NormalizedAlert:
     data = dict(
         source="ESET_PROTECT_CLOUD", event_type="Threat Detection", alert_id="alert-mask-1",
-        detection_uuid="0f8fad5b-d9cb-469f-a165-70867728950e", target_uuid="UNKNOWN",
+        detection_uuid="0f8fad5b-d9cb-469f-a165-70867728950e",
         occurred_at="2026-01-01T00:00:00Z", severity="HIGH",
         detection_name="Win32/TrojanDownloader.Agent.YHV", endpoint_name="FINANCE-PC-09",
         endpoint_type="Server", user_name="charlie.brown", os_name="Windows Server 2022",
         action_taken="Connection terminated", threat_handled="false", isolation_status="false",
         object_type="Process", object_uri=r"C:\Users\charlie.brown\AppData\Local\Temp\evil.exe",
-        file_hash="UNKNOWN", url="UNKNOWN", ip_address="UNKNOWN", domain="UNKNOWN",
         raw_subject="Alert", raw_content="Reported by it-admin@client.example for CORP\\charlie.brown",
         raw_payload={"user": "charlie.brown", "email": "charlie.brown@client.example", "tenant_id": "T-9912"},
     )
@@ -69,7 +68,28 @@ async def test_prompt_carries_the_predefined_risk_and_the_rules_behind_it():
     _, request = await _run(risk="HIGH", risk_rationale="Alert severity is HIGH.", risk_factors=factors)
     data = prompt_data(request)
     assert data["predefined_risk"] == {"level": "HIGH", "rationale": "Alert severity is HIGH.", "risk_factors": factors}
-    assert "file_hash" in data["unknown_fields"]
+
+
+async def test_prompt_carries_only_the_fields_the_alert_reported():
+    alert = NormalizedAlert(source="WEBHOOK", detection_name="Win32/Agent.X", severity="HIGH",
+                            raw_payload={"detection_name": "Win32/Agent.X", "severity": "HIGH"})
+    _, request = await _run(alert=alert, intel=ThreatIntelResult(
+        virustotal=VirusTotalResult(query="NONE"), abuseipdb=AbuseIPDBResult(query="NONE")))
+    data = prompt_data(request)
+    assert data["normalized_alert"] == {"source": "WEBHOOK", "detection_name": "Win32/Agent.X", "severity": "HIGH"}
+    # No list of "missing" fields, and no verdict block for lookups that never ran.
+    assert set(data) == {"predefined_risk", "normalized_alert", "original_submitted_payload"}
+    assert "UNKNOWN" not in request.user_prompt and "Unknown" not in request.user_prompt
+    for absent in ("threat_handled", "isolation_status", "endpoint_name", "file_hash", "user_name"):
+        assert absent not in request.user_prompt
+
+
+async def test_prompt_includes_only_the_threat_intel_lookups_that_ran(monkeypatch):
+    monkeypatch.setattr(settings, "use_mock_threat_intel", False)
+    intel = ThreatIntelResult(virustotal=VirusTotalResult(status="CLEAN", query="abc123"),
+                              abuseipdb=AbuseIPDBResult(query="NONE"))
+    _, request = await _run(intel=intel)
+    assert set(prompt_data(request)["threat_intelligence"]) == {"virustotal"}
 
 
 async def test_schema_pins_risk_level_to_the_rule_engine_value():
@@ -114,6 +134,15 @@ def test_system_prompt_states_the_clients_rules():
     for phrase in ("re-assess", "infection is confirmed", "data leakage", "safe",
                    "destructive", "invent eset fields", "unknown", "needs confirmation"):
         assert phrase in lowered, phrase
+
+
+def test_system_prompt_does_not_ask_for_absent_fields_to_be_reported_as_unknown():
+    assert "unknown_fields" not in SYSTEM_PROMPT
+    assert "<field or topic>: Unknown" not in SYSTEM_PROMPT
+    assert "write 「不明」 or 「要確認」" not in SYSTEM_PROMPT
+    # ...and explicitly tells the model to leave them out.
+    assert "simply not part of the alert" in SYSTEM_PROMPT
+    assert "Never add an entry for a field merely because the alert did not include it" in SYSTEM_PROMPT
 
 
 async def test_system_prompt_is_sent_as_its_own_message():

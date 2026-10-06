@@ -9,14 +9,14 @@ from src.config import settings
 from src.storage.database import db_session
 
 
-async def record_and_count(correlation_id: str, detection_name: str, endpoint_name: str) -> int:
+async def record_and_count(correlation_id: str, detection_name: str | None, endpoint_name: str | None) -> int:
     """
     Records this alert's sighting and returns how many distinct endpoints the
     same detection has been seen on within the window, this one included.
-    Returns 1 when either name is unknown — an unnamed detection or endpoint
-    cannot be correlated.
+    Returns 1 when the alert did not report either name — an unnamed detection
+    or endpoint cannot be correlated.
     """
-    if not detection_name or detection_name == "UNKNOWN" or not endpoint_name or endpoint_name == "UNKNOWN":
+    if not (detection_name or "").strip() or not (endpoint_name or "").strip():
         return 1
     now = time.time()
     since = now - settings.outbreak_window_seconds

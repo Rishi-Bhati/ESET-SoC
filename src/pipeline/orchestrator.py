@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 import structlog
 from src.config import settings
@@ -35,6 +36,14 @@ def _unbuilt_provider_metadata(error: Exception) -> AIRunMetadata:
         error_type="ConfigurationError",
         error=str(error)[:300],
     )
+
+
+def _normalize_detail(alert: NormalizedAlert) -> str | None:
+    """'<detection> on <endpoint>' from whichever of the two the alert reported;
+    None (no detail) when it reported neither, rather than a placeholder."""
+    if alert.detection_name and alert.endpoint_name:
+        return f"{alert.detection_name} on {alert.endpoint_name}"
+    return alert.detection_name or alert.endpoint_name
 
 
 async def _compose_notifications(correlation_id: str, result: PipelineResult, *, fallback: bool) -> list:
@@ -107,17 +116,18 @@ async def process_alert_pipeline(correlation_id: str, raw_payload: dict, source:
         await events.emit_stage(correlation_id, "NORMALIZE", "active")
         raw = EsetRawPayload(**raw_payload)
         alert = normalizer.normalize(raw, source)
-        await events.emit_stage(
-            correlation_id, "NORMALIZE", "ok",
-            detail=f"{alert.detection_name} on {alert.endpoint_name}",
-        )
+        await events.emit_stage(correlation_id, "NORMALIZE", "ok", detail=_normalize_detail(alert))
 
         # Step 2: External threat intelligence — an input to the risk rules
         await events.emit_stage(correlation_id, "INTEL", "active")
         intel = await gather_threat_intel(alert)
+        # Only the lookups the alert gave us something to look up with — a
+        # provider with no indicator has no verdict, not an UNKNOWN one.
+        looked_up = {"virustotal": "VirusTotal", "abuseipdb": "AbuseIPDB"}
         await events.emit_stage(
             correlation_id, "INTEL", "ok",
-            detail=f"VirusTotal {intel.virustotal.status} · AbuseIPDB {intel.abuseipdb.status}",
+            detail=" · ".join(f"{looked_up[name]} {getattr(intel, name).status}"
+                              for name in intel.looked_up_providers()) or "No indicators to look up",
         )
 
         # Step 3: Rule-based risk assessment. The only place risk is decided.
@@ -192,7 +202,9 @@ async def process_alert_pipeline(correlation_id: str, raw_payload: dict, source:
     # nothing empty, no prohibited claims (src/services/ai/output_validator.py).
     if ai_output is not None:
         await events.emit_stage(correlation_id, "LINT", "active")
-        issues = validate_ai_output(ai_output, risk_level)
+        # The alert's own text is passed so values quoted from it verbatim (a host
+        # name or path in any script) are not mistaken for Chinese-only output.
+        issues = validate_ai_output(ai_output, risk_level, source_text=json.dumps(raw_payload, ensure_ascii=False))
         if issues:
             ai_run.status = "BLOCKED"
             ai_run.validation_issues = issues

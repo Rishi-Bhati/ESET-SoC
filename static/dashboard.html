@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESET SOC Lite — Control Dashboard</title>
+<title>ESET SOC Lite — コントロールダッシュボード</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c8cff'/%3E%3Cpath d='M16 5.5 25 9.2v6.6c0 5.4-3.6 9.6-9 11.2-5.4-1.6-9-5.8-9-11.2V9.2Z' fill='%230a0c18'/%3E%3Cpath d='m11.8 15.6 3 3 5.4-5.6' stroke='%237c8cff' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   /* ══════════════════════════════════════════════════════════════════════════
@@ -108,7 +108,8 @@
            "Noto Sans JP","Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI",
            Meiryo,"Noto Sans CJK JP",sans-serif;
     --font-mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,
-                "Liberation Mono","Noto Sans Mono",monospace;
+                "Liberation Mono","Noto Sans Mono","Noto Sans JP","Hiragino Kaku Gothic ProN",
+                "Yu Gothic UI",Meiryo,"Noto Sans CJK JP",monospace;
   }
 
   /* Auto light mode: only when the visitor has not made an explicit choice yet
@@ -675,6 +676,13 @@
         document.documentElement.setAttribute("data-theme", saved);
       }
     } catch (e) { /* localStorage unavailable (private mode, etc.) — CSS media query still applies */ }
+    // Same for the language: <html lang> picks the CJK font fallback, so it has
+    // to be right before first paint. With lang="en" (or unset) browsers on a
+    // Chinese-locale system fall back to a Chinese font, and kanji are drawn
+    // with Chinese glyph shapes. Japanese is the default (see i18n.js).
+    try {
+      document.documentElement.lang = localStorage.getItem("soc_lite_lang") === "en" ? "en" : "ja";
+    } catch (e) { /* storage blocked — keep the lang="ja" default */ }
   })();
 </script>
 </head>
@@ -710,8 +718,7 @@
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="ai"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.2 13.9 9 19.8 10.9 13.9 12.8 12 18.6 10.1 12.8 4.2 10.9 10.1 9Z"/><path d="M18.5 16.4 19.2 18.4 21.2 19.1 19.2 19.8 18.5 21.8 17.8 19.8 15.8 19.1 17.8 18.4Z"/></svg><span data-i18n="nav_ai">AI Content</span></a>
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="ai-visibility"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 12S5.8 5.4 12 5.4 21.8 12 21.8 12 18.2 18.6 12 18.6 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg><span data-i18n="nav_ai_visibility">AI Visibility</span><span class="count" id="cAiAlerts">0</span></a>
     <div class="navgroup" data-i18n="navgroup_ops">Operations</div>
-    <!-- Emails: label intentionally NOT translated — the Emails section/content must not change with the language toggle. -->
-    <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="emails"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2.2"/><path d="m3.2 6.8 7.6 5.4a2 2 0 0 0 2.4 0l7.6-5.4"/></svg>Emails<span class="count" id="cEmails">0</span></a>
+    <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="emails"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2.2"/><path d="m3.2 6.8 7.6 5.4a2 2 0 0 0 2.4 0l7.6-5.4"/></svg><span data-i18n="nav_emails">Emails</span><span class="count" id="cEmails">0</span></a>
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="logs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h10"/><path d="M4 12h16"/><path d="M4 17.5h12"/></svg><span data-i18n="nav_logs">Logs</span></a>
     <div class="navgroup" data-i18n="navgroup_system">System</div>
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h4"/><path d="M12 17h8"/><circle cx="10" cy="17" r="2"/></svg><span data-i18n="nav_settings">Settings</span></a>
@@ -724,8 +731,8 @@
   <main>
     <header class="top">
       <div>
-        <h2 id="viewTitle">Overview</h2>
-        <div class="sub" id="viewSub">Live pipeline status</div>
+        <h2 id="viewTitle" data-i18n="view_overview_title">Overview</h2>
+        <div class="sub" id="viewSub" data-i18n="view_overview_sub">Live pipeline status</div>
       </div>
       <div class="right">
       <div class="health">
@@ -734,20 +741,20 @@
              green — the header would claim the live feed was down when it was not.
              dashboard.js owns this text and re-renders it from state.wsState. -->
         <span id="wsLabel">connecting…</span></span>
-        <span class="pill"><span class="dot" id="dbDot" role="img" aria-label="Database: unknown"></span>DB</span>
-        <span class="pill"><span class="dot" id="aiDot" role="img" aria-label="AI provider: unknown"></span>AI</span>
-        <span class="pill"><span class="dot" id="dirDot" role="img" aria-label="Output storage: unknown"></span><span data-i18n="pill_storage">Storage</span></span>
-        <span class="pill"><span class="dot" id="udpDot" role="img" aria-label="Syslog UDP: unknown"></span>UDP</span>
-        <span class="pill"><span class="dot" id="tcpDot" role="img" aria-label="Syslog TCP: unknown"></span>TCP</span>
+        <span class="pill"><span class="dot" id="dbDot" role="img" data-health-name="health_name_db" aria-label="Database: unknown"></span><span data-i18n="pill_db">DB</span></span>
+        <span class="pill"><span class="dot" id="aiDot" role="img" data-health-name="health_name_ai" aria-label="AI provider: unknown"></span>AI</span>
+        <span class="pill"><span class="dot" id="dirDot" role="img" data-health-name="health_name_storage" aria-label="Output storage: unknown"></span><span data-i18n="pill_storage">Storage</span></span>
+        <span class="pill"><span class="dot" id="udpDot" role="img" data-health-name="health_name_udp" aria-label="Syslog UDP: unknown"></span>UDP</span>
+        <span class="pill"><span class="dot" id="tcpDot" role="img" data-health-name="health_name_tcp" aria-label="Syslog TCP: unknown"></span>TCP</span>
       </div>
         <button class="small" id="refreshBtn" data-i18n="btn_refresh">Refresh</button>
-        <div class="seg" role="group" aria-label="Language">
+        <div class="seg" role="group" aria-label="Language" data-i18n-aria-label="aria_language">
           <button class="small primary" id="langBtnJa">日本語</button>
           <button class="small" id="langBtnEn">EN</button>
         </div>
-        <div class="seg" role="group" aria-label="Theme">
-          <button class="small" id="themeBtnDark" type="button" title="Dark mode" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.1A8.6 8.6 0 0 1 9.9 3.5 8.6 8.6 0 1 0 20.5 14.1Z"/></svg><span data-i18n="theme_dark">Dark</span></button>
-          <button class="small" id="themeBtnLight" type="button" title="Light mode" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.2M12 19.2v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.6 12h2.2M19.2 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/></svg><span data-i18n="theme_light">Light</span></button>
+        <div class="seg" role="group" aria-label="Theme" data-i18n-aria-label="aria_theme">
+          <button class="small" id="themeBtnDark" type="button" title="Dark mode" data-i18n-title="title_theme_dark" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.1A8.6 8.6 0 0 1 9.9 3.5 8.6 8.6 0 1 0 20.5 14.1Z"/></svg><span data-i18n="theme_dark">Dark</span></button>
+          <button class="small" id="themeBtnLight" type="button" title="Light mode" data-i18n-title="title_theme_light" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.2M12 19.2v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.6 12h2.2M19.2 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/></svg><span data-i18n="theme_light">Light</span></button>
         </div>
       </div>
     </header>
@@ -921,54 +928,54 @@
     <section class="view" id="view-emails">
       <div class="panel">
         <div class="head">
-          <h3>Mail Delivery</h3>
+          <h3 data-i18n="panel_mail_delivery">Mail Delivery</h3>
           <div class="row">
             <span class="muted" style="font-size:11.5px" id="deliveryConfig"></span>
-            <button class="small primary" id="dispatchNow">Send queued now</button>
+            <button class="small primary" id="dispatchNow" data-i18n="btn_dispatch_now">Send queued now</button>
           </div>
         </div>
         <div class="body">
           <div class="cards" id="deliveryCards" style="margin-bottom:0"></div>
         </div>
-        <div class="foot" id="serviceStatus">Checking mail service…</div>
+        <div class="foot" id="serviceStatus" data-i18n="mail_checking">Checking mail service…</div>
       </div>
 
       <div class="panel">
         <div class="head">
-          <h3>Email Outbox — Awaiting Handoff</h3>
+          <h3 data-i18n="panel_outbox">Email Outbox — Awaiting Handoff</h3>
           <span class="muted mono" id="emailCount"></span>
         </div>
         <div class="scroll">
           <table>
             <thead><tr>
-              <th>Type</th><th>To</th><th>Subject</th><th>Risk</th><th>Created</th><th></th>
+              <th data-i18n="th_type">Type</th><th data-i18n="th_to">To</th><th data-i18n="th_subject">Subject</th><th data-i18n="th_risk">Risk</th><th data-i18n="th_created">Created</th><th></th>
             </tr></thead>
             <tbody id="emailRows"></tbody>
           </table>
-          <div class="empty" id="emailsEmpty">Outbox is empty — everything composed so far has been handed to the mail service.</div>
+          <div class="empty" id="emailsEmpty" data-i18n="outbox_empty">Outbox is empty — everything composed so far has been handed to the mail service.</div>
         </div>
-        <div class="foot">These are waiting to be handed over. Once accepted (HTTP 202) the mail service owns delivery and its own retries.</div>
+        <div class="foot" data-i18n="outbox_foot">These are waiting to be handed over. Once accepted (HTTP 202) the mail service owns delivery and its own retries.</div>
       </div>
 
       <div class="panel">
         <div class="head">
-          <h3>Handoff History</h3>
+          <h3 data-i18n="panel_handoff_history">Handoff History</h3>
           <select id="deliveryFilter" style="width:auto">
-            <option value="">All</option>
-            <option value="ACCEPTED">Accepted</option>
-            <option value="PENDING">Pending</option>
-            <option value="FAILED">Failed</option>
+            <option value="" data-i18n="opt_all">All</option>
+            <option value="ACCEPTED" data-i18n="opt_accepted">Accepted</option>
+            <option value="PENDING" data-i18n="opt_pending">Pending</option>
+            <option value="FAILED" data-i18n="opt_failed">Failed</option>
           </select>
         </div>
         <div class="scroll">
           <table>
             <thead><tr>
-              <th>State</th><th>Type</th><th>To</th><th>Subject</th>
-              <th>Attempts</th><th>Service ID</th><th>Updated</th>
+              <th data-i18n="th_state">State</th><th data-i18n="th_type">Type</th><th data-i18n="th_to">To</th><th data-i18n="th_subject">Subject</th>
+              <th data-i18n="th_attempts">Attempts</th><th data-i18n="th_service_id">Service ID</th><th data-i18n="th_updated">Updated</th>
             </tr></thead>
             <tbody id="deliveryRows"></tbody>
           </table>
-          <div class="empty" id="deliveryEmpty">No emails have been handed off yet.</div>
+          <div class="empty" id="deliveryEmpty" data-i18n="delivery_empty">No emails have been handed off yet.</div>
         </div>
       </div>
     </section>
@@ -1041,22 +1048,22 @@
         <div class="body">
           <div class="grid2 pair">
             <div class="field">
-              <label><span data-i18n="label_client">Client notification (JA)</span><span class="srcbadge" id="src-client">env</span></label>
+              <label><span data-i18n="label_client">Client notification (JA)</span><span class="srcbadge" id="src-client" data-i18n="src_from_env">env</span></label>
               <input id="in-client" placeholder="client@example.com, other@example.com">
               <div class="hint" data-i18n="hint_client">Customer-facing summary and required confirmations.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_cthree">C-Three front office (JA)</span><span class="srcbadge" id="src-cthree">env</span></label>
+              <label><span data-i18n="label_cthree">C-Three front office (JA)</span><span class="srcbadge" id="src-cthree" data-i18n="src_from_env">env</span></label>
               <input id="in-cthree" placeholder="frontoffice@example.com">
               <div class="hint" data-i18n="hint_cthree">Coordination notes plus a drafted client reply.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_internal">Internal team (JA)</span><span class="srcbadge" id="src-internal">env</span></label>
+              <label><span data-i18n="label_internal">Internal team (JA)</span><span class="srcbadge" id="src-internal" data-i18n="src_from_env">env</span></label>
               <input id="in-internal" placeholder="soc-internal@example.com">
               <div class="hint" data-i18n="hint_internal">Detailed assessment and recommended actions.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_engineer">Engineer (EN)</span><span class="srcbadge" id="src-engineer">env</span></label>
+              <label><span data-i18n="label_engineer">Engineer (EN)</span><span class="srcbadge" id="src-engineer" data-i18n="src_from_env">env</span></label>
               <input id="in-engineer" placeholder="engineering@example.com">
               <div class="hint" data-i18n="hint_engineer">Technical breakdown, unknowns, investigation items.</div>
             </div>
@@ -1124,7 +1131,7 @@
             <tr><td class="mono">affected_endpoints / endpoint_count</td><td data-i18n="eff_multi_endpoint">The same detection on several endpoints makes the alert CRITICAL</td></tr>
           </tbody>
         </table>
-        <div class="foot"><span data-i18n="foot_unknown">Anything omitted normalizes to</span> <span class="mono">UNKNOWN</span> <span data-i18n="foot_unknown_2">rather than being invented.</span></div>
+        <div class="foot" data-i18n="foot_absent_fields">Fields the request does not include are left out entirely — never guessed or filled with a default, and never added to the AI input, the summaries or the emails.</div>
       </div>
       <div class="panel">
         <div class="head"><h3 data-i18n="panel_dashboard_api">Dashboard API</h3></div>

@@ -17,15 +17,37 @@ def test_normalize_basic_conversion():
     assert alert.threat_handled == "true"
     assert alert.isolation_status == "false"
     assert alert.file_hash == "abcde"
-    assert alert.endpoint_name == "UNKNOWN"
+    assert alert.endpoint_name is None
 
 def test_normalize_missing_threat_handled():
     raw = EsetRawPayload(alert_id="456")
     alert = normalize(raw, "SYSLOG")
     
     assert alert.source == "SYSLOG"
-    assert alert.threat_handled == "UNKNOWN"
-    assert alert.isolation_status == "UNKNOWN"
+    # Not reported is not the same as false.
+    assert alert.threat_handled is None
+    assert alert.isolation_status is None
+
+
+def test_normalize_keeps_only_the_fields_the_request_carried():
+    submitted = {"detection_name": "Win32/Agent.X", "severity": "HIGH", "threat_handled": False}
+    raw = EsetRawPayload(raw_payload=submitted, **submitted)
+    alert = normalize(raw, "WEBHOOK")
+    assert alert.present_fields() == {
+        "source": "WEBHOOK", "severity": "HIGH", "detection_name": "Win32/Agent.X",
+        "threat_handled": "false",
+    }
+    dumped = alert.model_dump(exclude={"raw_payload"})
+    assert set(dumped) == {"source", "severity", "detection_name", "threat_handled"}
+    assert "UNKNOWN" not in alert.model_dump_json()
+
+
+def test_normalize_treats_blank_values_as_absent():
+    submitted = {"detection_name": "   ", "endpoint_name": "", "threat_handled": "  ", "severity": "LOW"}
+    raw = EsetRawPayload(raw_payload=submitted, **submitted)
+    alert = normalize(raw, "WEBHOOK")
+    assert alert.detection_name is None and alert.endpoint_name is None and alert.threat_handled is None
+    assert alert.severity == "LOW"
 
 
 # --------------------------- arbitrary/non-ESET-shaped JSON ---------------------------
@@ -33,7 +55,7 @@ def test_normalize_missing_threat_handled():
 # fields, EsetRawPayload has extra="allow") — a sender is not required to match
 # ESET's own field names. These cover the alias-resolution fallback in normalize()
 # that reads the ORIGINAL submitted JSON for common alternate key names before
-# giving up and marking a field "UNKNOWN".
+# leaving a field absent.
 
 def test_normalize_resolves_common_aliases_from_raw_payload():
     # raw_payload is set explicitly here to match what the ingestion handlers
@@ -72,13 +94,14 @@ def test_normalize_exact_field_wins_over_alias():
     assert alert.detection_name == "Real.Detection"
 
 
-def test_normalize_unrecognized_shape_falls_back_to_unknown():
+def test_normalize_unrecognized_shape_leaves_fields_absent():
     # A payload with no recognizable field name at all — the deterministic risk
     # engine's MEDIUM safety default (src/services/risk_engine.py) is what carries
-    # this case, not normalize() inventing a guess.
+    # this case, not normalize() inventing a guess or a placeholder.
     submitted = {"nonsense_key": "nonsense_value"}
     raw = EsetRawPayload(raw_payload=submitted, **submitted)
     alert = normalize(raw, "WEBHOOK")
-    assert alert.severity == "UNKNOWN"
-    assert alert.detection_name == "UNKNOWN"
+    assert alert.severity is None
+    assert alert.detection_name is None
+    assert alert.present_fields() == {"source": "WEBHOOK"}
     assert alert.raw_payload == {"nonsense_key": "nonsense_value"}

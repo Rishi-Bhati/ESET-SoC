@@ -306,7 +306,9 @@ async def ingest_alert(
 
     try:
         await deduplication.record_seen(dedup_key, settings.dedup_ttl_seconds)
-        payload_dict = raw_payload.model_dump()
+        # Fields the request did not carry are left out of the stored job, not
+        # written as nulls; the original JSON is kept verbatim under raw_payload.
+        payload_dict = raw_payload.model_dump(exclude_none=True)
         await job_store.create_job(correlation_id, source, payload_dict)
         background_tasks.add_task(
             reservation.run, run_pipeline_task, correlation_id, payload_dict, source,

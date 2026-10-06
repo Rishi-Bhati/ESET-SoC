@@ -12,7 +12,7 @@ logger = structlog.get_logger(__name__)
 # no required fields, EsetRawPayload has extra="allow") — this platform does not
 # require a sender to match ESET's exact field names. Without this table, a payload
 # shaped like {"threat":"...", "host":"...", "sev":"high"} normalized to a wall of
-# "UNKNOWN", the deterministic risk engine fell back to its MEDIUM safety default
+# absent fields, the deterministic risk engine fell back to its MEDIUM safety default
 # for every such alert, and the dashboard table showed nothing useful — even though
 # the sender's JSON plainly contained the information.
 #
@@ -20,7 +20,7 @@ logger = structlog.get_logger(__name__)
 # fallback (the exact EsetRawPayload field always wins when present — which covers
 # real ESET webhook/syslog payloads and anything already mapped by
 # src/ingestion/syslog_handler.py), and when nothing matches, the field stays
-# "UNKNOWN" here. The model still sees the complete, unmodified original payload
+# absent (None) — it is never filled with a placeholder. The model still sees the complete, unmodified original payload
 # (see src/services/ai/base.py) and can extract from whatever shape it
 # actually is — that is the layer that makes an arbitrary JSON shape produce a real
 # alert summary that this alias table cannot.
@@ -60,44 +60,50 @@ def _find_alias(raw_payload: Any, field: str) -> Any:
     lower_map = {str(k).lower(): v for k, v in raw_payload.items()}
     for candidate in _ALIASES[field]:
         value = lower_map.get(candidate)
-        if value not in (None, ""):
+        if not _is_blank(value):
             return value
     return None
 
 
-def _str_field(raw: EsetRawPayload, field: str) -> str:
+def _is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _str_field(raw: EsetRawPayload, field: str) -> str | None:
     """The exact EsetRawPayload field if set, else the best alias match from the
-    original payload, else 'UNKNOWN'."""
+    original payload, else None (the sender did not report it)."""
     value = getattr(raw, field, None)
-    if value not in (None, ""):
-        return str(value)
-    aliased = _find_alias(raw.raw_payload, field)
-    return str(aliased) if aliased not in (None, "") else "UNKNOWN"
+    if _is_blank(value):
+        value = _find_alias(raw.raw_payload, field)
+    return None if _is_blank(value) else str(value)
 
 
-def _bool_like_field(raw: EsetRawPayload, field: str) -> str:
+def _bool_like_field(raw: EsetRawPayload, field: str) -> str | None:
     """threat_handled / isolation_status: bool or string from the exact field, else
-    the same from an alias match, standardized to 'true'/'false'/'UNKNOWN'."""
+    the same from an alias match, standardized to 'true'/'false' (or the sender's
+    own lowercased wording). None when not reported — a missing value is NOT
+    'false'."""
     value = getattr(raw, field, None)
-    if value is None:
+    if _is_blank(value):
         value = _find_alias(raw.raw_payload, field)
 
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, str) and value.strip():
-        return value.strip().lower()
-    return "UNKNOWN"
+    if _is_blank(value):
+        return None
+    return str(value).strip().lower()
 
 
 def normalize(raw: EsetRawPayload, source: str) -> NormalizedAlert:
     """
     Normalizes an EsetRawPayload into a strict NormalizedAlert.
-    Ensures missing values are explicitly represented as 'UNKNOWN' string,
-    standardizes boolean-like properties, and logs any missing fields.
+    Only fields present in the submitted alert are set; anything the sender did
+    not report stays None (and is omitted from every serialized form of the
+    alert). Boolean-like properties are standardized.
     """
     logger.debug("normalizer_start", raw_source=raw.source, input_source=source)
 
-    data: dict[str, Any] = {"source": source or raw.source or "UNKNOWN"}
+    data: dict[str, Any] = {"source": source or raw.source}
 
     for field in (
         "event_type", "alert_id", "detection_uuid", "target_uuid", "occurred_at",
@@ -111,12 +117,10 @@ def normalize(raw: EsetRawPayload, source: str) -> NormalizedAlert:
     data["isolation_status"] = _bool_like_field(raw, "isolation_status")
 
     # Preserve full raw structure for debugging/auditing, and as the source the AI
-    # prompt reads from directly when a field above is "UNKNOWN" (see src/services/ai/base.py).
+    # prompt reads from directly for anything the field mapping above did not
+    # recognize (see src/services/ai/base.py).
     data["raw_payload"] = raw.raw_payload or {}
 
-    # Audit logging for missing critical fields (warning but non-blocking)
-    missing_fields = [k for k, v in data.items() if v == "UNKNOWN" and k != "source"]
-    if missing_fields:
-        logger.debug("normalizer_unknown_fields", fields=missing_fields)
-
-    return NormalizedAlert(**data)
+    alert = NormalizedAlert(**data)
+    logger.debug("normalizer_fields_present", fields=list(alert.present_fields()))
+    return alert

@@ -14,9 +14,22 @@ def test_raw_payload_lenient_defaults():
     assert raw.model_extra["extra_unmapped_field"] == "should_be_ignored_but_allowed"
 
 def test_normalized_alert_defaults():
-    """Ensure normalized alert standardizes missing fields to 'UNKNOWN'."""
+    """Fields the alert did not carry stay absent — never a placeholder."""
     alert = NormalizedAlert()
-    assert alert.severity == "UNKNOWN"
-    assert alert.threat_handled == "UNKNOWN"
-    assert alert.isolation_status == "UNKNOWN"
+    assert alert.severity is None
+    assert alert.threat_handled is None
+    assert alert.isolation_status is None
     assert alert.raw_payload == {}
+    assert alert.present_fields() == {}
+
+
+def test_normalized_alert_serializes_only_present_fields():
+    alert = NormalizedAlert(source="WEBHOOK", severity="HIGH", threat_handled="false",
+                            raw_payload={"severity": "HIGH", "note": None})
+    assert alert.model_dump() == {
+        "source": "WEBHOOK", "severity": "HIGH", "threat_handled": "false",
+        # The raw request itself is kept verbatim, nulls included.
+        "raw_payload": {"severity": "HIGH", "note": None},
+    }
+    assert "UNKNOWN" not in alert.model_dump_json() and "null" not in alert.model_dump_json(exclude={"raw_payload"})
+    assert alert.present_fields() == {"source": "WEBHOOK", "severity": "HIGH", "threat_handled": "false"}
