@@ -108,7 +108,7 @@ async def test_fallback_notice_goes_to_our_team_only(all_recipients):
     assert all(e.email_id.endswith("-AI_FALLBACK") for e in emails)
     assert all("[AI要約生成失敗]" in e.subject and e.subject.startswith("[HIGH]") for e in emails)
     internal, engineer = emails
-    assert "Win32/Example.A" in internal.body and "Alert severity is HIGH" in internal.body
+    assert "Win32/Example.A" in internal.body and "アラートの重大度は HIGH（高）で、脅威は処理されていません。" in internal.body
     assert "Timeout" in engineer.body and "req_abc" in engineer.body
     assert "no client notification was sent" in engineer.body
 
@@ -148,12 +148,17 @@ def _minimal_result(alert: NormalizedAlert, ai=True, **ai_overrides) -> Pipeline
 async def test_fallback_lists_only_the_reported_alert_facts(all_recipients):
     alert = NormalizedAlert(source="WEBHOOK", detection_name="Win32/Agent.X", severity="HIGH")
     internal, engineer = await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False))
-    for body in (internal.body, engineer.body):
-        assert "- Detection: Win32/Agent.X" in body and "- ESET severity: HIGH" in body
-        for absent in ("Endpoint", "Occurred at", "Action taken", "Threat handled", "Isolated",
-                       "Object", "File hash", "URL", "- IP", "Domain"):
-            assert absent not in body, absent
-        assert "UNKNOWN" not in body and "Unknown" not in body and "None" not in body
+    assert "・検知名：Win32/Agent.X" in internal.body and "・ESETの重大度：HIGH" in internal.body
+    assert "- Detection: Win32/Agent.X" in engineer.body and "- ESET severity: HIGH" in engineer.body
+    for absent in ("Endpoint", "Occurred at", "Action taken", "Threat handled", "Isolated",
+                   "Object", "File hash", "URL", "- IP", "Domain"):
+        assert absent not in engineer.body and absent not in engineer.html, absent
+    for absent in ("エンドポイント", "発生日時", "実施された対応", "脅威の処理済み", "端末の隔離",
+                   "対象オブジェクト", "ファイルハッシュ", "URL", "IPアドレス", "ドメイン"):
+        assert absent not in internal.body and absent not in internal.html, absent
+    for mail in (internal, engineer):
+        for text in (mail.body, mail.html):
+            assert "UNKNOWN" not in text and "Unknown" not in text and "None" not in text
     assert engineer.subject == "[HIGH][AI要約生成失敗] Win32/Agent.X"
     assert engineer.endpoint_name is None and engineer.detection_name == "Win32/Agent.X"
 
@@ -162,7 +167,7 @@ async def test_fallback_lists_only_the_reported_alert_facts(all_recipients):
 async def test_reported_false_is_shown_but_absent_is_not(all_recipients):
     alert = NormalizedAlert(detection_name="Win32/Agent.X", threat_handled="false")
     _, engineer = await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False))
-    assert "- Threat handled: false" in engineer.body
+    assert "- Threat handled: No" in engineer.body
     assert "Isolated" not in engineer.body
 
 
@@ -297,3 +302,50 @@ def test_default_email_timeout_is_longer_than_the_flaky_15s_window():
     )
 
     assert provider.timeout > 15
+
+
+# --------------------------- layout ---------------------------
+
+@pytest.mark.asyncio
+async def test_every_email_has_an_html_version_with_its_content(all_recipients):
+    for mail in await email_composer.compose_emails(_result()):
+        assert mail.html.startswith("<!DOCTYPE html>")
+        assert "HIGH" in mail.html
+        if mail.notification_type != "CLIENT_JA":  # the client email carries no internal IDs
+            assert "cid-123" in mail.html
+    client = next(m for m in await email_composer.compose_emails(_result()) if m.notification_type == "CLIENT_JA")
+    assert "お世話になっております。確認事項がございます。" in client.html
+    assert 'lang="ja"' in client.html
+
+
+@pytest.mark.asyncio
+async def test_html_escapes_alert_values(all_recipients):
+    alert = NormalizedAlert(detection_name="<script>alert(1)</script>", endpoint_name="H&ST")
+    for mail in await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False)):
+        assert "<script>" not in mail.html
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in mail.html and "H&amp;ST" in mail.html
+
+
+@pytest.mark.asyncio
+async def test_indicators_are_defanged(all_recipients):
+    alert = NormalizedAlert(detection_name="X", url="http://evil.example/a.b", domain="evil.example",
+                            ip_address="185.220.101.5")
+    _, engineer = await email_composer.compose_fallback_emails(_minimal_result(alert, ai=False))
+    assert "- URL: hxxp://evil[.]example/a.b" in engineer.body
+    assert "- Domain: evil[.]example" in engineer.body
+    assert "- IP: 185.220.101[.]5" in engineer.body
+    assert "http://evil.example" not in engineer.html
+
+
+def test_mail_handoff_sends_the_html_version():
+    from src.models.email_message import EmailMessage
+    from src.services.email_delivery.eset_mail import EsetMailProvider
+
+    provider = EsetMailProvider(url="https://example.test/api/send", api_key="key",
+                                api_secret="secret", security_mode="api-key-only")
+    base = dict(email_id="e1", correlation_id="c", notification_type="ENGINEER_EN", to=["a@example.com"],
+                subject="s", body="plain", risk_level="HIGH", created_at="2026-01-01T00:00:00Z")
+    with_html = provider.build_payload(EmailMessage(**base, html="<!DOCTYPE html><p>x</p>"))
+    assert with_html["html"] == "<!DOCTYPE html><p>x</p>" and "body" not in with_html
+    legacy = provider.build_payload(EmailMessage(**base))
+    assert legacy["body"] == "plain" and "html" not in legacy
