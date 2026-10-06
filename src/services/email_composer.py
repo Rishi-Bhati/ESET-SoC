@@ -19,6 +19,10 @@ Two paths:
   this path: client-facing text without the AI draft would need a human to
   write it anyway.
 
+Every email is described once as an EmailDocument and rendered twice by
+src/services/email_layout.py: plain text (EmailMessage.body — shown in the
+dashboard outbox) and HTML (EmailMessage.html — what the mail service sends).
+
 Recipients come from the dashboard-editable settings store, falling back to
 the .env values (see src/storage/settings_store.py).
 """
@@ -27,6 +31,8 @@ import structlog
 from src.models.normalized_alert import NormalizedAlert
 from src.models.pipeline_result import PipelineResult
 from src.models.email_message import EmailMessage
+from src.services.email_layout import EmailDocument, Section, render_html, render_text
+from src.services.risk_text_ja import to_japanese
 from src.storage import settings_store
 
 logger = structlog.get_logger(__name__)
@@ -50,16 +56,6 @@ def _subject(result: PipelineResult) -> str:
     return f"[{result.risk_level}] {_alert_label(result)}"
 
 
-def _bullets(items: list[str]) -> str:
-    cleaned = [item for item in items if item and item.strip()]
-    return "\n".join(f"- {item}" for item in cleaned) if cleaned else "- なし / None"
-
-
-def _factor_lines(result: PipelineResult) -> str:
-    lines = [f.get("detail", "") for f in result.risk_factors if f.get("effect") in ("base", "raised")]
-    return _bullets(lines) if lines else f"- {result.risk_rationale}"
-
-
 def _client_subject(result: PipelineResult) -> str:
     subject = result.ai_output.email_subject_ja.strip()
     # The risk label must be visible in the client's inbox even if the model
@@ -69,65 +65,34 @@ def _client_subject(result: PipelineResult) -> str:
     return subject
 
 
-def _client_body(result: PipelineResult) -> str:
-    return result.ai_output.email_body_ja.strip()
+# ------------------------------------------------------------------ shared blocks
+
+def _factor_details(result: PipelineResult) -> list[str]:
+    lines = [f.get("detail", "") for f in result.risk_factors if f.get("effect") in ("base", "raised")]
+    return lines or [result.risk_rationale]
 
 
-def _optional_section(heading: str, items: list[str]) -> str:
-    """A bulleted section, or nothing at all when there is nothing to list —
-    an empty section would read as a field with no value."""
-    cleaned = [item for item in items if item and item.strip()]
-    return f"{heading}\n{_bullets(cleaned)}\n\n" if cleaned else ""
+def _defang(value: str | None, kind: str) -> str | None:
+    """Indicators are written so no mail client turns them into a live link:
+    hxxp://example[.]com, 185.220.101[.]5."""
+    if not value:
+        return value
+    if kind == "url":
+        scheme, sep, rest = value.partition("://")
+        if sep:
+            host, slash, path = rest.partition("/")
+            return f"{scheme.replace('http', 'hxxp')}://{host.replace('.', '[.]')}{slash}{path}"
+        return value.replace(".", "[.]")
+    head, dot, last = value.rpartition(".")
+    return f"{head}[.]{last}" if dot else value
 
 
-def _cthree_body(result: PipelineResult) -> str:
-    ai = result.ai_output
-    return (
-        "クライアント向け通知文の確認をお願いいたします。\n\n"
-        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n\n"
-        f"【概要】\n{ai.alert_summary_ja}\n\n"
-        f"【リスク判定の理由】\n{ai.risk_reason_ja}\n\n"
-        f"【クライアントへの追加確認事項】\n{_bullets(ai.additional_confirmation_items_ja)}\n\n"
-        f"{_optional_section('【要確認事項】', ai.unknown_items)}"
-        "―――― クライアント向けメール案 ――――\n"
-        f"件名: {_client_subject(result)}\n\n"
-        f"{ai.email_body_ja.strip()}"
-    )
-
-
-def _internal_body(result: PipelineResult) -> str:
-    ai = result.ai_output
-    return (
-        f"{ai.internal_summary_ja}\n\n"
-        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n\n"
-        f"【リスク判定の理由】\n{ai.risk_reason_ja}\n\n"
-        f"【推奨初動対応】\n{_bullets(ai.recommended_initial_actions_ja)}\n\n"
-        f"【追加確認事項】\n{_bullets(ai.additional_confirmation_items_ja)}\n\n"
-        f"{_optional_section('【要確認事項】', ai.unknown_items)}"
-        f"【クライアント向け通知文】\n{ai.client_notification_ja}\n\n"
-        f"【Backlogコメント案】\n{ai.backlog_comment_ja}\n\n"
-        f"相関ID: {result.correlation_id}"
-    )
-
-
-def _engineer_body(result: PipelineResult) -> str:
-    ai = result.ai_output
-    return (
-        f"{ai.engineer_summary_en}\n\n"
-        f"RISK LEVEL: {result.risk_level} (rule-based)\n"
-        f"RULES APPLIED:\n{_factor_lines(result)}\n\n"
-        f"{_optional_section('NEEDS CONFIRMATION:', ai.unknown_items)}"
-        f"Correlation ID: {result.correlation_id}"
-    )
-
-
-# (notification_type, recipient setting, subject formatter, body formatter)
-_NOTIFICATION_SPECS = [
-    ("CLIENT_JA", "client_notification_emails", _client_subject, _client_body),
-    ("CTHREE_JA", "cthree_notification_emails", _subject, _cthree_body),
-    ("INTERNAL_JA", "internal_notification_emails", _subject, _internal_body),
-    ("ENGINEER_EN", "engineer_notification_emails", _subject, _engineer_body),
-]
+def _yes_no(value: str | None, lang: str) -> str | None:
+    if value not in ("true", "false"):
+        return value
+    if lang == "ja":
+        return "はい" if value == "true" else "いいえ"
+    return "Yes" if value == "true" else "No"
 
 
 def _endpoint_fact(a: NormalizedAlert) -> str | None:
@@ -136,20 +101,124 @@ def _endpoint_fact(a: NormalizedAlert) -> str | None:
     return a.endpoint_name or a.endpoint_type
 
 
-def _alert_facts_section(result: PipelineResult, heading: str) -> str:
+def _alert_facts(result: PipelineResult, lang: str) -> Section:
     """One row per fact the alert actually reported — an absent field gets no
-    row, not an "UNKNOWN" one — or nothing when it reported none of them."""
+    row, not an "UNKNOWN" one. A section with no rows is not rendered at all."""
     a = result.normalized_alert
+    ja = lang == "ja"
     rows = [
-        ("Detection", a.detection_name), ("Endpoint", _endpoint_fact(a)),
-        ("Occurred at", a.occurred_at), ("ESET severity", a.severity), ("Action taken", a.action_taken),
-        ("Threat handled", a.threat_handled), ("Isolated", a.isolation_status),
-        ("Object", a.object_uri), ("File hash", a.file_hash), ("URL", a.url),
-        ("IP", a.ip_address), ("Domain", a.domain),
+        ("検知名" if ja else "Detection", a.detection_name, False),
+        ("エンドポイント" if ja else "Endpoint", _endpoint_fact(a), False),
+        ("発生日時" if ja else "Occurred at", a.occurred_at, False),
+        ("ESETの重大度" if ja else "ESET severity", a.severity, False),
+        ("実施された対応" if ja else "Action taken", a.action_taken, False),
+        ("脅威の処理済み" if ja else "Threat handled", _yes_no(a.threat_handled, lang), False),
+        ("端末の隔離" if ja else "Isolated", _yes_no(a.isolation_status, lang), False),
+        ("対象オブジェクト" if ja else "Object", a.object_uri, True),
+        ("ファイルハッシュ" if ja else "File hash", a.file_hash, True),
+        ("URL", _defang(a.url, "url"), True),
+        ("IPアドレス" if ja else "IP", _defang(a.ip_address, "ip"), True),
+        ("ドメイン" if ja else "Domain", _defang(a.domain, "domain"), True),
     ]
-    lines = [f"- {label}: {value}" for label, value in rows if value and value.strip()]
-    return f"{heading}\n" + "\n".join(lines) + "\n\n" if lines else ""
+    return Section("アラート情報" if ja else "Alert details",
+                   rows=[(label, value.strip(), mono) for label, value, mono in rows if value and value.strip()])
 
+
+def _footer(result: PipelineResult, lang: str) -> list[str]:
+    if lang == "ja":
+        return [f"相関ID：{result.correlation_id}",
+                "ESET SOC Lite による自動通知です。詳細はダッシュボードで確認できます。"]
+    return [f"Correlation ID: {result.correlation_id}",
+            "Sent automatically by ESET SOC Lite. Full details are in the dashboard."]
+
+
+def _email(subject: str, doc: EmailDocument, text: str | None = None) -> tuple[str, str, str]:
+    """(subject, plain-text body, HTML body) for one notification."""
+    return subject, text if text is not None else render_text(doc), render_html(doc)
+
+
+# ------------------------------------------------------------------ AI-generated notifications
+
+def _client_email(result: PipelineResult) -> tuple[str, str, str]:
+    subject = _client_subject(result)
+    body = result.ai_output.email_body_ja.strip()
+    # The heading repeats the subject without the 【LEVEL】 prefix — the badge
+    # beneath it already says the level.
+    heading = subject.replace(f"【{result.risk_level}】", "").strip() or subject
+    doc = EmailDocument(lang="ja", heading=heading, risk_level=result.risk_level, lead=body)
+    # The client receives the AI-drafted body exactly as written (and as C-Three
+    # reviewed it); only the HTML adds the header around it.
+    return _email(subject, doc, text=body)
+
+
+def _cthree_email(result: PipelineResult) -> tuple[str, str, str]:
+    ai = result.ai_output
+    doc = EmailDocument(
+        lang="ja", risk_level=result.risk_level,
+        eyebrow="ESET SOC Lite ｜ シースリー向け レビュー依頼",
+        heading=f"クライアント向け通知文のご確認：{_alert_label(result)}",
+        lead="クライアントへ送付する通知文の確認をお願いいたします。リスクレベルはルールベースで判定したものです。",
+        sections=[
+            _alert_facts(result, "ja"),
+            Section("概要", text=ai.alert_summary_ja),
+            Section("リスク判定の理由", text=ai.risk_reason_ja),
+            Section("クライアントへの追加確認事項", items=ai.additional_confirmation_items_ja),
+            Section("要確認事項", items=ai.unknown_items),
+            Section("クライアント向けメール案", quote=f"件名：{_client_subject(result)}\n\n{ai.email_body_ja.strip()}"),
+        ],
+        footer=_footer(result, "ja"),
+    )
+    return _email(_subject(result), doc)
+
+
+def _internal_email(result: PipelineResult) -> tuple[str, str, str]:
+    ai = result.ai_output
+    doc = EmailDocument(
+        lang="ja", risk_level=result.risk_level,
+        eyebrow="ESET SOC Lite ｜ 社内向けサマリー",
+        heading=_alert_label(result),
+        lead=ai.internal_summary_ja,
+        sections=[
+            _alert_facts(result, "ja"),
+            Section("リスク判定の理由", text=ai.risk_reason_ja),
+            Section("推奨初動対応", items=ai.recommended_initial_actions_ja, numbered=True),
+            Section("追加確認事項", items=ai.additional_confirmation_items_ja),
+            Section("要確認事項", items=ai.unknown_items),
+            Section("クライアント向け通知文", quote=ai.client_notification_ja),
+            Section("Backlogコメント案", quote=ai.backlog_comment_ja),
+        ],
+        footer=_footer(result, "ja"),
+    )
+    return _email(_subject(result), doc)
+
+
+def _engineer_email(result: PipelineResult) -> tuple[str, str, str]:
+    ai = result.ai_output
+    doc = EmailDocument(
+        lang="en", risk_level=result.risk_level,
+        eyebrow="ESET SOC Lite | Engineer report",
+        heading=_alert_label(result),
+        sections=[
+            Section("Summary", text=ai.engineer_summary_en),
+            _alert_facts(result, "en"),
+            Section("Rules applied (rule-based risk level)", items=_factor_details(result)),
+            Section("Needs confirmation", items=ai.unknown_items),
+        ],
+        footer=_footer(result, "en"),
+    )
+    return _email(_subject(result), doc)
+
+
+# (notification_type, recipient setting, composer -> (subject, text, html))
+_NOTIFICATION_SPECS = [
+    ("CLIENT_JA", "client_notification_emails", _client_email),
+    ("CTHREE_JA", "cthree_notification_emails", _cthree_email),
+    ("INTERNAL_JA", "internal_notification_emails", _internal_email),
+    ("ENGINEER_EN", "engineer_notification_emails", _engineer_email),
+]
+
+
+# ------------------------------------------------------------------ AI-failure notices
 
 def _ai_failure_reason(result: PipelineResult) -> str:
     run = result.ai_run
@@ -165,45 +234,55 @@ def _ai_failure_reason(result: PipelineResult) -> str:
     return " — ".join(parts)
 
 
-def _fallback_internal_body(result: PipelineResult) -> str:
-    return (
-        "AIによる要約・通知文の生成に失敗したため、アラート情報のみをお送りします。\n"
-        "アラートは記録済みです。クライアントへの通知は自動送信されていません。"
-        "ダッシュボードで内容を確認のうえ、対応をお願いいたします。\n\n"
-        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n\n"
-        f"【リスク判定の根拠】\n{_factor_lines(result)}\n\n"
-        f"{_alert_facts_section(result, '【アラート情報】')}"
-        f"【AI生成失敗の理由】\n{_ai_failure_reason(result)}\n\n"
-        f"相関ID: {result.correlation_id}"
-    )
-
-
-def _fallback_engineer_body(result: PipelineResult) -> str:
-    return (
-        "AI summary generation FAILED for this alert. The alert has been recorded; "
-        "no client notification was sent. Review it in the dashboard.\n\n"
-        f"RISK LEVEL: {result.risk_level} (rule-based)\n"
-        f"RULES APPLIED:\n{_factor_lines(result)}\n\n"
-        f"{_alert_facts_section(result, 'ALERT FACTS:')}"
-        f"AI FAILURE: {_ai_failure_reason(result)}\n\n"
-        f"Correlation ID: {result.correlation_id}"
-    )
-
-
 def _fallback_subject(result: PipelineResult) -> str:
     return f"[{result.risk_level}][AI要約生成失敗] {_alert_label(result)}"
 
 
+def _fallback_internal_email(result: PipelineResult) -> tuple[str, str, str]:
+    doc = EmailDocument(
+        lang="ja", risk_level=result.risk_level,
+        eyebrow="ESET SOC Lite ｜ AI要約生成失敗のお知らせ",
+        heading=_alert_label(result),
+        lead=("AIによる要約・通知文の生成に失敗したため、アラート情報のみをお送りします。\n"
+              "アラートは記録済みです。クライアントへの通知は自動送信されていません。"
+              "ダッシュボードで内容を確認のうえ、対応をお願いいたします。"),
+        sections=[
+            _alert_facts(result, "ja"),
+            Section("リスク判定の根拠", items=[to_japanese(d) for d in _factor_details(result)]),
+            Section("AI生成失敗の理由", text=_ai_failure_reason(result)),
+        ],
+        footer=_footer(result, "ja"),
+    )
+    return _email(_fallback_subject(result), doc)
+
+
+def _fallback_engineer_email(result: PipelineResult) -> tuple[str, str, str]:
+    doc = EmailDocument(
+        lang="en", risk_level=result.risk_level,
+        eyebrow="ESET SOC Lite | AI summary failed",
+        heading=_alert_label(result),
+        lead=("AI summary generation FAILED for this alert. The alert has been recorded; "
+              "no client notification was sent. Review it in the dashboard."),
+        sections=[
+            _alert_facts(result, "en"),
+            Section("Rules applied (rule-based risk level)", items=_factor_details(result)),
+            Section("AI failure", text=_ai_failure_reason(result)),
+        ],
+        footer=_footer(result, "en"),
+    )
+    return _email(_fallback_subject(result), doc)
+
+
 _FALLBACK_SPECS = [
-    ("INTERNAL_JA", "internal_notification_emails", _fallback_subject, _fallback_internal_body),
-    ("ENGINEER_EN", "engineer_notification_emails", _fallback_subject, _fallback_engineer_body),
+    ("INTERNAL_JA", "internal_notification_emails", _fallback_internal_email),
+    ("ENGINEER_EN", "engineer_notification_emails", _fallback_engineer_email),
 ]
 
 
 async def _build(result: PipelineResult, specs, email_id_suffix: str = "") -> list[EmailMessage]:
     created_at = datetime.now(timezone.utc).isoformat()
     messages: list[EmailMessage] = []
-    for notification_type, settings_field, subject_fn, body_fn in specs:
+    for notification_type, settings_field, compose in specs:
         recipients = _parse_recipients(await settings_store.get_effective(settings_field))
         if not recipients:
             logger.warning(
@@ -212,13 +291,15 @@ async def _build(result: PipelineResult, specs, email_id_suffix: str = "") -> li
                 correlation_id=result.correlation_id,
             )
             continue
+        subject, body, html = compose(result)
         messages.append(EmailMessage(
             email_id=f"{result.correlation_id}-{notification_type}{email_id_suffix}",
             correlation_id=result.correlation_id,
             notification_type=notification_type,
             to=recipients,
-            subject=subject_fn(result),
-            body=body_fn(result),
+            subject=subject,
+            body=body,
+            html=html,
             risk_level=result.risk_level,
             endpoint_name=result.normalized_alert.endpoint_name,
             detection_name=result.normalized_alert.detection_name,

@@ -106,15 +106,17 @@ def test_minimal_alert_fallback_email_lists_only_reported_facts(client: TestClie
     emails = _emails(client, cid)
     assert set(emails) == {"INTERNAL_JA", "ENGINEER_EN"}
     engineer = emails["ENGINEER_EN"]["body"]
-    facts = engineer.split("ALERT FACTS:\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    facts = engineer.split("■ Alert details\n", 1)[1].split("\n\n", 1)[0].splitlines()
     assert facts == [
         "- Detection: Win32/Agent.MINIMAL",
         "- Occurred at: 2026-10-01T09:00:00Z",
         "- ESET severity: HIGH",
     ]
     for email in emails.values():
-        for placeholder in ("UNKNOWN", "Unknown", "N/A", "不明", "Threat handled", "Isolated"):
+        for placeholder in ("UNKNOWN", "Unknown", "N/A", "不明", "Threat handled", "Isolated",
+                            "脅威の処理済み", "端末の隔離"):
             assert placeholder not in email["body"], (email["notification_type"], placeholder)
+            assert placeholder not in email["html"], (email["notification_type"], placeholder)
 
 
 def test_reported_false_is_kept_distinct_from_absent(client: TestClient, recipients):

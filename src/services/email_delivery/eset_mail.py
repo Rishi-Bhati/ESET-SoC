@@ -225,13 +225,13 @@ class EsetMailProvider(EmailDeliveryProvider):
         payload: dict = {
             "to": recipients,
             "subject": self._sanitize_header_value(message.subject, SUBJECT_MAX_CHARS),
-            # `body`, deliberately not `html`: every composer body in
-            # src/services/email_composer.py is PLAIN TEXT with \n\n paragraph
-            # breaks. The worker decides the MIME type by sniffing this string
-            # (providers.ts: isHtml), so sending the same plain text under an
-            # `html` key would be a false claim about its format the moment a
-            # worker version trusts the field name over the sniff.
-            "body": self._encodable(message.body),
+            # The formatted HTML version when the composer produced one (every
+            # message since src/services/email_layout.py), under `html`; plain
+            # text otherwise, under `body` — never plain text under `html`. The
+            # worker picks the MIME type by sniffing the string
+            # (providers.ts: isHtml), and the HTML document starts with "<".
+            **({"html": self._encodable(message.html)} if message.html
+               else {"body": self._encodable(message.body)}),
             # Carried for cross-referencing this platform's record with the
             # worker's log. The worker does not deduplicate on it — see the
             # duplicate-on-timeout note in send().
