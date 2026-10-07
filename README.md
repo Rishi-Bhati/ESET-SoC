@@ -148,9 +148,13 @@ two-layer lookup:
 | `alert_id` + `occurred_at` | deduplication key (falls back to a hash of the whole payload) |
 | `file_hash`, `ip_address`, `url` | threat-intel lookups (VirusTotal / AbuseIPDB) — validated as a well-formed hash/IP/URL before use; anything else is skipped, not sent to the third party |
 
-**Duplicate suppression:** the same `alert_id` + `occurred_at` within
-`DEDUP_TTL_SECONDS` (default 1h) returns `{"status": "duplicate"}` and is not
-reprocessed. Vary `alert_id` when re-sending.
+**Duplicate suppression:** the same `alert_id` + `occurred_at` (or, without
+those, the same payload) within `DEDUP_TTL_SECONDS` of the first accepted copy
+(default 5 minutes) returns `{"status": "duplicate"}` and is not reprocessed.
+The window counts from the accepted copy and is not extended by dropped
+duplicates, so the same alert is processed again once it has passed. ESET's
+"send test webhook" sends an identical body every time, so a repeat test inside
+the window is dropped by design.
 
 ### Error responses
 
