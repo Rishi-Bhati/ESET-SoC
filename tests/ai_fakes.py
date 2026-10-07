@@ -23,6 +23,7 @@ def sample_output(risk_level: str = "HIGH", detection: str = "Win32/Test.Threat"
         internal_summary_ja=f"[MOCK] 内部向け要約: {detection}",
         engineer_summary_en=f"[MOCK] Technical summary for {detection}.",
         recommended_initial_actions_ja=["ESET PROTECT で検知内容を確認する"],
+        recommended_initial_actions_en=["Review the detection in ESET PROTECT."],
         additional_confirmation_items_ja=["端末利用者への状況確認"],
         unknown_items=["action_taken: Needs confirmation"],
         backlog_comment_ja=f"【{risk_level}】{detection} を検知。確認中。",

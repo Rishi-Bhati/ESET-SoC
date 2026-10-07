@@ -9,7 +9,8 @@ Two paths:
     CTHREE_JA   (C-Three Index)   review request: the client draft plus risk reason and
                                   confirmation items, for front-office review
     INTERNAL_JA (our team)        internal summary, initial actions, open items, Backlog draft
-    ENGINEER_EN (our engineers)   English technical summary plus the rule engine's factors
+    ENGINEER_EN (our engineers)   English technical summary, recommended countermeasures,
+                                  and the rule engine's factors
 
 * compose_fallback_emails() — the AI call failed or its output was blocked.
   The alert is still recorded, and our own team (INTERNAL_JA, ENGINEER_EN) is
@@ -201,6 +202,7 @@ def _engineer_email(result: PipelineResult) -> tuple[str, str, str]:
         sections=[
             Section("Summary", text=ai.engineer_summary_en),
             _alert_facts(result, "en"),
+            Section("Recommended countermeasures", items=ai.recommended_initial_actions_en, numbered=True),
             Section("Rules applied (rule-based risk level)", items=_factor_details(result)),
             Section("Needs confirmation", items=ai.unknown_items),
         ],

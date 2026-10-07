@@ -736,11 +736,15 @@ function aiList(arr) {
     : `<p class="muted">${esc(t("ai_none_stated"))}</p>`;
 }
 
-/* Flat schema: the summary follows the language toggle (JA summary, or the EN
- * engineer summary); the risk reason and action lists exist in Japanese only,
- * by the client's field specification. */
+/* Flat schema: the summary and the countermeasures follow the language toggle
+ * (JA, or the EN engineer fields); the risk reason and confirmation items exist
+ * in Japanese only, by the client's field specification. Results generated
+ * before recommended_initial_actions_en existed fall back to the JA list. */
 function flatAnalysisPanel(ai) {
-  const summary = state_lang.current === "ja" ? ai.alert_summary_ja : ai.engineer_summary_en;
+  const en = state_lang.current !== "ja";
+  const summary = en ? ai.engineer_summary_en : ai.alert_summary_ja;
+  const actions = en && (ai.recommended_initial_actions_en || []).length
+    ? ai.recommended_initial_actions_en : ai.recommended_initial_actions_ja;
   return `
     <div class="ai-analysis">
       <h4>${esc(t("ai_alert_summary"))}</h4>
@@ -752,7 +756,7 @@ function flatAnalysisPanel(ai) {
       <div class="ai-cols">
         <div>
           <h4>${esc(t("ai_initial_actions"))}</h4>
-          ${aiList(ai.recommended_initial_actions_ja)}
+          ${aiList(actions)}
         </div>
         <div>
           <h4>${esc(t("ai_confirm_items"))}</h4>
@@ -859,7 +863,10 @@ function flatNotificationTabs(ai) {
       `${ai.internal_summary_ja}\n\n【推奨初動対応】\n${bullets(ai.recommended_initial_actions_ja)}\n\n【追加確認事項】\n${bullets(ai.additional_confirmation_items_ja)}` +
       (confirm.length ? `\n\n【要確認事項】\n${bullets(confirm)}` : "")],
     ["engineer", t("tab_engineer"),
-      ai.engineer_summary_en + (confirm.length ? `\n\nNEEDS CONFIRMATION\n${bullets(confirm)}` : "")],
+      ai.engineer_summary_en +
+      ((ai.recommended_initial_actions_en || []).length
+        ? `\n\nRECOMMENDED COUNTERMEASURES\n${ai.recommended_initial_actions_en.map((x, i) => `${i + 1}. ${x}`).join("\n")}` : "") +
+      (confirm.length ? `\n\nNEEDS CONFIRMATION\n${bullets(confirm)}` : "")],
     ["backlog", t("tab_backlog"), ai.backlog_comment_ja],
   ];
 }
