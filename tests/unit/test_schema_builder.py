@@ -17,17 +17,19 @@ CLIENT_FIELDS = {
     "additional_confirmation_items_ja", "unknown_items", "backlog_comment_ja",
     "email_subject_ja", "email_body_ja",
 }
+# Ours, not the client's: English countermeasures for the engineer email.
+OUTPUT_FIELDS = CLIENT_FIELDS | {"recommended_initial_actions_en"}
 
 
-def test_output_fields_are_exactly_the_clients_field_list():
-    assert set(AIOutput.model_fields) == CLIENT_FIELDS
+def test_output_fields_are_the_clients_field_list_plus_english_countermeasures():
+    assert set(AIOutput.model_fields) == OUTPUT_FIELDS
 
 
 def test_strict_schema_requires_every_property_and_forbids_extras():
     schema = build_strict_json_schema(AIOutput)
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == set(schema["properties"]) == CLIENT_FIELDS
+    assert set(schema["required"]) == set(schema["properties"]) == OUTPUT_FIELDS
     raw = json.dumps(schema)
     assert "$ref" not in raw and "$defs" not in raw and '"title"' not in raw and '"default"' not in raw
 
@@ -52,7 +54,7 @@ def test_pinning_an_unknown_property_is_an_error():
 
 def test_gemini_schema_keeps_required_and_strips_unsupported_keys():
     schema = build_gemini_schema(AIOutput, pin={"risk_level": ["HIGH"]})
-    assert set(schema["required"]) == CLIENT_FIELDS
+    assert set(schema["required"]) == OUTPUT_FIELDS
     assert schema["properties"]["risk_level"]["enum"] == ["HIGH"]
     raw = json.dumps(schema)
     assert "$ref" not in raw and "additionalProperties" not in raw and '"title"' not in raw

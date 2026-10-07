@@ -22,10 +22,12 @@ def test_mentioning_the_eset_severity_in_prose_is_fine():
 
 
 def test_empty_sections_are_rejected():
-    output = sample_output("HIGH", email_body_ja="  ", recommended_initial_actions_ja=[" "])
+    output = sample_output("HIGH", email_body_ja="  ", recommended_initial_actions_ja=[" "],
+                           recommended_initial_actions_en=[])
     issues = validate_ai_output(output, "HIGH")
     assert "empty_field: email_body_ja" in issues
     assert "empty_list: recommended_initial_actions_ja" in issues
+    assert "empty_list: recommended_initial_actions_en" in issues
 
 
 def test_unknown_items_may_be_empty():

@@ -2,8 +2,10 @@
 The structured output every AI provider must return, and the audit record of
 the call that produced it.
 
-AIOutput mirrors the field list the client specified for the OpenAI integration
-one-for-one. It is enforced three times:
+AIOutput is the field list the client specified for the OpenAI integration,
+plus one field of ours: recommended_initial_actions_en, the English version of
+the countermeasures list for the engineer email (the client's list has them in
+Japanese only). It is enforced three times:
 
   1. as the provider's structured-output JSON schema (strict mode on OpenAI —
      see src/services/ai/schema_builder.py), with `risk_level` pinned to the one
@@ -46,8 +48,16 @@ class AIOutput(BaseModel):
                     "confirmation, and investigation pointers.",
     )
     recommended_initial_actions_ja: list[str] = Field(
-        description="Japanese list of cautious, non-destructive initial actions. Any containment or "
-                    "destructive step must be phrased as requiring human confirmation.",
+        description="Japanese list of detailed, cautious recommended countermeasures, most urgent first. "
+                    "Each item says what to do, where (e.g. which ESET PROTECT screen or which host), "
+                    "what to look for or the expected result, and who must approve it. Any containment "
+                    "or destructive step must be phrased as requiring human confirmation.",
+    )
+    recommended_initial_actions_en: list[str] = Field(
+        description="English list of the same recommended countermeasures for overseas engineers, "
+                    "in the same order, with the technical detail an engineer needs: the exact "
+                    "indicators (hash, path, IP, domain) to search or block, where to check, what "
+                    "evidence to collect, and who must approve any containment step.",
     )
     additional_confirmation_items_ja: list[str] = Field(
         description="Japanese list of items that should be confirmed with the client or in ESET PROTECT.",

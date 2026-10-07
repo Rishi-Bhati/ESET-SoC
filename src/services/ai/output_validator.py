@@ -33,7 +33,9 @@ _REQUIRED_TEXT_FIELDS = (
     "alert_summary_ja", "risk_reason_ja", "client_notification_ja", "internal_summary_ja",
     "engineer_summary_en", "backlog_comment_ja", "email_subject_ja", "email_body_ja",
 )
-_REQUIRED_LIST_FIELDS = ("recommended_initial_actions_ja", "additional_confirmation_items_ja")
+_REQUIRED_LIST_FIELDS = (
+    "recommended_initial_actions_ja", "recommended_initial_actions_en", "additional_confirmation_items_ja",
+)
 _BRACKETED_LEVEL_RE = re.compile(r"[【\[]\s*(" + "|".join(RISK_LEVELS) + r")\s*[】\]]", re.IGNORECASE)
 # CJK Unified Ideographs (+ Extension A, compatibility ideographs, and the
 # supplementary-plane extensions).

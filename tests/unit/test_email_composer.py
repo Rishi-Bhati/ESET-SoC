@@ -13,6 +13,7 @@ def _ai_output(risk="HIGH"):
     return sample_output(
         risk, "Win32/Example.A",
         recommended_initial_actions_ja=["対応1", "対応2"],
+        recommended_initial_actions_en=["Action one.", "Action two."],
         additional_confirmation_items_ja=["確認事項1"],
         unknown_items=["file_hash: Unknown", "threat_handled: Needs confirmation"],
         email_subject_ja=f"【{risk}】セキュリティアラートのご報告",
@@ -99,6 +100,9 @@ async def test_bodies_contain_their_notification_content(all_recipients):
     assert "[MOCK] Technical summary" in emails["ENGINEER_EN"]
     assert "Alert severity is HIGH" in emails["ENGINEER_EN"]
     assert "file_hash: Unknown" in emails["ENGINEER_EN"]
+    # Engineers get the countermeasures in English, numbered; the Japanese list stays internal.
+    assert "1. Action one." in emails["ENGINEER_EN"] and "2. Action two." in emails["ENGINEER_EN"]
+    assert "対応1" not in emails["ENGINEER_EN"]
 
 
 @pytest.mark.asyncio

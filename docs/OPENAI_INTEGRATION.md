@@ -1,6 +1,6 @@
 # ESET SOC Lite — OpenAI API Integration (PoC)
 
-**Status:** implemented and tested · **Prompt version:** v2.1 · **Primary AI provider:** OpenAI API
+**Status:** implemented and tested · **Prompt version:** v2.4 · **Primary AI provider:** OpenAI API
 
 This document answers the client instruction *"Instruction for OpenAI API Integration for ESET SOC Lite PoC"* item by item, and ends with the requested technical note (§8).
 
@@ -74,13 +74,13 @@ Thresholds and endpoint lists can be changed through configuration, without a co
 | 1 | Do not let OpenAI decide the final risk level. The input must already include the calculated level. | The rule engine computes the level before the AI call. The request carries it as `predefined_risk.level` together with the rationale and the rules that fired. The output schema **pins `risk_level` to that single value** (e.g. `"enum": ["HIGH"]`), so OpenAI's strict structured output cannot return another level. After the response, the validator checks again that the level is unchanged and that no text carries a contradicting label (e.g. `【LOW】` on a HIGH alert). Downstream, only the rule engine's value is ever used. |
 | 2 | Explain based on provided facts only; no invented information; no assumed infection, leakage or compromise. | The system prompt (§5) forbids inventing fields or values, speculating, and claiming infection, leakage, compromise or safety. A post-generation lint blocks these claims in English and Japanese before anything is sent (§8.5). |
 | 3 | Mark missing information as "Unknown" or "Needs confirmation". | The request includes `unknown_fields` (normalized fields the platform could not determine). The prompt requires each missing or unclear item in `unknown_items` in the form `<field>: Unknown` or `<field>: Needs confirmation`, and 「不明」/「要確認」 in Japanese text. |
-| 4 | The model output must be structured JSON with a defined schema. | Output is OpenAI structured output (`response_format: json_schema`, `strict: true`) using exactly the recommended fields. Schema in §3. |
+| 4 | The model output must be structured JSON with a defined schema. | Output is OpenAI structured output (`response_format: json_schema`, `strict: true`) using the recommended fields plus one English field for the engineer email (`recommended_initial_actions_en`). Schema in §3. |
 
 ---
 
 ## 3. Output JSON schema
 
-The output uses the recommended field list **exactly**, with no fields added or removed. It is defined in `src/models/ai_output.py` and sent to OpenAI as the strict JSON Schema below.
+The output uses the recommended field list, with no fields removed and **one field added**: `recommended_initial_actions_en`, the English version of `recommended_initial_actions_ja`. The recommended list has the countermeasures in Japanese only, and the engineer email goes to overseas engineers. It is defined in `src/models/ai_output.py` and sent to OpenAI as the strict JSON Schema below.
 
 At request time, `risk_level.enum` is narrowed to the one level the rule engine computed.
 
@@ -115,11 +115,18 @@ At request time, `risk_level.enum` is narrowed to the one level the rule engine 
       "type": "string"
     },
     "engineer_summary_en": {
-      "description": "English technical summary for overseas engineers: detection, endpoint, indicators, handling status, risk basis, unknowns, and investigation pointers.",
+      "description": "English technical summary for overseas engineers: the reported detection, endpoint, indicators and handling status, the risk basis, points needing confirmation, and investigation pointers.",
       "type": "string"
     },
     "recommended_initial_actions_ja": {
-      "description": "Japanese list of cautious, non-destructive initial actions. Any containment or destructive step must be phrased as requiring human confirmation.",
+      "description": "Japanese list of detailed, cautious recommended countermeasures, most urgent first. Each item says what to do, where (e.g. which ESET PROTECT screen or which host), what to look for or the expected result, and who must approve it. Any containment or destructive step must be phrased as requiring human confirmation.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "recommended_initial_actions_en": {
+      "description": "English list of the same recommended countermeasures for overseas engineers, in the same order, with the technical detail an engineer needs: the exact indicators (hash, path, IP, domain) to search or block, where to check, what evidence to collect, and who must approve any containment step.",
       "items": {
         "type": "string"
       },
@@ -133,7 +140,7 @@ At request time, `risk_level.enum` is narrowed to the one level the rule engine 
       "type": "array"
     },
     "unknown_items": {
-      "description": "Missing or unclear information, one entry per item, in the form '<field or topic>: Unknown' or '<field or topic>: Needs confirmation'.",
+      "description": "Reported information that is unclear, conflicting or needs verification, one entry per item, in the form '<field or topic>: Needs confirmation'. Never an entry for a field the alert simply did not include.",
       "items": {
         "type": "string"
       },
@@ -160,6 +167,7 @@ At request time, `risk_level.enum` is narrowed to the one level the rule engine 
     "internal_summary_ja",
     "engineer_summary_en",
     "recommended_initial_actions_ja",
+    "recommended_initial_actions_en",
     "additional_confirmation_items_ja",
     "unknown_items",
     "backlog_comment_ja",
@@ -177,13 +185,13 @@ The four notification emails are built from these fields (`src/services/email_co
 | `CLIENT_JA` | Client (Mac Systems) | `email_subject_ja` + `email_body_ja` |
 | `CTHREE_JA` | C-Three Index (front office) | Review request: `alert_summary_ja`, `risk_reason_ja`, `additional_confirmation_items_ja`, `unknown_items`, plus the client email draft |
 | `INTERNAL_JA` | Our internal team | `internal_summary_ja`, `risk_reason_ja`, `recommended_initial_actions_ja`, `additional_confirmation_items_ja`, `unknown_items`, `client_notification_ja`, `backlog_comment_ja` |
-| `ENGINEER_EN` | Overseas engineers | `engineer_summary_en`, `unknown_items`, and the rules that set the risk level |
+| `ENGINEER_EN` | Overseas engineers | `engineer_summary_en`, `recommended_initial_actions_en` (as a numbered "Recommended countermeasures" list), `unknown_items`, and the rules that set the risk level |
 
 The dashboard shows every field. The **AI Content** view has tabs for Analysis, Client email, Client message, Internal, Engineer (EN) and Backlog comment, and each tab has a copy button. `backlog_comment_ja` is ready to paste into Backlog.
 
 ### Sample output (HIGH case)
 
-This was produced by the live pipeline from the test case `high_malware_not_handled.json`. OpenAI project keys were not yet provisioned, so it was generated through the same code path using the alternative Gemini provider. Field content and validation are identical for OpenAI.
+This was produced by the live pipeline from the test case `high_malware_not_handled.json`, with prompt v2.1. It predates `recommended_initial_actions_en` and the detailed-countermeasure instructions added in v2.3–v2.4, so its action list is shorter than current output. OpenAI project keys were not yet provisioned, so it was generated through the same code path using the alternative Gemini provider. Field content and validation are identical for OpenAI.
 
 ```json
 {

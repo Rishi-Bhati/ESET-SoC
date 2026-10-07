@@ -347,7 +347,7 @@ def test_ai_content_lists_generated_notifications(client: TestClient):
     assert it["detection_name"] == "Win32/Test.Threat"
     for key in ("risk_level", "alert_summary_ja", "risk_reason_ja", "client_notification_ja",
                 "internal_summary_ja", "engineer_summary_en", "recommended_initial_actions_ja",
-                "additional_confirmation_items_ja", "unknown_items", "backlog_comment_ja",
+                "recommended_initial_actions_en", "additional_confirmation_items_ja", "unknown_items", "backlog_comment_ja",
                 "email_subject_ja", "email_body_ja"):
         assert key in it["ai_output"]
 
