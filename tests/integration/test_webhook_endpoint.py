@@ -148,3 +148,26 @@ def test_webhook_accepts_completely_non_eset_shaped_json(client: TestClient):
     # the fixture in tests/conftest.py's mock_gemini reads alert.detection_name, so
     # this also exercises the alias resolution actually reaching the AI stage.
     assert result["normalized_alert"]["severity"] == "critical"
+
+
+def test_duplicate_window_blocks_a_burst_but_not_a_later_recurrence(client: TestClient, monkeypatch):
+    """Identical alerts inside DEDUP_TTL_SECONDS are dropped; the same alert after
+    the window is processed again, and dropped duplicates do not extend it."""
+    from src.storage import deduplication
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(deduplication.time, "time", lambda: clock[0])
+    monkeypatch.setattr(settings, "dedup_ttl_seconds", 300)
+    headers = {"Authorization": "Bearer test_token"}
+    # Shaped like ESET's test webhook: no alert_id, unfilled placeholders, so the
+    # key is a hash of the whole (identical) body.
+    payload = {"event_type": "${event_type}", "occurred_at": "${event_timestamp}",
+               "raw_subject": "TEST: burst"}
+
+    assert client.post("/webhook/eset", headers=headers, json=payload).json()["status"] == "queued"
+    clock[0] += 60
+    assert client.post("/webhook/eset", headers=headers, json=payload).json()["status"] == "duplicate"
+    clock[0] += 200   # 260s after the accepted copy; the drop above must not have extended the window
+    assert client.post("/webhook/eset", headers=headers, json=payload).json()["status"] == "duplicate"
+    clock[0] += 41    # 301s after the accepted copy
+    assert client.post("/webhook/eset", headers=headers, json=payload).json()["status"] == "queued"

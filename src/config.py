@@ -136,7 +136,14 @@ class Settings(BaseSettings):
     sqlite_db_path: str = Field("data/soc_lite.db", validation_alias="SQLITE_DB_PATH")
 
     # --- Deduplication ---
-    dedup_ttl_seconds: int = Field(3600, validation_alias="DEDUP_TTL_SECONDS")
+    # How long an identical alert is suppressed after the first copy is accepted.
+    # Meant to absorb a burst of re-sends (ESET retries, a double-clicked "send
+    # test"), not to hide a recurrence: ESET's own test webhook sends the same
+    # body every time (its ${...} placeholders, timestamp included, are never
+    # filled in), so a one-hour window blocked every repeat test for an hour.
+    # The window is fixed from the accepted copy — a dropped duplicate does not
+    # extend it — so a recurring alert always gets through once it has passed.
+    dedup_ttl_seconds: int = Field(300, gt=0, validation_alias="DEDUP_TTL_SECONDS")
 
     # --- Pipeline Limits ---
     # Includes pipelines queued in HTTP BackgroundTasks, not only running AI calls.
