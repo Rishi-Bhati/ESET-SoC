@@ -1,0 +1,62 @@
+# Deploys to production (stack eset-soc-lite-poc) by hand: Actions → Deploy →
+# Run workflow. Runs the tests, then deploy/aws/release.sh, then checks /health.
+#
+# AWS access comes from the IAM role below through GitHub's OIDC token, so no
+# AWS keys are stored in GitHub. The role trusts only this repository's
+# main branch; deploying another branch needs its trust policy
+# changed by an account admin.
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # lets the job request the OIDC token AWS checks
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  AWS_ROLE_ARN: arn:aws:iam::459181228792:role/eset-soc-lite-github-deploy
+  STACK: eset-soc-lite-poc
+  HEALTH_URL: https://soc.rishibhati.in/health
+
+jobs:
+  test:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt pytest pytest-asyncio
+      - run: python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Build, push and roll out
+        run: deploy/aws/release.sh "$STACK" | tee release.log
+      - name: Check the rollout succeeded
+        run: |
+          grep -q '"Status": "Success"' release.log
+      - name: Check the app is healthy
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS "$HEALTH_URL" | tee health.json | grep -q '"status":"ok"'; then exit 0; fi
+            sleep 10
+          done
+          echo "Health check failed"; cat health.json || true; exit 1
