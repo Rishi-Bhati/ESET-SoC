@@ -26,6 +26,11 @@ dashboard outbox) and HTML (EmailMessage.html — what the mail service sends).
 
 Recipients come from the dashboard-editable settings store, falling back to
 the .env values (see src/storage/settings_store.py).
+
+Times are stated in JST (src/utils/jst_time.py). Every body built here carries
+the detection time from that one conversion; the AI is given the same
+pre-converted value, and the validator rejects any other time zone in its
+text, so the AI-written client body agrees with the rest.
 """
 from datetime import datetime, timezone
 import structlog
@@ -35,6 +40,7 @@ from src.models.email_message import EmailMessage
 from src.services.email_layout import EmailDocument, Section, render_html, render_text
 from src.services.risk_text_ja import to_japanese
 from src.storage import settings_store
+from src.utils.jst_time import MISSING, AlertTime, parse_alert_time
 
 logger = structlog.get_logger(__name__)
 
@@ -55,6 +61,10 @@ def _alert_label(result: PipelineResult) -> str:
 
 def _subject(result: PipelineResult) -> str:
     return f"[{result.risk_level}] {_alert_label(result)}"
+
+
+def _detected_at(result: PipelineResult) -> AlertTime:
+    return parse_alert_time(result.normalized_alert.occurred_at)
 
 
 def _client_subject(result: PipelineResult) -> str:
@@ -102,6 +112,14 @@ def _endpoint_fact(a: NormalizedAlert) -> str | None:
     return a.endpoint_name or a.endpoint_type
 
 
+def _occurred_at(result: PipelineResult, lang: str) -> str | None:
+    """The reported time in JST, or None (no row) when the alert reported none."""
+    detected = _detected_at(result)
+    if detected.status == MISSING:
+        return None
+    return detected.ja if lang == "ja" else detected.en
+
+
 def _alert_facts(result: PipelineResult, lang: str) -> Section:
     """One row per fact the alert actually reported — an absent field gets no
     row, not an "UNKNOWN" one. A section with no rows is not rendered at all."""
@@ -110,7 +128,7 @@ def _alert_facts(result: PipelineResult, lang: str) -> Section:
     rows = [
         ("検知名" if ja else "Detection", a.detection_name, False),
         ("エンドポイント" if ja else "Endpoint", _endpoint_fact(a), False),
-        ("発生日時" if ja else "Occurred at", a.occurred_at, False),
+        ("発生日時" if ja else "Occurred at", _occurred_at(result, lang), False),
         ("ESETの重大度" if ja else "ESET severity", a.severity, False),
         ("実施された対応" if ja else "Action taken", a.action_taken, False),
         ("脅威の処理済み" if ja else "Threat handled", _yes_no(a.threat_handled, lang), False),

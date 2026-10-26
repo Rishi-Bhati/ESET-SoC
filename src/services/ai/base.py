@@ -46,6 +46,7 @@ from src.services.ai.prompt_masking import mask_alert_for_prompt, mask_raw_paylo
 from src.services.ai.redaction import redact_value
 from src.services.ai.schema_builder import build_strict_json_schema
 from src.utils.correlation import get_correlation_id
+from src.utils.jst_time import MISSING, parse_alert_time
 from src.utils.retry import get_retry_log, reset_retry_log
 
 logger = structlog.get_logger(__name__)
@@ -271,6 +272,13 @@ class BaseAIProvider(ABC):
             "normalized_alert": normalized,
             "original_submitted_payload": original,
         }
+        # Converted here rather than left to the model: a model converting time
+        # zones itself gets it wrong often enough to matter, and the composed
+        # emails use this same conversion (src/utils/jst_time.py). Like any other
+        # field, it is left out when the alert reported no time.
+        detected = parse_alert_time(alert.occurred_at)
+        if detected.status != MISSING:
+            prompt_data["detection_time"] = {"ja": detected.ja, "en": detected.en, "status": detected.status}
         if intel is not None:
             prompt_data["threat_intelligence"] = intel
 
