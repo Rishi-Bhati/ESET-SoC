@@ -443,6 +443,37 @@ document.getElementById("alertsPageSize").addEventListener("click", (e) => {
   if (b) { alertsPaging.size = Number(b.dataset.size); alertsPaging.page = 1; renderAlerts(); }
 });
 
+/** Downloads EVERY recorded alert as one .xlsx — deliberately not the table's
+ * loaded window, filters or page (src/services/alert_export.py). Fetched rather
+ * than linked because the request needs the key header. */
+document.getElementById("alertsExport").onclick = async () => {
+  const btn = document.getElementById("alertsExport");
+  btn.disabled = true;
+  btn.textContent = t("btn_exporting_alerts");
+  try {
+    const res = await fetch(API + "/alerts/export", {
+      headers: dashKey() ? { "X-Dashboard-Key": dashKey() } : {},
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const blob = await res.blob();
+    const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name ? name[1] : "soc-lite-alerts.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    // The exact count, not fmtCount's compact form: "all 12K alerts" is not a count.
+    const count = Number(res.headers.get("X-Alert-Count")) || 0;
+    toast(t("toast_alerts_exported", count.toLocaleString(uiLocale())));
+  } catch (e) {
+    toast(t("toast_alerts_export_failed"), true);
+  }
+  btn.disabled = false;
+  btn.textContent = t("btn_export_alerts_xlsx");
+};
+
 document.getElementById("alertRows").addEventListener("click", async (e) => {
   const timeline = e.target.getAttribute && e.target.getAttribute("data-timeline");
   if (timeline) {

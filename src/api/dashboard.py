@@ -16,6 +16,7 @@ from src.services import email_outbox, email_dispatcher
 from src.services.email_delivery import get_provider
 from src.services import pipeline_capacity
 from src.services import log_reader
+from src.services import alert_export
 from src.services.output_writer import alert_labels
 from src.api.webhook import run_pipeline_task
 from src.prompts.system_prompts import PROMPT_VERSION
@@ -99,6 +100,28 @@ async def get_alerts(request: Request) -> dict[str, Any]:
         if "detection_name" not in record and "endpoint_name" not in record:
             record.update(_labels_from_result(record.get("correlation_id", "")))
     return {"alerts": list(reversed(records))}
+
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/alerts/export")
+async def export_alerts(request: Request) -> Response:
+    """
+    Every alert ever recorded — not the table's loaded window, filters or page —
+    as one .xlsx workbook with every field of its detail view
+    (src/services/alert_export.py).
+    """
+    _check_access(request)
+    content, count = await alert_export.export_alerts_xlsx()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return Response(
+        content=content, media_type=XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="soc-lite-alerts-{stamp}.xlsx"',
+            "X-Alert-Count": str(count),
+        },
+    )
 
 
 _label_cache: dict[str, dict[str, str]] = {}

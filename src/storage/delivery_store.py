@@ -107,6 +107,22 @@ async def list_deliveries(
     return out
 
 
+async def list_all_deliveries() -> list[dict[str, Any]]:
+    """Every handoff record, unpaged — for the Alerts spreadsheet export."""
+    query = """
+        SELECT email_id, correlation_id, notification_type, recipients, subject,
+               status, attempts, remote_id, error, created_at, updated_at
+        FROM email_deliveries
+        ORDER BY created_at, email_id
+    """
+    out = []
+    async with db_session() as conn:
+        async with conn.execute(query) as cursor:
+            async for row in cursor:
+                out.append(_row(row))
+    return out
+
+
 async def counts_by_status() -> dict[str, int]:
     out = {PENDING: 0, ACCEPTED: 0, FAILED: 0}
     async with db_session() as conn:
