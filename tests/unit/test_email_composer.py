@@ -21,13 +21,14 @@ def _ai_output(risk="HIGH"):
     )
 
 
-def _result(status="SUCCESS", ai=True, risk="HIGH"):
+def _result(status="SUCCESS", ai=True, risk="HIGH", occurred_at="2026-09-20T03:05:00Z"):
     return PipelineResult(
         correlation_id="cid-123", source="WEBHOOK",
         received_at="2026-01-01T00:00:00Z", processed_at="2026-01-01T00:00:05Z",
         pipeline_status=status,
         normalized_alert=NormalizedAlert(
-            detection_name="Win32/Example.A", endpoint_name="HOST-01", severity=risk),
+            detection_name="Win32/Example.A", endpoint_name="HOST-01", severity=risk,
+            occurred_at=occurred_at),
         risk_level=risk, risk_rationale="because",
         risk_factors=[{"rule": "severity_high_unhandled", "effect": "base",
                        "detail": "Alert severity is HIGH and the threat is not handled."}],
@@ -111,6 +112,44 @@ async def test_fallback_notice_goes_to_our_team_only(all_recipients):
     assert "Win32/Example.A" in internal.body and "Alert severity is HIGH" in internal.body
     assert "Timeout" in engineer.body and "req_abc" in engineer.body
     assert "no client notification was sent" in engineer.body
+
+
+# ------------------------------ times in JST ------------------------------
+
+@pytest.mark.asyncio
+async def test_composed_bodies_state_the_detection_time_in_jst(all_recipients):
+    emails = {e.notification_type: e.body for e in await email_composer.compose_emails(_result())}
+    assert "【検知日時】2026年09月20日 12:05:00 JST" in emails["CTHREE_JA"]
+    assert "【検知日時】2026年09月20日 12:05:00 JST" in emails["INTERNAL_JA"]
+    assert "DETECTED AT: 2026-09-20 12:05:00 JST" in emails["ENGINEER_EN"]
+    for body in emails.values():
+        assert "03:05" not in body and "UTC" not in body
+
+
+@pytest.mark.asyncio
+async def test_fallback_bodies_state_the_detection_time_in_jst(all_recipients):
+    emails = await email_composer.compose_fallback_emails(_result(status="PARTIAL", ai=False))
+    for e in emails:
+        assert "- Occurred at: 2026-09-20 12:05:00 JST" in e.body
+        assert "2026-09-20T03:05:00Z" not in e.body
+
+
+@pytest.mark.asyncio
+async def test_a_time_without_a_zone_is_shown_unconverted(all_recipients):
+    result = _result(occurred_at="2026-09-20 03:05:00")
+    emails = {e.notification_type: e.body for e in await email_composer.compose_emails(result)}
+    assert "【検知日時】2026-09-20 03:05:00（送信元にタイムゾーン情報なし・JST未換算）" in emails["INTERNAL_JA"]
+    assert "DETECTED AT: 2026-09-20 03:05:00 (time zone not stated by the source; not converted to JST)" \
+        in emails["ENGINEER_EN"]
+    assert "12:05" not in emails["ENGINEER_EN"]
+
+
+@pytest.mark.asyncio
+async def test_a_missing_time_is_reported_as_unknown(all_recipients):
+    emails = {e.notification_type: e.body
+              for e in await email_composer.compose_emails(_result(occurred_at="UNKNOWN"))}
+    assert "【検知日時】不明" in emails["INTERNAL_JA"]
+    assert "DETECTED AT: UNKNOWN" in emails["ENGINEER_EN"]
 
 
 @pytest.mark.asyncio

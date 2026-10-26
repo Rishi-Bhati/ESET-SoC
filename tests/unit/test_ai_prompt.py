@@ -116,6 +116,25 @@ def test_system_prompt_states_the_clients_rules():
         assert phrase in lowered, phrase
 
 
+async def test_prompt_carries_the_detection_time_already_converted_to_jst():
+    _, request = await _run(alert=_sample_alert(occurred_at="2026-09-20T03:05:00Z"))
+    assert prompt_data(request)["detection_time"] == {
+        "ja": "2026年09月20日 12:05:00 JST", "en": "2026-09-20 12:05:00 JST", "status": "converted_to_jst",
+    }
+
+
+async def test_prompt_does_not_guess_a_zone_for_a_time_without_one():
+    _, request = await _run(alert=_sample_alert(occurred_at="2026-09-20 03:05:00"))
+    detection_time = prompt_data(request)["detection_time"]
+    assert detection_time["status"] == "timezone_not_stated"
+    assert "JST未換算" in detection_time["ja"] and "not converted to JST" in detection_time["en"]
+
+
+def test_system_prompt_requires_jst_times_copied_from_the_platform():
+    assert "detection_time" in SYSTEM_PROMPT and "JST" in SYSTEM_PROMPT
+    assert "never convert" in SYSTEM_PROMPT.lower()
+
+
 async def test_system_prompt_is_sent_as_its_own_message():
     _, request = await _run()
     assert request.system_prompt == SYSTEM_PROMPT.strip()

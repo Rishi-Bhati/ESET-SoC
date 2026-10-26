@@ -151,6 +151,57 @@ def test_output_claiming_the_environment_is_safe_is_blocked(client: TestClient, 
     assert "prohibited_phrase: 環境は安全です" in out["result"]["ai_run"]["validation_issues"]
 
 
+def _emails_for(client: TestClient, cid: str) -> dict:
+    return {e["notification_type"]: e for e in client.get("/dashboard/api/emails").json()["emails"]
+            if e["correlation_id"] == cid}
+
+
+def test_every_email_states_the_detection_time_in_jst(client: TestClient, recipients, ai_responder):
+    # A model that follows the prompt: copies the platform's JST string verbatim.
+    def responder(request):
+        when = prompt_data(request)["detection_time"]
+        return ProviderResponse(text=sample_output(
+            "HIGH", email_body_ja=f"・検知日時: {when['ja']}",
+            engineer_summary_en=f"Detected at {when['en']}.").model_dump_json())
+    ai_responder(responder)
+
+    out = run(client, load_case("high_malware_not_handled"))   # occurred_at 2026-09-20T03:05:00Z
+    assert out["job"]["status"] == "SUCCESS"
+    emails = _emails_for(client, out["cid"])
+    assert set(emails) == {"CLIENT_JA", "CTHREE_JA", "INTERNAL_JA", "ENGINEER_EN"}
+    assert "2026年09月20日 12:05:00 JST" in emails["CLIENT_JA"]["body"]
+    assert "【検知日時】2026年09月20日 12:05:00 JST" in emails["CTHREE_JA"]["body"]
+    assert "【検知日時】2026年09月20日 12:05:00 JST" in emails["INTERNAL_JA"]["body"]
+    assert "DETECTED AT: 2026-09-20 12:05:00 JST" in emails["ENGINEER_EN"]["body"]
+    for email in emails.values():
+        assert "UTC" not in email["body"] and "03:05" not in email["body"]
+
+
+def test_ai_output_stating_a_utc_time_is_blocked_and_the_team_gets_jst(
+        client: TestClient, recipients, ai_responder):
+    ai_responder(lambda request: ProviderResponse(text=sample_output(
+        "HIGH", email_body_ja="・検知日時: 2026年9月20日 03:05（UTC）").model_dump_json()))
+    out = run(client, load_case("high_malware_not_handled"))
+    result = out["result"]
+    assert out["job"]["status"] == "PARTIAL"
+    assert result["ai_run"]["status"] == "BLOCKED"
+    assert any(i.startswith("non_jst_time: email_body_ja") for i in result["ai_run"]["validation_issues"])
+
+    emails = _emails_for(client, out["cid"])
+    assert set(emails) == {"INTERNAL_JA", "ENGINEER_EN"}, "a UTC client email is never sent"
+    assert all("- Occurred at: 2026-09-20 12:05:00 JST" in e["body"] for e in emails.values())
+
+
+def test_syslog_time_reaches_the_ai_and_the_emails_as_jst(client: TestClient, recipients):
+    res = client.post("/webhook/syslog", headers=AUTH, json={
+        "event_type": "ThreatDetected", "id": "syslog-jst-1", "time": "2026-09-20T03:05:00Z",
+        "severity": "HIGH", "threat_name": "Win32/Example.A", "hostname": "HOST-01"})
+    assert res.status_code == 200, res.text
+    cid = res.json()["correlation_id"]
+    assert prompt_data(FakeProvider.requests[-1])["detection_time"]["en"] == "2026-09-20 12:05:00 JST"
+    assert "DETECTED AT: 2026-09-20 12:05:00 JST" in _emails_for(client, cid)["ENGINEER_EN"]["body"]
+
+
 def test_truncated_output_is_a_recorded_failure(client: TestClient, ai_responder):
     ai_responder(lambda request: AIOutputRejected("Output was cut off at AI_MAX_OUTPUT_TOKENS=16000"))
     out = run(client, load_case("medium_partially_handled"))

@@ -18,6 +18,7 @@ from src.services.ai.output_validator import validate_ai_output
 from src.services.ai import trace_recorder
 from src.storage import job_store, observation_store
 from src.utils import events
+from src.utils.jst_time import parse_alert_time
 
 logger = structlog.get_logger(__name__)
 
@@ -189,10 +190,11 @@ async def process_alert_pipeline(correlation_id: str, raw_payload: dict, source:
         await events.emit_stage(correlation_id, "AI", "failed", detail=(ai_error or "")[:200])
 
     # Step 5: Validate the output before anything is sent — risk level unchanged,
-    # nothing empty, no prohibited claims (src/services/ai/output_validator.py).
+    # nothing empty, times only in JST, no prohibited claims (src/services/ai/output_validator.py).
     if ai_output is not None:
         await events.emit_stage(correlation_id, "LINT", "active")
-        issues = validate_ai_output(ai_output, risk_level)
+        detected = parse_alert_time(alert.occurred_at)
+        issues = validate_ai_output(ai_output, risk_level, allowed_times=(detected.ja, detected.en))
         if issues:
             ai_run.status = "BLOCKED"
             ai_run.validation_issues = issues

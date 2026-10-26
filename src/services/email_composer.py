@@ -20,12 +20,18 @@ Two paths:
 
 Recipients come from the dashboard-editable settings store, falling back to
 the .env values (see src/storage/settings_store.py).
+
+Times are stated in JST (src/utils/jst_time.py). Every body built here carries
+the detection time from that one conversion; the AI is given the same
+pre-converted value, and the validator rejects any other time zone in its
+text, so the AI-written client body agrees with the rest.
 """
 from datetime import datetime, timezone
 import structlog
 from src.models.pipeline_result import PipelineResult
 from src.models.email_message import EmailMessage
 from src.storage import settings_store
+from src.utils.jst_time import AlertTime, parse_alert_time
 
 logger = structlog.get_logger(__name__)
 
@@ -51,6 +57,10 @@ def _factor_lines(result: PipelineResult) -> str:
     return _bullets(lines) if lines else f"- {result.risk_rationale}"
 
 
+def _detected_at(result: PipelineResult) -> AlertTime:
+    return parse_alert_time(result.normalized_alert.occurred_at)
+
+
 def _client_subject(result: PipelineResult) -> str:
     subject = result.ai_output.email_subject_ja.strip()
     # The risk label must be visible in the client's inbox even if the model
@@ -68,7 +78,8 @@ def _cthree_body(result: PipelineResult) -> str:
     ai = result.ai_output
     return (
         "クライアント向け通知文の確認をお願いいたします。\n\n"
-        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n\n"
+        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n"
+        f"【検知日時】{_detected_at(result).ja}\n\n"
         f"【概要】\n{ai.alert_summary_ja}\n\n"
         f"【リスク判定の理由】\n{ai.risk_reason_ja}\n\n"
         f"【クライアントへの追加確認事項】\n{_bullets(ai.additional_confirmation_items_ja)}\n\n"
@@ -83,7 +94,8 @@ def _internal_body(result: PipelineResult) -> str:
     ai = result.ai_output
     return (
         f"{ai.internal_summary_ja}\n\n"
-        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n\n"
+        f"【リスクレベル】{result.risk_level}（ルールベース判定）\n"
+        f"【検知日時】{_detected_at(result).ja}\n\n"
         f"【リスク判定の理由】\n{ai.risk_reason_ja}\n\n"
         f"【推奨初動対応】\n{_bullets(ai.recommended_initial_actions_ja)}\n\n"
         f"【追加確認事項】\n{_bullets(ai.additional_confirmation_items_ja)}\n\n"
@@ -99,6 +111,7 @@ def _engineer_body(result: PipelineResult) -> str:
     return (
         f"{ai.engineer_summary_en}\n\n"
         f"RISK LEVEL: {result.risk_level} (rule-based)\n"
+        f"DETECTED AT: {_detected_at(result).en}\n"
         f"RULES APPLIED:\n{_factor_lines(result)}\n\n"
         f"UNKNOWN / NEEDS CONFIRMATION:\n{_bullets(ai.unknown_items)}\n\n"
         f"Correlation ID: {result.correlation_id}"
@@ -118,7 +131,7 @@ def _alert_fact_lines(result: PipelineResult) -> str:
     a = result.normalized_alert
     rows = [
         ("Detection", a.detection_name), ("Endpoint", f"{a.endpoint_name} ({a.endpoint_type})"),
-        ("Occurred at", a.occurred_at), ("ESET severity", a.severity), ("Action taken", a.action_taken),
+        ("Occurred at", _detected_at(result).en), ("ESET severity", a.severity), ("Action taken", a.action_taken),
         ("Threat handled", a.threat_handled), ("Isolated", a.isolation_status),
         ("Object", a.object_uri), ("File hash", a.file_hash), ("IP", a.ip_address), ("Domain", a.domain),
     ]

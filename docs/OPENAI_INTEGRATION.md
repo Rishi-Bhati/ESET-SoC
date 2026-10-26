@@ -1,6 +1,6 @@
 # ESET SOC Lite — OpenAI API Integration (PoC)
 
-**Status:** implemented and tested · **Prompt version:** v2.1 · **Primary AI provider:** OpenAI API
+**Status:** implemented and tested · **Prompt version:** v2.2 · **Primary AI provider:** OpenAI API
 
 This document answers the client instruction *"Instruction for OpenAI API Integration for ESET SOC Lite PoC"* item by item, and ends with the requested technical note (§8).
 
@@ -217,6 +217,7 @@ This was produced by the live pipeline from the test case `high_malware_not_hand
 
 Notes on the sample:
 
+- It was captured under prompt v2.1, which stated the detection time in UTC (`03:05（UTC）`). Since v2.2 every email states times in JST (§8.5) and the validator blocks this output; the same alert now reads `2026年09月20日 12:05:00 JST`.
 - The user name in the file path appears masked (`s********i`) because it was masked before being sent to the AI (§8.4).
 - The isolation step is phrased as requiring approval, as the prompt rules require.
 
@@ -364,6 +365,7 @@ The user message contains:
 | Block | Content |
 |---|---|
 | `predefined_risk` | `level`, `rationale`, and the rules that set or raised the level |
+| `detection_time` | `occurred_at` already converted to JST by the platform (`ja`, `en`, `status`); the model copies it and never converts times itself. A value without a time zone is never assumed to be UTC: it is shown as received, marked 「JST未換算」 / "not converted to JST". |
 | `normalized_alert` | event_type, occurred_at, severity, detection_name, endpoint_name, endpoint_type, os_name, action_taken, threat_handled, isolation_status, object_type, object_uri, file_hash, url, ip_address, domain, raw_subject, raw_content — **masked (§8.4)** |
 | `original_submitted_payload` | The alert JSON as received, **with the same masking**, so a field the platform did not map is not lost |
 | `threat_intelligence` | VirusTotal / AbuseIPDB verdicts. When lookups are simulated in a demo environment, this says `NOT_CHECKED` so demo data never appears as fact. |
@@ -398,6 +400,7 @@ The masked fields for each alert are recorded in its audit record (`ai_run.maske
    - the risk level is unchanged;
    - no contradicting 【LEVEL】 label appears;
    - no required section is empty;
+   - no time is stated in a zone other than JST (e.g. `03:05（UTC）`, `…T03:05:00Z`, `+00:00`); `UTC+9` and the exact `detection_time` value are allowed;
    - no prohibited claim appears, in English or Japanese: confirmed infection, confirmed leakage or exfiltration, confirmed compromise, "safe", "no action required", "resolved". Negated or hedged wording, such as 感染が確認されたわけではありません or "whether data was exfiltrated is unknown", is allowed.
 
 Any failure blocks the output, and the alert follows §8.6.
@@ -455,3 +458,4 @@ The platform is prepared for AWS (`deploy/aws/`, runbook in [AWS_DEPLOYMENT.md](
 5. **Masking policy.** Confirm the field list in §8.4, in particular whether endpoint names may be sent to OpenAI (currently yes, because they appear in the notifications).
 6. **Backlog.** The AI drafts `backlog_comment_ja` and the dashboard shows it ready to paste. Automatic posting to Backlog can be added once the Backlog space, project and API key are available.
 7. **Client email approval.** On success, client emails are currently queued and (with email delivery enabled) sent automatically, with C-Three receiving the same draft for review. Decide whether client emails should instead wait for human approval.
+8. **Time zone of ESET timestamps.** Every email states times in JST. A timestamp that carries its zone (ISO 8601 `Z` or offset, RFC 2822, Unix epoch) is converted. One without a zone, such as ESET PROTECT syslog's `20-Sep-2026 03:05:00` form, is shown as received and marked 「JST未換算」, because guessing wrong would shift the stated time by up to nine hours. Please confirm the zone ESET uses for the webhook and syslog exports; if it is fixed (e.g. always UTC), zone-less values can be converted too.
