@@ -109,7 +109,7 @@ def test_minimal_alert_fallback_email_lists_only_reported_facts(client: TestClie
     facts = engineer.split("■ Alert details\n", 1)[1].split("\n\n", 1)[0].splitlines()
     assert facts == [
         "- Detection: Win32/Agent.MINIMAL",
-        "- Occurred at: 2026-10-01T09:00:00Z",
+        "- Occurred at: 2026-10-01 18:00:00 JST",
         "- ESET severity: HIGH",
     ]
     for email in emails.values():

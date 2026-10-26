@@ -120,6 +120,33 @@ async def list_jobs(
                 })
     return jobs
 
+async def list_all_jobs() -> list[dict[str, Any]]:
+    """
+    Every job ever recorded, newest first, with no paging window — for the
+    Alerts spreadsheet export, which must contain the complete history
+    (src/services/alert_export.py). correlation_id is the primary key, so each
+    alert appears exactly once.
+    """
+    query = """
+        SELECT correlation_id, source, status, raw_payload, created_at, updated_at, error
+        FROM jobs
+        ORDER BY created_at DESC, correlation_id
+    """
+    jobs = []
+    async with db_session() as conn:
+        async with conn.execute(query) as cursor:
+            async for row in cursor:
+                jobs.append({
+                    "correlation_id": row[0],
+                    "source": row[1],
+                    "status": row[2],
+                    "raw_payload": json.loads(row[3]),
+                    "created_at": row[4],
+                    "updated_at": row[5],
+                    "error": row[6]
+                })
+    return jobs
+
 async def get_unfinished_jobs() -> list[dict[str, Any]]:
     """
     Retrieves all jobs in PENDING or PROCESSING status (used for crash recovery on startup).
