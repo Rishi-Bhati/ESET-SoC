@@ -1,5 +1,6 @@
-# Deploys to production (stack eset-soc-lite-poc) by hand: Actions → Deploy →
-# Run workflow. Runs the tests, then deploy/aws/release.sh, then checks /health.
+# Deploys to production (stack eset-soc-lite-poc) on every push to main that
+# touches more than docs, or by hand: Actions → Deploy → Run workflow. Runs the
+# tests, then deploy/aws/release.sh, then checks /health.
 #
 # AWS access comes from the IAM role below through GitHub's OIDC token, so no
 # AWS keys are stored in GitHub. The role trusts only this repository's
@@ -8,8 +9,16 @@
 name: Deploy
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "plans/**"
+      - "**/*.md"
   workflow_dispatch:
 
+# One deploy at a time. A running deploy is never cancelled mid-rollout; of the
+# pushes that arrive meanwhile, only the newest waits, and it deploys next.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
