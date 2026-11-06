@@ -31,23 +31,27 @@ import io
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import structlog
 from openpyxl import Workbook
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils import get_column_letter
 
 from src.config import settings
-from src.storage import delivery_store, job_store
-from src.utils.jst_time import CONVERTED, JST, parse_alert_time
+from src.services.xlsx_writer import (
+    DATETIME_FORMAT, EXCEL_CELL_MAX, SheetWriter, epoch_jst, iso_jst, recommendations_text,
+)
+from src.storage import delivery_store, job_store, recommendation_store
+from src.utils.jst_time import JST
 
 logger = structlog.get_logger(__name__)
 
-EXCEL_CELL_MAX = 32_767
-_DATETIME_FORMAT = "yyyy-mm-dd hh:mm:ss"
+# Kept under their old private names (tests and older callers import them).
+_SheetWriter = SheetWriter
+_epoch_jst = epoch_jst
+_iso_jst = iso_jst
+_DATETIME_FORMAT = DATETIME_FORMAT
+
 _CORRELATION_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
 RECORD_COMPLETE = "job + result"
@@ -62,7 +66,12 @@ _LEADING_COLUMNS = (
     "job.source", "normalized_alert.occurred_at (JST)", "normalized_alert.occurred_at (as received)",
     "received_at (JST)", "processed_at (JST)", "job.created_at (JST)", "job.updated_at (JST)",
     "job.error", "error", "risk_rationale", "risk_factors", "notifications", "email_deliveries",
+    "engineer_recommendations",
 )
+_RECOMMENDATION_COLUMNS = [
+    "correlation_id", "recommendation_id", "status", "created_at (JST)", "author", "body",
+    "retracted_at (JST)", "retracted_by", "retract_reason", "notification_email_id",
+]
 _TRAILING_COLUMNS = ("raw_request (JSON)",)
 
 # Result fields given their own treatment below instead of plain flattening.
@@ -74,20 +83,6 @@ _SPECIAL_RESULT_FIELDS = {
 
 
 # ------------------------------------------------------------------ values
-
-def _epoch_jst(value: Any) -> datetime | None:
-    if not isinstance(value, (int, float)):
-        return None
-    return datetime.fromtimestamp(value, tz=timezone.utc).astimezone(JST).replace(tzinfo=None)
-
-
-def _iso_jst(value: Any) -> datetime | str | None:
-    """A timestamp string as a JST date-time, or the string as given if its zone is unknown."""
-    if value in (None, ""):
-        return None
-    parsed = parse_alert_time(value)
-    return parsed.jst.replace(tzinfo=None) if parsed.status == CONVERTED else parsed.en
-
 
 def _is_scalar(value: Any) -> bool:
     return value is None or isinstance(value, (str, int, float, bool))
@@ -109,20 +104,25 @@ def _flatten(value: Any, prefix: str, out: dict[str, Any]) -> None:
         out[prefix] = value
 
 
-def _original_request(job: dict[str, Any] | None, result: dict[str, Any] | None) -> Any:
+def original_request(job: dict[str, Any] | None, result: dict[str, Any] | None) -> Any:
     """The original submitted JSON, as the dashboard's Raw view shows it
     (static/dashboard.js: originalRequestPayload)."""
     if job:
         outer = job.get("raw_payload") or {}
         inner = outer.get("raw_payload") if isinstance(outer, dict) else None
         return inner if isinstance(inner, dict) and inner else outer
-    return ((result or {}).get("normalized_alert") or {}).get("raw_payload") or {}
+    normalized = (result or {}).get("normalized_alert")
+    return (normalized.get("raw_payload") if isinstance(normalized, dict) else None) or {}
+
+
+_original_request = original_request
 
 
 # ------------------------------------------------------------------- rows
 
 def _alert_row(job: dict[str, Any] | None, result: dict[str, Any] | None,
-               deliveries: list[dict[str, Any]]) -> dict[str, Any]:
+               deliveries: list[dict[str, Any]],
+               recommendations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     cid = (job or result or {}).get("correlation_id")
     row: dict[str, Any] = {
         "correlation_id": cid,
@@ -154,6 +154,9 @@ def _alert_row(job: dict[str, Any] | None, result: dict[str, Any] | None,
 
     row["email_deliveries"] = "\n".join(
         f"{d['notification_type']}: {d['status']} (attempts {d['attempts']})" for d in deliveries)
+    # Active ones, exactly as the client portal shows them; the full history,
+    # retractions included, is on the Recommendations sheet.
+    row["engineer_recommendations"] = recommendations_text(recommendations, active_only=True)
     row["raw_request (JSON)"] = json.dumps(_original_request(job, result), ensure_ascii=False, default=str)
     return row
 
@@ -246,43 +249,26 @@ def _collect(jobs: list[dict[str, Any]], deliveries: list[dict[str, Any]]) -> li
     return alerts
 
 
+def _recommendation_rows(recommendations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every recommendation on record, retracted ones included, for the audit sheet."""
+    return [
+        {
+            "correlation_id": r.get("correlation_id"),
+            "recommendation_id": r.get("id"),
+            "status": "retracted" if r.get("retracted_at") is not None else "active",
+            "created_at (JST)": epoch_jst(r.get("created_at")),
+            "author": r.get("author"),
+            "body": r.get("body"),
+            "retracted_at (JST)": epoch_jst(r.get("retracted_at")),
+            "retracted_by": r.get("retracted_by"),
+            "retract_reason": r.get("retract_reason"),
+            "notification_email_id": r.get("notification_email_id"),
+        }
+        for r in recommendations
+    ]
+
+
 # ------------------------------------------------------------------ writing
-
-class _SheetWriter:
-    def __init__(self) -> None:
-        self.truncated_cells = 0
-
-    def cell_value(self, value: Any) -> Any:
-        if value is None or isinstance(value, (bool, int, float, datetime)):
-            return value
-        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
-        text = ILLEGAL_CHARACTERS_RE.sub("�", text)
-        if len(text) > EXCEL_CELL_MAX:
-            self.truncated_cells += 1
-            note = f"… [truncated: Excel cell limit, {len(text)} characters in full]"
-            text = text[:EXCEL_CELL_MAX - len(note)] + note
-        return text
-
-    def write(self, ws, columns: list[str], rows: list[dict[str, Any]]) -> None:
-        ws.append(columns)
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-        for r, row in enumerate(rows, start=2):
-            for c, column in enumerate(columns, start=1):
-                value = self.cell_value(row.get(column))
-                cell = ws.cell(row=r, column=c, value=value)
-                if isinstance(value, str):
-                    cell.data_type = "s"           # text, never a formula
-                    if "\n" in value:
-                        cell.alignment = Alignment(wrap_text=True, vertical="top")
-                elif isinstance(value, datetime):
-                    cell.number_format = _DATETIME_FORMAT
-        ws.freeze_panes = "B2"
-        if rows:
-            ws.auto_filter.ref = ws.dimensions
-        for c, column in enumerate(columns, start=1):
-            ws.column_dimensions[get_column_letter(c)].width = min(max(len(column) + 2, 14), 60)
-
 
 def _columns(rows: list[dict[str, Any]], leading: tuple = (), trailing: tuple = ()) -> list[str]:
     present = {key for row in rows for key in row}
@@ -294,13 +280,22 @@ def _columns(rows: list[dict[str, Any]], leading: tuple = (), trailing: tuple = 
     return ordered + [c for c in trailing if c in present or not rows]
 
 
-def _build_workbook(alerts: list[tuple]) -> tuple[bytes, int]:
-    alert_rows = [_alert_row(job, result, dl) for job, result, dl in alerts]
+def _build_workbook(alerts: list[tuple],
+                    recommendations: list[dict[str, Any]] | None = None) -> tuple[bytes, int]:
+    recommendations = recommendations or []
+    recs_by_cid: dict[str, list[dict[str, Any]]] = {}
+    for rec in recommendations:
+        recs_by_cid.setdefault(rec.get("correlation_id"), []).append(rec)
+    alert_rows = [
+        _alert_row(job, result, dl, recs_by_cid.get((job or result or {}).get("correlation_id"), []))
+        for job, result, dl in alerts
+    ]
     cids = [row["correlation_id"] for row in alert_rows]
     factor_rows = [r for (job, result, _), cid in zip(alerts, cids) for r in _risk_factor_rows(cid, result)]
     email_rows = [r for (job, result, dl), cid in zip(alerts, cids) for r in _email_rows(cid, result, dl)]
+    recommendation_rows = _recommendation_rows(recommendations)
 
-    writer = _SheetWriter()
+    writer = SheetWriter()
     wb = Workbook()
     ws = wb.active
     ws.title = "Alerts"
@@ -311,6 +306,7 @@ def _build_workbook(alerts: list[tuple]) -> tuple[bytes, int]:
         "correlation_id", "email_id", "notification_type", "kind", "recipients", "subject",
         "delivery_status", "attempts", "remote_id", "error", "created_at (JST)", "updated_at (JST)",
     ], email_rows)
+    writer.write(wb.create_sheet("Recommendations"), _RECOMMENDATION_COLUMNS, recommendation_rows)
 
     records = [row["record"] for row in alert_rows]
     info = wb.create_sheet("Export info")
@@ -322,9 +318,13 @@ def _build_workbook(alerts: list[tuple]) -> tuple[bytes, int]:
         (f"  {RECORD_RESULT_ONLY}", records.count(RECORD_RESULT_ONLY)),
         ("Risk factor rows", len(factor_rows)),
         ("Email rows", len(email_rows)),
+        ("Recommendation rows (incl. retracted)", len(recommendation_rows)),
+        ("  retracted", sum(1 for r in recommendation_rows if r["status"] == "retracted")),
         ("Cells truncated at Excel's 32,767-character limit", writer.truncated_cells),
-        ("Source", "jobs table + output/alerts result files + email_deliveries table; "
-                   "complete history, one row per correlation_id"),
+        ("Source", "jobs table + output/alerts result files + email_deliveries table + "
+                   "alert_recommendations table; complete history, one row per correlation_id"),
+        ("Recommendations", "Alerts.engineer_recommendations lists the active ones (what the client "
+                            "sees); the Recommendations sheet lists all, retracted included"),
         ("Times", "Columns marked (JST) are Japan Standard Time (UTC+09:00)"),
     ):
         info.append([label, value])
@@ -342,8 +342,9 @@ async def export_alerts_xlsx() -> tuple[bytes, int]:
     """(workbook bytes, number of alerts in it)."""
     jobs = await job_store.list_all_jobs()
     deliveries = await delivery_store.list_all_deliveries()
+    recommendations = await recommendation_store.list_all(include_retracted=True)
     # File reads and workbook assembly are blocking; keep them off the event loop.
     alerts = await asyncio.to_thread(_collect, jobs, deliveries)
-    content, count = await asyncio.to_thread(_build_workbook, alerts)
+    content, count = await asyncio.to_thread(_build_workbook, alerts, recommendations)
     logger.info("alerts_exported", alerts=count, bytes=len(content))
     return content, count

@@ -1,6 +1,15 @@
 from pydantic import BaseModel, Field
 
 
+class EmailAttachment(BaseModel):
+    """A file sent with an email. Content is base64 so the message stays JSON-serialisable
+    in outbox.json."""
+    filename: str
+    content_type: str
+    content_base64: str
+    size_bytes: int
+
+
 class EmailMessage(BaseModel):
     """
     A single outbound notification email staged for later delivery.
@@ -22,3 +31,6 @@ class EmailMessage(BaseModel):
     detection_name: str | None = None
     created_at: str
     status: str = Field(default="PENDING")  # forward-compat with real sending later
+    # Files to attach (e.g. the weekly report workbook). Absent in outbox files
+    # written before attachments existed, which still load with an empty list.
+    attachments: list[EmailAttachment] = Field(default_factory=list)

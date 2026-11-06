@@ -30,6 +30,10 @@ const state = {
   // Rebuilds whichever other modal is open, so a language switch does not leave
   // it in the old language. Set by each modal opener; cleared by showModal().
   reopenModal: null,
+  // correlation_id of the alert whose detail modal is currently open, if any.
+  // Lets a live recommendation event refresh that one modal without re-opening
+  // an unrelated alert.
+  openAlertId: null,
   // Last Emails-tab responses, re-rendered on a language switch.
   delivery: null,
   serviceStatus: null,
@@ -147,6 +151,7 @@ async function api(path, opts = {}) {
 
 function lock() {
   sessionStorage.removeItem("dash_key");
+  clearPortalSecret();
   document.getElementById("app").classList.remove("ready");
   document.getElementById("login").classList.remove("hidden");
   if (window._ws) { try { window._ws.close(); } catch (e) { /* already closed */ } }
@@ -197,6 +202,7 @@ const VIEW_META = {
   ai:       ["view_ai_title", "view_ai_sub"],
   "ai-visibility": ["view_aivis_title", "view_aivis_sub"],
   emails:   ["view_emails_title", "view_emails_sub"],
+  portal:   ["view_portal_title", "view_portal_sub"],
   logs:     ["view_logs_title", "view_logs_sub"],
   settings: ["view_settings_title", "view_settings_sub"],
   api:      ["view_api_title", "view_api_sub"],
@@ -208,6 +214,8 @@ function updateViewHeader(name) {
 }
 
 function showView(name) {
+  // A generated client password must not outlive the visit to the portal tab.
+  if (name !== "portal") clearPortalSecret();
   state.view = name;
   document.querySelectorAll("nav a.tab").forEach((a) => {
     const selected = a.dataset.view === name;
@@ -225,6 +233,7 @@ function showView(name) {
   if (name === "ai") loadAiContent();
   if (name === "ai-visibility") loadAiVisibility();
   if (name === "settings") loadSettings();
+  if (name === "portal") loadPortalPanels();
   if (name === "emails") loadDelivery();
 }
 
@@ -257,6 +266,12 @@ function refreshCurrentViewTranslations() {
   }
   if (state.view === "logs" && logState.res) renderLogs();
   if (state.view === "settings") loadSettings();
+  if (state.view === "portal") {
+    loadPortalSettings();
+    // Cached data only — no refetch, and the one-time password box is kept as is.
+    if (portalAdmin.users !== null) renderPortalUsers();
+    renderPortalReports();
+  }
   // Built once at boot and not on tab switch, so it has to follow the toggle
   // whichever tab is open (no network involved).
   renderApiDocs();
@@ -442,6 +457,7 @@ function renderAlerts() {
       <td>${j.detection_name ? esc(j.detection_name) : DASH}</td>
       <td>${j.endpoint_name ? esc(j.endpoint_name) : DASH}</td>
       <td>${j.source ? badge(j.source) : DASH}</td>
+      <td data-rec-count="${esc(j.correlation_id)}">${DASH}</td>
       <td class="muted">${timeAgo(j.updated_at)}</td>
       <td class="mono muted">${shortId(j.correlation_id)}</td>
       <td class="row" style="gap:6px;flex-wrap:nowrap">
@@ -454,6 +470,7 @@ function renderAlerts() {
   makeRowsFocusable(document.getElementById("alertRows"), "tr.clickable");
 
   renderCards();
+  loadRecommendationCounts();
 }
 const alertsPaging = { page: 1, size: 25 };
 function refilterAlerts() { alertsPaging.page = 1; renderAlerts(); }
@@ -1258,6 +1275,7 @@ function showModal(title, bodyHtml) {
   // openers re-set these after calling showModal.
   state.openAiItem = null;
   state.reopenModal = null;
+  state.openAlertId = null;
   const box = document.getElementById("modalBox");
   box.innerHTML = `
     <div class="head"><h3 id="modalTitle">${esc(title)}</h3><button class="small" id="closeModal">${esc(t("btn_close"))}</button></div>
@@ -1387,6 +1405,176 @@ document.addEventListener("keydown", (e) => {
 
 const kvRow = (k, v) => `<div>${esc(k)}</div><div>${esc(v)}</div>`;
 
+/* ══════════════ recommendations ══════════════ */
+
+const REC_AUTHOR_KEY = "soc_lite_recommendation_author";
+const REC_BODY_MAX = 4000;
+const REC_AUTHOR_MAX = 100;
+const REC_REASON_MAX = 500;
+
+/** Author last used on this browser, so the same engineer does not retype it for
+ * every recommendation. Storage is optional: a private window must still post. */
+function recAuthorStored() {
+  try { return localStorage.getItem(REC_AUTHOR_KEY) || ""; } catch (e) { return ""; }
+}
+function recAuthorRemember(value) {
+  try { localStorage.setItem(REC_AUTHOR_KEY, value); } catch (e) { /* storage blocked */ }
+}
+
+function recommendationItemHtml(rec) {
+  const retracted = !!rec.retracted_at;
+  const id = esc(rec.id);
+  const when = rec.created_at ? esc(fmtDateTime(rec.created_at * 1000)) : "";
+  return `<div class="rec-item${retracted ? " retracted" : ""}" data-rec-id="${id}">
+    <div class="rec-meta">
+      <strong>${esc(rec.author || "—")}</strong>
+      <span class="muted">${when}</span>
+      ${retracted ? `<span class="srcbadge" style="margin-left:0">${esc(t("rec_retracted_by", rec.retracted_by || "—"))}</span>` : ""}
+    </div>
+    <div class="rec-body" style="white-space:pre-wrap">${esc(rec.body)}</div>
+    ${retracted
+      ? (rec.retract_reason ? `<div class="rec-meta">${esc(t("rec_retracted_reason", rec.retract_reason))}</div>` : "")
+      : `<div class="row" style="margin-top:7px">
+           <button class="small danger" data-rec-retract="${id}">${esc(t("rec_retract"))}</button>
+         </div>
+         <div class="rec-retract-row" data-rec-retract-row="${id}">
+           <input data-rec-reason="${id}" maxlength="${REC_REASON_MAX}" placeholder="${esc(t("rec_reason_placeholder"))}" aria-label="${esc(t("rec_reason_label"))}" style="flex:1;min-width:180px">
+           <button class="small danger" data-rec-retract-confirm="${id}">${esc(t("rec_retract_confirm"))}</button>
+           <button class="small" data-rec-retract-cancel="${id}">${esc(t("rec_cancel"))}</button>
+         </div>`}
+  </div>`;
+}
+
+function recommendationsSectionHtml() {
+  return `<div id="recSection" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+    <h4 style="margin:0 0 10px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(t("rec_title"))}</h4>
+    <div id="recList"><p class="muted">${esc(t("rec_loading"))}</p></div>
+    <div class="field" style="margin:14px 0 0">
+      <label for="recBody">${esc(t("rec_body_label"))}</label>
+      <textarea id="recBody" rows="3" maxlength="${REC_BODY_MAX}" placeholder="${esc(t("rec_body_placeholder"))}" style="width:100%"></textarea>
+      <label for="recAuthor" style="margin-top:9px">${esc(t("rec_author_label"))}</label>
+      <input id="recAuthor" maxlength="${REC_AUTHOR_MAX}" placeholder="${esc(t("rec_author_placeholder"))}">
+      <div class="row" style="margin-top:9px">
+        <button class="primary small" id="recSubmit">${esc(t("rec_submit"))}</button>
+        <span class="muted" id="recMsg" style="font-size:11.5px"></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadRecommendations(cid) {
+  const list = document.getElementById("recList");
+  if (!list) return;
+  try {
+    const res = await api(`/alerts/${encodeURIComponent(cid)}/recommendations`);
+    if (state.openAlertId !== cid || !document.getElementById("recList")) return;
+    const items = (res && res.recommendations) || [];
+    list.innerHTML = items.length
+      ? items.map(recommendationItemHtml).join("")
+      : `<p class="muted">${esc(t("rec_empty"))}</p>`;
+    wireRecommendations(cid);
+  } catch (e) {
+    if (state.openAlertId === cid && document.getElementById("recList")) {
+      list.innerHTML = `<p class="muted">${esc(tBackendText(e.message))}</p>`;
+    }
+  }
+}
+
+function wireRecommendations(cid) {
+  const section = document.getElementById("recSection");
+  if (!section) return;
+  const bodyIn = document.getElementById("recBody");
+  const authorIn = document.getElementById("recAuthor");
+  const submit = document.getElementById("recSubmit");
+  if (!bodyIn || !authorIn || !submit) return;
+  if (!authorIn.value) authorIn.value = recAuthorStored();
+
+  submit.onclick = async () => {
+    const body = bodyIn.value.trim();
+    const author = authorIn.value.trim();
+    if (!body || body.length > REC_BODY_MAX) { toast(t("rec_body_required"), true); return; }
+    if (!author || author.length > REC_AUTHOR_MAX) { toast(t("rec_author_required"), true); return; }
+    submit.disabled = true;
+    submit.textContent = t("rec_submitting");
+    try {
+      const res = await api(`/alerts/${encodeURIComponent(cid)}/recommendations`, {
+        method: "POST", body: JSON.stringify({ body, author }),
+      });
+      recAuthorRemember(author);
+      bodyIn.value = "";
+      const note = (res && res.notification) || {};
+      if (note.queued) toast(t("rec_notify_queued", note.email_id ?? "?"));
+      else if (note.reason) toast(t("rec_notify_skipped", tBackendText(note.reason)), true);
+      else toast(t("rec_added_toast"));
+      await loadRecommendations(cid);
+      if (state.view === "alerts") loadRecommendationCounts();
+    } catch (e) {
+      toast(t("rec_add_failed") + tBackendText(e.message), true);
+    }
+    submit.disabled = false;
+    submit.textContent = t("rec_submit");
+  };
+
+  section.onclick = async (e) => {
+    const target = e.target.closest
+      ? e.target.closest("[data-rec-retract], [data-rec-retract-confirm], [data-rec-retract-cancel]") : null;
+    if (!target) return;
+    const revealId = target.getAttribute("data-rec-retract");
+    if (revealId) {
+      const row = section.querySelector(`[data-rec-retract-row="${CSS.escape(revealId)}"]`);
+      if (row) { row.classList.add("show"); const input = row.querySelector("input"); if (input) input.focus(); }
+      return;
+    }
+    const cancelId = target.getAttribute("data-rec-retract-cancel");
+    if (cancelId) {
+      const row = section.querySelector(`[data-rec-retract-row="${CSS.escape(cancelId)}"]`);
+      if (row) row.classList.remove("show");
+      return;
+    }
+    const id = target.getAttribute("data-rec-retract-confirm");
+    if (!id) return;
+    const row = section.querySelector(`[data-rec-retract-row="${CSS.escape(id)}"]`);
+    const input = row && row.querySelector("input");
+    const reason = input ? input.value.trim() : "";
+    const author = authorIn.value.trim();
+    if (!reason) { toast(t("rec_reason_required"), true); if (input) input.focus(); return; }
+    if (!author || author.length > REC_AUTHOR_MAX) { toast(t("rec_author_required"), true); authorIn.focus(); return; }
+    target.disabled = true;
+    try {
+      await api(`/recommendations/${encodeURIComponent(id)}/retract`, {
+        method: "POST", body: JSON.stringify({ author, reason }),
+      });
+      recAuthorRemember(author);
+      toast(t("rec_retracted_toast"));
+      await loadRecommendations(cid);
+      if (state.view === "alerts") loadRecommendationCounts();
+    } catch (err) {
+      toast(t("rec_retract_failed") + tBackendText(err.message), true);
+      target.disabled = false;
+    }
+  };
+}
+
+/** Counts for the alerts currently on screen: ONE request for the whole page
+ * (the contract caps it at 500 ids), never one request per row. */
+async function loadRecommendationCounts() {
+  const cells = [...document.querySelectorAll("#alertRows [data-rec-count]")];
+  if (!cells.length) return;
+  const cids = cells.map((cell) => cell.getAttribute("data-rec-count")).filter(Boolean).slice(0, 500);
+  if (!cids.length) return;
+  const params = new URLSearchParams({ cids: cids.join(",") });
+  try {
+    const res = await api("/recommendations/counts?" + params.toString());
+    const counts = (res && res.counts) || {};
+    for (const cell of cells) {
+      const n = Number(counts[cell.getAttribute("data-rec-count")]) || 0;
+      cell.innerHTML = n
+        ? `<span class="rec-count" title="${esc(t("rec_count_title", n))}">${esc(String(n))}</span>`
+        : DASH;
+    }
+  } catch (e) { /* non-fatal: the column stays "—" */ }
+}
+
 async function openAlert(id) {
   showModal(t("modal_loading"), `<p class="muted">${esc(t("modal_fetching_alert"))}</p>`);
   let data;
@@ -1430,8 +1618,12 @@ async function openAlert(id) {
     ? notificationTabs(r.ai_output)
     : `<p class="muted">${esc(t("no_ai_output"))}</p>`;
 
+  html += recommendationsSectionHtml();
+
   showModal(t("modal_alert_detail"), html);
+  state.openAlertId = id;
   state.reopenModal = () => openAlert(id);
+  loadRecommendations(id);
 }
 
 /* job.raw_payload (from GET /jobs/{id}) is NOT literally the bytes that arrived
@@ -1885,15 +2077,18 @@ const RECIPIENT_FIELDS = [
   ["cthree", "cthree_notification_emails"],
   ["internal", "internal_notification_emails"],
   ["engineer", "engineer_notification_emails"],
+  ["recommendation", "recommendation_notification_emails"],
+  ["weekly", "weekly_report_emails"],
 ];
 
 async function loadSettings() {
   try {
     const s = await api("/settings");
     for (const [ui, key] of RECIPIENT_FIELDS) {
-      document.getElementById("in-" + ui).value = s.recipients[key].value || "";
+      const rec = s.recipients[key] || { value: "", source: "env" };
+      document.getElementById("in-" + ui).value = rec.value || "";
       const src = document.getElementById("src-" + ui);
-      src.textContent = s.recipients[key].source === "dashboard" ? t("src_saved_here") : t("src_from_env");
+      src.textContent = rec.source === "dashboard" ? t("src_saved_here") : t("src_from_env");
     }
     document.getElementById("runtimeKv").innerHTML =
       Object.entries(s.runtime).map(([k, v]) =>
@@ -1964,6 +2159,745 @@ document.getElementById("saveRecipients").onclick = async () => {
 };
 document.getElementById("reloadRecipients").onclick = loadSettings;
 
+/* ══════════════ client portal settings ══════════════ */
+
+// Weekly-report settings first: this tab is opened to change when the report is
+// sent far more often than for anything else here, so that group leads.
+const PORTAL_GROUP_ORDER = ["weekly_report", "portal", "email"];
+const PORTAL_GROUP_I18N = {
+  weekly_report: "pgroup_weekly_report",
+  portal: "pgroup_portal",
+  email: "pgroup_email",
+};
+const PSET_WEEKDAY_I18N = {
+  MON: "weekday_mon", TUE: "weekday_tue", WED: "weekday_wed", THU: "weekday_thu",
+  FRI: "weekday_fri", SAT: "weekday_sat", SUN: "weekday_sun",
+};
+const PSET_RISK = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
+
+function psetLabel(key) {
+  const k = "pset_k_" + key;
+  return t(k) === k ? key.replace(/_/g, " ") : t(k);
+}
+function psetHint(key, spec) {
+  const k = "pset_d_" + key;
+  return t(k) === k ? (spec.description || "") : t(k);
+}
+function psetChoiceLabel(value) {
+  if (PSET_WEEKDAY_I18N[value]) return t(PSET_WEEKDAY_I18N[value]);
+  if (PSET_RISK.includes(value)) return tBadgeLabel(value);
+  return value;
+}
+
+function psetControlHtml(key, spec) {
+  const id = "pset-" + esc(key);
+  const c = spec.constraints || {};
+  if (spec.type === "bool") return `<input type="checkbox" id="${id}" style="width:auto">`;
+  if (spec.type === "enum") {
+    const opts = (c.choices || []).map((v) =>
+      `<option value="${esc(v)}">${esc(psetChoiceLabel(v))}</option>`).join("");
+    return `<select id="${id}">${opts}</select>`;
+  }
+  if (spec.type === "int") {
+    const min = c.min !== undefined ? ` min="${esc(c.min)}"` : "";
+    const max = c.max !== undefined ? ` max="${esc(c.max)}"` : "";
+    return `<input type="number" step="1"${min}${max} id="${id}">`;
+  }
+  if (spec.type === "time_hhmm") {
+    return `<input type="time" id="${id}" step="60"> <span class="muted" style="font-size:11.5px">${esc(t("pset_jst"))}</span>`;
+  }
+  const maxlength = c.max_length ? ` maxlength="${esc(c.max_length)}"` : "";
+  return `<input type="${spec.secret ? "password" : "text"}"${maxlength} id="${id}">`;
+}
+
+function psetRowHtml(key, spec) {
+  return `<div class="pset-row" data-pset-row="${esc(key)}">
+    <div class="pset-label">
+      <label for="pset-${esc(key)}">${esc(psetLabel(key))}</label>
+      <span class="key">${esc(key)}</span>
+      <span class="hint">${esc(psetHint(key, spec))}</span>
+    </div>
+    <div>
+      <div class="pset-control">
+        ${psetControlHtml(key, spec)}
+        <button class="small primary" data-pset-save="${esc(key)}">${esc(t("pset_save"))}</button>
+        <button class="small" data-pset-reset="${esc(key)}">${esc(t("pset_reset"))}</button>
+        <span class="srcbadge" style="margin-left:0">${esc(spec.source === "db" ? t("src_saved_here") : t("src_from_env"))}</span>
+      </div>
+      <div class="pset-err" role="alert" data-pset-err="${esc(key)}"></div>
+    </div>
+  </div>`;
+}
+
+function psetSetValue(key, spec, value) {
+  const el = document.getElementById("pset-" + key);
+  if (!el) return;
+  if (spec.type === "bool") el.checked = !!value;
+  else if (spec.type === "list") el.value = Array.isArray(value) ? value.join(", ") : (value || "");
+  else el.value = value === null || value === undefined ? "" : String(value);
+}
+
+function renderPortalSettings(settings) {
+  const box = document.getElementById("portalSettingsBody");
+  if (!box) return;
+  const groups = {};
+  if (!Object.keys(settings || {}).length) {
+    box.innerHTML = `<p class="muted">${esc(t("pset_empty"))}</p>`;
+    return;
+  }
+  for (const [settingKey, spec] of Object.entries(settings || {})) {
+    // The API keys the dict by setting name; the spec itself carries no "key".
+    spec.key = settingKey;
+    const group = spec.group || "other";
+    if (!groups[group]) groups[group] = [];
+    groups[group].push(spec);
+  }
+  const groupKeys = [
+    ...PORTAL_GROUP_ORDER.filter((g) => groups[g]),
+    ...Object.keys(groups).filter((g) => !PORTAL_GROUP_ORDER.includes(g)).sort(),
+  ];
+  box.innerHTML = groupKeys.map((group) => `
+    <div class="pset-group">
+      <h4>${esc(PORTAL_GROUP_I18N[group] ? t(PORTAL_GROUP_I18N[group]) : t("pgroup_other"))}</h4>
+      ${groups[group].map((spec) => psetRowHtml(spec.key, spec)).join("")}
+    </div>`).join("");
+
+  for (const [key, spec] of Object.entries(settings || {})) {
+    psetSetValue(key, spec, spec.value);
+    const err = box.querySelector(`[data-pset-err="${CSS.escape(key)}"]`);
+    if (err) { err.textContent = ""; err.classList.remove("show"); }
+    const save = box.querySelector(`[data-pset-save="${CSS.escape(key)}"]`);
+    if (save) save.onclick = () => savePortalSetting(key, spec);
+    const reset = box.querySelector(`[data-pset-reset="${CSS.escape(key)}"]`);
+    if (reset) reset.onclick = () => resetPortalSetting(key);
+  }
+}
+
+function psetErrorMessage(e) {
+  return tBackendText(e.message || String(e)) || t("unknown_error");
+}
+
+async function savePortalSetting(key, spec) {
+  const el = document.getElementById("pset-" + key);
+  const err = document.querySelector(`[data-pset-err="${CSS.escape(key)}"]`);
+  if (!el) return;
+  if (err) { err.textContent = ""; err.classList.remove("show"); }
+  let value;
+  if (spec.type === "bool") value = el.checked;
+  else if (spec.type === "int") {
+    const raw = el.value.trim();
+    if (raw === "" || !/^-?\d+$/.test(raw)) {
+      if (err) { err.textContent = t("pset_err_int"); err.classList.add("show"); }
+      return;
+    }
+    value = Number(raw);
+  } else if (spec.type === "list") {
+    value = el.value.split(",").map((part) => part.trim()).filter(Boolean);
+  } else {
+    value = el.value;
+  }
+  try {
+    await api(`/portal-settings/${encodeURIComponent(key)}`, {
+      method: "PUT", body: JSON.stringify({ value }),
+    });
+    toast(t("pset_saved", psetLabel(key)));
+    await loadPortalSettings();
+  } catch (e) {
+    if (err) { err.textContent = psetErrorMessage(e); err.classList.add("show"); }
+    else toast(t("toast_save_failed") + psetErrorMessage(e), true);
+  }
+}
+
+async function resetPortalSetting(key) {
+  const err = document.querySelector(`[data-pset-err="${CSS.escape(key)}"]`);
+  if (err) { err.textContent = ""; err.classList.remove("show"); }
+  try {
+    await api(`/portal-settings/${encodeURIComponent(key)}`, { method: "DELETE" });
+    toast(t("pset_reset_done", psetLabel(key)));
+    await loadPortalSettings();
+  } catch (e) {
+    if (err) { err.textContent = psetErrorMessage(e); err.classList.add("show"); }
+    else toast(t("toast_save_failed") + psetErrorMessage(e), true);
+  }
+}
+
+async function loadPortalSettings() {
+  const box = document.getElementById("portalSettingsBody");
+  if (!box) return;
+  if (!box.innerHTML) box.innerHTML = `<p class="muted">${esc(t("pset_loading"))}</p>`;
+  try {
+    const res = await api("/portal-settings");
+    renderPortalSettings((res && res.settings) || {});
+  } catch (e) {
+    box.innerHTML = `<p class="muted">${esc(t("pset_load_failed"))}${esc(psetErrorMessage(e))}</p>`;
+  }
+}
+
+/* ══════════════ client portal: accounts + weekly reports ══════════════
+ *
+ * Every value that came from the API (usernames, display names, error text,
+ * detection names, AI summaries) goes through esc() before reaching innerHTML.
+ * A generated password lives ONLY in portalAdmin.secret (memory) and in the
+ * dismissible box's text node: never in web storage, never logged, and cleared
+ * as soon as the box is dismissed or the engineer leaves this view.
+ */
+
+const PORTAL_CLIENT_PATH = "/client";
+const portalAdmin = {
+  users: null,          // [User] from the last successful load
+  enabled: null,        // client_portal_enabled, or null when unknown
+  secret: null,         // { username, password } — shown once, then dropped
+  noticeErr: "",
+  resetFor: null,       // user id whose inline reset form is open
+  deleteFor: null,      // user id whose inline delete confirm is open
+  busy: false,
+};
+const portalReports = {
+  data: null,           // last GET /reports/weekly response
+  regenFor: null,       // period_key whose inline regenerate confirm is open
+  openFindings: new Set(),
+  busy: false,
+};
+
+const PW_STATUS_BADGE = {
+  CLAIMED: "PROCESSING", GENERATED: "SUCCESS", QUEUED: "STARTED", SENT: "SUCCESS",
+  NO_RECIPIENTS: "PARTIAL", FAILED: "FAILED", SKIPPED: "PENDING",
+};
+
+function portalPill(cls, label) {
+  return `<span class="badge b-${esc(cls)}"><span class="g"></span>${esc(label)}</span>`;
+}
+
+/** Epoch seconds (what the portal APIs return) in the dashboard's usual local format. */
+function fmtEpoch(sec) {
+  return typeof sec === "number" && isFinite(sec) && sec > 0 ? fmtDateTime(new Date(sec * 1000)) : "";
+}
+
+function portalErrText(e) {
+  if (e && e.status === 422) return t("pu_invalid_input");
+  return tBackendText((e && e.message) || "") || t("unknown_error");
+}
+
+function showPortalErr(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg || "";
+  el.classList.toggle("show", !!msg);
+}
+
+async function copyPortalText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t("pu_copied"));
+  } catch (e) {
+    toast(t("toast_copy_blocked"), true);
+  }
+}
+
+/** Drops the one-time password from memory and from the DOM. */
+function clearPortalSecret() {
+  portalAdmin.secret = null;
+  const box = document.getElementById("pu-secret");
+  if (box) box.innerHTML = "";
+}
+
+/* ---------- client accounts ---------- */
+
+function ensurePortalUsersShell() {
+  const root = document.getElementById("portalUsersBody");
+  if (!root) return null;
+  if (root.querySelector("#pu-table")) return root;
+  root.innerHTML = `
+    <div id="pu-notice"></div>
+    <div class="pp-bar">
+      <span class="muted" data-i18n="pu_url_label"></span>
+      <code class="mono" id="pu-url"></code>
+      <button class="small" id="pu-copy-url" data-i18n="pu_copy"></button>
+    </div>
+    <div id="pu-secret" aria-live="polite"></div>
+    <div class="pp-form" id="pu-form">
+      <div class="fld"><label for="pu-username" data-i18n="pu_f_username"></label>
+        <input type="text" id="pu-username" maxlength="64" autocomplete="off" spellcheck="false"></div>
+      <div class="fld"><label for="pu-display" data-i18n="pu_f_display_name"></label>
+        <input type="text" id="pu-display" maxlength="100" autocomplete="off"></div>
+      <div class="fld"><label for="pu-password" data-i18n="pu_f_password"></label>
+        <input type="password" id="pu-password" autocomplete="new-password" spellcheck="false"></div>
+      <button class="primary" id="pu-add" data-i18n="pu_add"></button>
+      <p class="hint" data-i18n="pu_pw_hint"></p>
+      <div class="pp-err" id="pu-form-err" role="alert"></div>
+    </div>
+    <div class="pp-err" id="pu-row-err" role="alert"></div>
+    <div id="pu-table"><p class="muted">${esc(t("pu_loading"))}</p></div>`;
+  document.getElementById("pu-url").textContent = location.origin + PORTAL_CLIENT_PATH;
+  document.getElementById("pu-copy-url").onclick = () => copyPortalText(location.origin + PORTAL_CLIENT_PATH);
+  document.getElementById("pu-add").onclick = addPortalUser;
+  root.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (e.target.closest("#pu-form")) { e.preventDefault(); addPortalUser(); }
+    const reset = e.target.closest("[data-pu-reset-input]");
+    if (reset) { e.preventDefault(); runPortalUserAction(reset.dataset.puResetInput, "reset"); }
+  });
+  root.addEventListener("click", onPortalUsersClick);
+  applyStaticI18n();
+  return root;
+}
+
+function portalUserById(id) {
+  return (portalAdmin.users || []).find((u) => u.id === id);
+}
+
+function renderPortalNotice() {
+  const box = document.getElementById("pu-notice");
+  if (!box) return;
+  if (portalAdmin.enabled === null) { box.innerHTML = ""; return; }
+  const on = portalAdmin.enabled === true;
+  box.innerHTML = `<div class="pp-note${on ? "" : " warn"}">
+    <div>${esc(t(on ? "pu_portal_on" : "pu_portal_off"))}</div>
+    <div class="row">
+      <button class="small${on ? "" : " primary"}" data-pu-toggle-portal>${esc(t(on ? "pu_disable_portal" : "pu_enable_portal"))}</button>
+    </div>
+    <div class="pp-err${portalAdmin.noticeErr ? " show" : ""}" role="alert">${esc(portalAdmin.noticeErr)}</div>
+  </div>`;
+}
+
+function renderPortalSecret() {
+  const box = document.getElementById("pu-secret");
+  if (!box) return;
+  const s = portalAdmin.secret;
+  if (!s) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="pp-secret" role="alert">
+    <h4>${esc(t("pu_secret_title"))}</h4>
+    <div class="muted" style="font-size:12px">${esc(t("pu_secret_account", s.username))}</div>
+    <div class="pw" id="pu-secret-value">${esc(s.password)}</div>
+    <div class="warnline">${esc(t("pu_secret_warn"))}</div>
+    <div class="row" style="margin-top:8px">
+      <button class="small primary" data-pu-secret-copy>${esc(t("pu_copy"))}</button>
+      <button class="small" data-pu-secret-dismiss>${esc(t("pu_secret_dismiss"))}</button>
+    </div>
+  </div>`;
+}
+
+function puRowActions(u) {
+  const id = esc(u.id);
+  const btn = (act, key, cls) =>
+    `<button class="small${cls ? " " + cls : ""}" data-pu-act="${act}" data-uid="${id}">${esc(t(key))}</button>`;
+  let html = `<div class="pp-actions">
+    ${btn("reset", "pu_act_reset")}
+    ${u.disabled ? btn("enable", "pu_act_enable") : btn("disable", "pu_act_disable")}
+    ${u.locked ? btn("unlock", "pu_act_unlock") : ""}
+    ${btn("revoke-sessions", "pu_act_signout")}
+    ${btn("delete", "pu_act_delete", "danger")}
+  </div>`;
+  if (portalAdmin.resetFor === u.id) {
+    html += `<div class="pp-inline">
+      <label for="pu-reset-${id}">${esc(t("pu_reset_label"))}</label>
+      <input type="password" id="pu-reset-${id}" autocomplete="new-password" spellcheck="false" data-pu-reset-input="${id}">
+      <button class="small primary" data-pu-act="reset-submit" data-uid="${id}">${esc(t("pu_reset_submit"))}</button>
+      <button class="small" data-pu-act="cancel" data-uid="${id}">${esc(t("pu_cancel"))}</button>
+    </div>`;
+  }
+  if (portalAdmin.deleteFor === u.id) {
+    html += `<div class="pp-inline" role="alert">
+      <span>${esc(t("pu_confirm_delete", u.username))}</span>
+      <button class="small danger" data-pu-act="delete-confirm" data-uid="${id}">${esc(t("pu_confirm_delete_yes"))}</button>
+      <button class="small" data-pu-act="cancel" data-uid="${id}">${esc(t("pu_cancel"))}</button>
+    </div>`;
+  }
+  return html;
+}
+
+function renderPortalUsers() {
+  if (!ensurePortalUsersShell()) return;
+  renderPortalNotice();
+  renderPortalSecret();
+  const box = document.getElementById("pu-table");
+  const users = portalAdmin.users;
+  if (users === null) return;
+  if (!users.length) {
+    box.innerHTML = `<div class="empty">${esc(t("pu_empty"))}</div>`;
+    return;
+  }
+  const rows = users.map((u) => {
+    const badges = (u.disabled ? portalPill("PENDING", t("pu_status_disabled")) : "")
+      + (u.locked ? portalPill("BLOCKED", t("pu_status_locked")) : "")
+      + (!u.disabled && !u.locked ? portalPill("SUCCESS", t("pu_status_active")) : "");
+    const last = fmtEpoch(u.last_login_at);
+    return `<tr>
+      <td><strong>${esc(u.username)}</strong></td>
+      <td>${u.display_name ? esc(u.display_name) : DASH}</td>
+      <td>${badges}</td>
+      <td>${last ? esc(last) : `<span class="dim">${esc(t("pu_never"))}</span>`}</td>
+      <td>${esc(u.active_sessions || 0)}</td>
+      <td>${puRowActions(u)}</td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `<div class="pp-tablewrap"><table>
+    <thead><tr>
+      <th>${esc(t("pu_th_username"))}</th><th>${esc(t("pu_th_display_name"))}</th>
+      <th>${esc(t("pu_th_status"))}</th><th>${esc(t("pu_th_last_login"))}</th>
+      <th>${esc(t("pu_th_sessions"))}</th><th>${esc(t("pu_th_actions"))}</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+async function loadPortalUsers() {
+  if (!ensurePortalUsersShell()) return;
+  const [usersRes, settingsRes] = await Promise.allSettled([
+    api("/portal/users"), api("/portal-settings"),
+  ]);
+  if (settingsRes.status === "fulfilled") {
+    const spec = settingsRes.value && settingsRes.value.settings
+      && settingsRes.value.settings.client_portal_enabled;
+    portalAdmin.enabled = spec && typeof spec.value === "boolean" ? spec.value : null;
+  }
+  if (usersRes.status === "fulfilled") {
+    portalAdmin.users = (usersRes.value && usersRes.value.users) || [];
+    showPortalErr("pu-row-err", "");
+  } else if (portalAdmin.users === null) {
+    document.getElementById("pu-table").innerHTML =
+      `<p class="muted">${esc(t("pu_load_failed"))}${esc(portalErrText(usersRes.reason))}</p>`;
+  } else {
+    showPortalErr("pu-row-err", t("pu_load_failed") + portalErrText(usersRes.reason));
+  }
+  renderPortalUsers();
+}
+
+async function addPortalUser() {
+  if (portalAdmin.busy) return;
+  const nameEl = document.getElementById("pu-username");
+  const displayEl = document.getElementById("pu-display");
+  const pwEl = document.getElementById("pu-password");
+  const username = nameEl.value.trim();
+  showPortalErr("pu-form-err", "");
+  if (!username) { showPortalErr("pu-form-err", t("pu_username_required")); nameEl.focus(); return; }
+  const body = { username };
+  if (displayEl.value.trim()) body.display_name = displayEl.value.trim();
+  if (pwEl.value) body.password = pwEl.value;
+  portalAdmin.busy = true;
+  const addBtn = document.getElementById("pu-add");
+  addBtn.disabled = true;
+  try {
+    const res = await api("/portal/users", { method: "POST", body: JSON.stringify(body) });
+    nameEl.value = ""; displayEl.value = ""; pwEl.value = "";
+    const created = (res && res.user && res.user.username) || username;
+    if (res && res.generated_password) portalAdmin.secret = { username: created, password: res.generated_password };
+    else clearPortalSecret();
+    toast(t("pu_created", created));
+    await loadPortalUsers();
+  } catch (e) {
+    showPortalErr("pu-form-err", portalErrText(e));
+  }
+  portalAdmin.busy = false;
+  addBtn.disabled = false;
+}
+
+const PU_ACTIONS = {
+  disable: { path: "disable", done: "pu_disabled_done" },
+  enable: { path: "enable", done: "pu_enabled_done" },
+  unlock: { path: "unlock", done: "pu_unlocked_done" },
+  "revoke-sessions": { path: "revoke-sessions", done: "pu_signed_out_done" },
+};
+
+async function runPortalUserAction(id, act) {
+  const user = portalUserById(id);
+  if (!user || portalAdmin.busy) return;
+  const enc = encodeURIComponent(id);
+  portalAdmin.busy = true;
+  showPortalErr("pu-row-err", "");
+  try {
+    if (act === "reset") {
+      const input = document.getElementById("pu-reset-" + id);
+      const pw = input ? input.value : "";
+      const res = await api(`/portal/users/${enc}/password`, {
+        method: "POST", body: JSON.stringify(pw ? { password: pw } : {}),
+      });
+      portalAdmin.resetFor = null;
+      if (res && res.generated_password) portalAdmin.secret = { username: user.username, password: res.generated_password };
+      else clearPortalSecret();
+      toast(t("pu_password_reset_done", user.username));
+    } else if (act === "delete") {
+      await api(`/portal/users/${enc}`, { method: "DELETE" });
+      portalAdmin.deleteFor = null;
+      if (portalAdmin.secret && portalAdmin.secret.username === user.username) clearPortalSecret();
+      toast(t("pu_deleted_done", user.username));
+    } else {
+      const spec = PU_ACTIONS[act];
+      const res = await api(`/portal/users/${enc}/${spec.path}`, { method: "POST" });
+      toast(t(spec.done, user.username, res && res.revoked !== undefined ? res.revoked : 0));
+    }
+    await loadPortalUsers();
+  } catch (e) {
+    showPortalErr("pu-row-err", t("pu_action_failed") + portalErrText(e));
+  }
+  portalAdmin.busy = false;
+}
+
+async function togglePortalEnabled() {
+  if (portalAdmin.busy || portalAdmin.enabled === null) return;
+  const next = !portalAdmin.enabled;
+  portalAdmin.busy = true;
+  portalAdmin.noticeErr = "";
+  try {
+    await api("/portal-settings/client_portal_enabled", {
+      method: "PUT", body: JSON.stringify({ value: next }),
+    });
+    portalAdmin.enabled = next;
+    toast(t(next ? "pu_portal_enabled_done" : "pu_portal_disabled_done"));
+    loadPortalSettings();
+  } catch (e) {
+    // e.g. 409 "dashboard key too short": shown right where the switch is.
+    portalAdmin.noticeErr = t("pu_portal_toggle_failed") + portalErrText(e);
+  }
+  portalAdmin.busy = false;
+  renderPortalNotice();
+}
+
+function onPortalUsersClick(e) {
+  if (e.target.closest("[data-pu-toggle-portal]")) { togglePortalEnabled(); return; }
+  if (e.target.closest("[data-pu-secret-copy]")) {
+    if (portalAdmin.secret) copyPortalText(portalAdmin.secret.password);
+    return;
+  }
+  if (e.target.closest("[data-pu-secret-dismiss]")) { clearPortalSecret(); return; }
+  const b = e.target.closest("[data-pu-act]");
+  if (!b) return;
+  const id = b.dataset.uid;
+  const act = b.dataset.puAct;
+  if (act === "reset") {
+    portalAdmin.resetFor = portalAdmin.resetFor === id ? null : id;
+    portalAdmin.deleteFor = null;
+    renderPortalUsers();
+    const input = document.getElementById("pu-reset-" + id);
+    if (input) input.focus();
+  } else if (act === "reset-submit") runPortalUserAction(id, "reset");
+  else if (act === "delete") {
+    portalAdmin.deleteFor = portalAdmin.deleteFor === id ? null : id;
+    portalAdmin.resetFor = null;
+    renderPortalUsers();
+  } else if (act === "delete-confirm") runPortalUserAction(id, "delete");
+  else if (act === "cancel") {
+    portalAdmin.resetFor = null; portalAdmin.deleteFor = null;
+    renderPortalUsers();
+  } else if (PU_ACTIONS[act]) runPortalUserAction(id, act);
+}
+
+/* ---------- weekly reports ---------- */
+
+function pwPeriodLabel(p) {
+  if (!p) return "";
+  const start = String(p.period_start || "").slice(0, 10);
+  const last = String(p.last_day || "");
+  return start || last ? `${p.period_key} (${start} – ${last})` : String(p.period_key || "");
+}
+
+function pwStatusLabel(status) {
+  const k = "pw_status_" + status;
+  return t(k) === k ? String(status || "") : t(k);
+}
+
+function pwTriggerLabel(trigger) {
+  const k = "pw_trigger_" + trigger;
+  return t(k) === k ? String(trigger || "") : t(k);
+}
+
+function pwCountsHtml(c) {
+  const n = (v) => esc(typeof v === "number" ? v : 0);
+  return `<span class="pp-counts">${["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    .map((lvl) => `<span>${esc(tBadgeLabel(lvl))} ${n((c || {})[lvl])}</span>`).join("")}</span>`;
+}
+
+function pwFindingsHtml(r) {
+  const list = Array.isArray(r.findings) ? r.findings : [];
+  if (!list.length) return "";
+  const rows = list.map((f) => `<tr>
+    <td class="mono">${esc(f.eset_alert_id || f.alert_id)}</td>
+    <td>${badge(f.risk_level)}</td>
+    <td>${esc(f.detection_name)}</td>
+    <td>${esc(f.endpoint_name)}</td>
+    <td class="pp-clip">${esc(f.ai_summary)}</td>
+  </tr>`).join("");
+  const open = portalReports.openFindings.has(r.period_key) ? " open" : "";
+  return `<details class="pp-find" data-pw-find="${esc(r.period_key)}"${open}>
+    <summary>${esc(t("pw_findings_toggle", list.length))}</summary>
+    <div class="pp-tablewrap"><table><thead><tr>
+      <th>${esc(t("pw_f_alert"))}</th><th>${esc(t("pw_f_risk"))}</th><th>${esc(t("pw_f_detection"))}</th>
+      <th>${esc(t("pw_f_endpoint"))}</th><th>${esc(t("pw_f_summary"))}</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+  </details>`;
+}
+
+function pwRowHtml(r) {
+  const key = esc(r.period_key);
+  const completed = fmtEpoch(r.completed_at);
+  let actions = `<div class="pp-actions">
+    ${r.has_file ? `<button class="small" data-pw-act="download" data-period="${key}">${esc(t("pw_download"))}</button>` : ""}
+    <button class="small" data-pw-act="regen" data-period="${key}">${esc(t("pw_regenerate"))}</button>
+  </div>`;
+  if (portalReports.regenFor === r.period_key) {
+    actions += `<div class="pp-inline" role="alert">
+      <span>${esc(t("pw_confirm_regenerate", r.period_key))}</span>
+      <button class="small primary" data-pw-act="regen-confirm" data-period="${key}">${esc(t("pw_confirm_regenerate_yes"))}</button>
+      <button class="small" data-pw-act="regen-cancel" data-period="${key}">${esc(t("pu_cancel"))}</button>
+    </div>`;
+  }
+  const err = r.error
+    ? `<div class="pp-err show">${esc(t("pw_error_prefix"))}${esc(r.error)}</div>` : "";
+  return `<tr>
+    <td>${esc(pwPeriodLabel(r))}</td>
+    <td>${portalPill(PW_STATUS_BADGE[r.status] || "UNKNOWN", pwStatusLabel(r.status))}${err}</td>
+    <td>${pwCountsHtml(r.counts)}</td>
+    <td>${esc(t(r.has_file ? "pw_file_yes" : "pw_file_no"))}</td>
+    <td>${esc(pwTriggerLabel(r.trigger))}</td>
+    <td>${completed ? esc(completed) : DASH}</td>
+    <td>${actions}</td>
+  </tr>${(r.findings || []).length ? `<tr><td colspan="7" style="padding-top:0">${pwFindingsHtml(r)}</td></tr>` : ""}`;
+}
+
+function renderPortalReports() {
+  const box = document.getElementById("portalReportsBody");
+  if (!box) return;
+  const d = portalReports.data;
+  if (!d) return;
+  const sch = d.schedule || {};
+  const dayKey = PSET_WEEKDAY_I18N[sch.weekday];
+  const nextRun = d.next_run_at ? fmtDateTime(d.next_run_at) : "";
+  const reports = Array.isArray(d.reports) ? d.reports : [];
+  const table = reports.length
+    ? `<div class="pp-tablewrap"><table><thead><tr>
+        <th>${esc(t("pw_th_period"))}</th><th>${esc(t("pw_th_status"))}</th><th>${esc(t("pw_th_counts"))}</th>
+        <th>${esc(t("pw_th_file"))}</th><th>${esc(t("pw_th_trigger"))}</th><th>${esc(t("pw_th_completed"))}</th>
+        <th>${esc(t("pw_th_actions"))}</th>
+      </tr></thead><tbody>${reports.map(pwRowHtml).join("")}</tbody></table></div>`
+    : `<div class="empty">${esc(t("pw_empty"))}</div>`;
+  box.innerHTML = `
+    <div class="pp-bar">
+      ${portalPill(d.enabled ? "SUCCESS" : "PENDING", t(d.enabled ? "pw_auto_on" : "pw_auto_off"))}
+      <span>${esc(t("pw_schedule", dayKey ? t(dayKey) : sch.weekday, sch.time))}</span>
+    </div>
+    <div class="pp-bar">
+      <span><span class="muted">${esc(t("pw_next_run"))}:</span> ${nextRun ? esc(nextRun) : DASH}</span>
+      <span><span class="muted">${esc(t("pw_next_period"))}:</span> ${esc(pwPeriodLabel(d.next_period))}</span>
+      <span><span class="muted">${esc(t("pw_due_period"))}:</span> ${esc(pwPeriodLabel(d.latest_due_period))}</span>
+    </div>
+    <div class="pp-note${d.email_enabled ? "" : " warn"}">
+      <div>${esc(t(d.email_enabled ? "pw_email_on" : "pw_email_off"))}</div>
+      <div class="muted" style="font-size:11.5px;margin-top:3px">${esc(t("pw_settings_hint"))}</div>
+    </div>
+    <div class="pp-bar">
+      <button class="primary" data-pw-act="run">${esc(t("pw_run"))}</button>
+      <button data-pw-act="preview">${esc(t("pw_preview"))}</button>
+    </div>
+    <div class="pp-err" id="pw-err" role="alert"></div>
+    ${table}`;
+}
+
+async function loadPortalReports() {
+  const box = document.getElementById("portalReportsBody");
+  if (!box) return;
+  if (!portalReports.data && !box.querySelector(".pp-bar")) {
+    box.innerHTML = `<p class="muted">${esc(t("pw_loading"))}</p>`;
+  }
+  try {
+    portalReports.data = await api("/reports/weekly");
+    renderPortalReports();
+  } catch (e) {
+    if (portalReports.data) { renderPortalReports(); showPortalErr("pw-err", t("pw_load_failed") + portalErrText(e)); }
+    else box.innerHTML = `<p class="muted">${esc(t("pw_load_failed"))}${esc(portalErrText(e))}</p>`;
+  }
+}
+
+/** Same fetch -> blob -> a[download] pattern as the alert export: the request
+ * needs the key header, so a plain link would not authenticate. */
+async function downloadPortalFile(path, fallbackName) {
+  const res = await fetch(API + path, {
+    headers: dashKey() ? { "X-Dashboard-Key": dashKey() } : {},
+  });
+  if (res.status === 401) { lock(); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error(String(res.status));
+  const blob = await res.blob();
+  const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name ? name[1] : fallbackName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function runPortalReport(periodKey, regenerate) {
+  if (portalReports.busy) return;
+  portalReports.busy = true;
+  showPortalErr("pw-err", "");
+  try {
+    const body = {};
+    if (periodKey) body.period_key = periodKey;
+    if (regenerate) body.regenerate = true;
+    const res = await api("/reports/weekly/run", { method: "POST", body: JSON.stringify(body) });
+    portalReports.regenFor = null;
+    if (res && res.action === "failed") {
+      showPortalErr("pw-err", t("pw_run_failed") + (tBackendText(res.error || "") || t("unknown_error")));
+    } else if (res && res.action === "none") {
+      toast(t("pw_run_none"), true);
+    } else {
+      toast(t("pw_run_generated", (res && res.period_key) || periodKey || ""));
+    }
+    await loadPortalReports();
+  } catch (e) {
+    showPortalErr("pw-err", t("pw_run_failed") + portalErrText(e));
+  }
+  portalReports.busy = false;
+}
+
+async function onPortalReportsClick(e) {
+  const b = e.target.closest("[data-pw-act]");
+  if (!b) return;
+  const act = b.dataset.pwAct;
+  const key = b.dataset.period;
+  if (act === "run") runPortalReport(null, false);
+  else if (act === "preview") {
+    b.disabled = true;
+    try {
+      const due = portalReports.data && portalReports.data.latest_due_period;
+      const qs = due && due.period_key ? `?period_key=${encodeURIComponent(due.period_key)}` : "";
+      await downloadPortalFile("/reports/weekly/preview" + qs, "preview_weekly_report.xlsx");
+      toast(t("pw_preview_done"));
+    } catch (err) { toast(t("pw_preview_failed"), true); }
+    b.disabled = false;
+  } else if (act === "download") {
+    b.disabled = true;
+    try {
+      await downloadPortalFile(`/reports/weekly/${encodeURIComponent(key)}/download`, `weekly_report_${key}.xlsx`);
+    } catch (err) { toast(t("pw_download_failed"), true); }
+    b.disabled = false;
+  } else if (act === "regen") {
+    portalReports.regenFor = portalReports.regenFor === key ? null : key;
+    renderPortalReports();
+  } else if (act === "regen-cancel") {
+    portalReports.regenFor = null;
+    renderPortalReports();
+  } else if (act === "regen-confirm") runPortalReport(key, true);
+}
+
+(function wirePortalReportsPanel() {
+  const box = document.getElementById("portalReportsBody");
+  if (!box) return;
+  box.addEventListener("click", onPortalReportsClick);
+  // <details> toggle does not bubble, so listen in the capture phase to remember
+  // which findings lists are open across re-renders.
+  box.addEventListener("toggle", (e) => {
+    const d = e.target.closest && e.target.closest("[data-pw-find]");
+    if (!d) return;
+    if (d.open) portalReports.openFindings.add(d.dataset.pwFind);
+    else portalReports.openFindings.delete(d.dataset.pwFind);
+  }, true);
+})();
+
+function loadPortalPanels() {
+  loadPortalSettings();
+  loadPortalUsers();
+  loadPortalReports();
+}
+
 /* ══════════════ API docs ══════════════ */
 
 function renderApiDocs() {
@@ -2016,6 +2950,13 @@ function renderApiDocs() {
     ["GET", "/dashboard/api/logs", t("route_logs")],
     ["GET", "/dashboard/api/settings", t("route_settings")],
     ["PUT", "/dashboard/api/settings/recipients", t("route_settings_update")],
+    ["GET", "/dashboard/api/alerts/{cid}/recommendations", t("route_rec_list")],
+    ["POST", "/dashboard/api/alerts/{cid}/recommendations", t("route_rec_create")],
+    ["POST", "/dashboard/api/recommendations/{id}/retract", t("route_rec_retract")],
+    ["GET", "/dashboard/api/recommendations/counts", t("route_rec_counts")],
+    ["GET", "/dashboard/api/portal-settings", t("route_portal_settings")],
+    ["PUT", "/dashboard/api/portal-settings/{key}", t("route_portal_settings_update")],
+    ["DELETE", "/dashboard/api/portal-settings/{key}", t("route_portal_settings_reset")],
     ["GET", "/dashboard/api/ai/overview", t("route_ai_overview")],
     ["GET", "/dashboard/api/ai/traces", t("route_ai_traces_list")],
     ["GET", "/dashboard/api/ai/traces/{id}", t("route_ai_trace_detail")],
@@ -2138,6 +3079,13 @@ function handleEvent(msg) {
     renderAlerts();
     if (state.view === "overview") loadStats();
     if (state.view === "ai" && d.ai_output) loadAiContent();
+
+  } else if (msg.type === "recommendation_added") {
+    if (state.openAlertId && state.openAlertId === d.correlation_id
+        && document.getElementById("overlay").classList.contains("show")) {
+      loadRecommendations(state.openAlertId);
+    }
+    if (state.view === "alerts") loadRecommendationCounts();
 
   } else if (msg.type === "email_queued") {
     state.emails.unshift(d);

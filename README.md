@@ -194,6 +194,7 @@ in `output/alerts/index.json`.
 | **Emails** | Pending outbox; open an email to read it, or discard it |
 | **Logs** | The whole structured log, paged server-side (50–500 rows per page), newest or oldest first. Filter by level (multi-select, with counts), time range, source (app events vs HTTP access), event name, and free text (any field value, e.g. a correlation ID). Every row expands to show all its fields, copy its JSON, filter to that event or correlation ID, or open the alert's timeline. Live refresh pauses while a row is open or you are off the first page |
 | **Settings** | Edit notification recipients live (saved to the database, no restart) and view runtime config |
+| **Client Portal** | Portal settings (on/off, login and session limits, export limit, weekly report schedule, portal URL), changed live. Client accounts (add, reset password, enable/disable, unlock, sign out everywhere, delete) and weekly reports (run, preview, download, regenerate) are managed here too. See [Client portal and weekly report](#client-portal-and-weekly-report) |
 | **API Docs** | Ingest endpoints, a copyable curl for this host, and the dashboard API reference |
 
 Alerts are only ever created by posting to the ingest routes — the dashboard
@@ -412,6 +413,177 @@ service answers **400** for its own internal errors as well as for invalid messa
 retried rather than discarded — otherwise a D1 outage would delete every notification
 raised during it.
 
+## Client portal and weekly report
+
+A separate page at `/client` lets client staff sign in and review their own
+alerts. It has its own accounts and credentials, is separate from the
+engineering dashboard, and stays off until it is switched on. Operating it is
+covered in [docs/CLIENT_PORTAL.md](docs/CLIENT_PORTAL.md). The client-facing
+quick start is [docs/CLIENT_PORTAL_GUIDE_JA.md](docs/CLIENT_PORTAL_GUIDE_JA.md).
+
+Clients can:
+
+- view and filter alerts by severity and JST date range, and open an alert to
+  see the AI's initial findings and the engineer recommendations;
+- export the filtered alerts to a customized `.xlsx` (columns and their order,
+  number of alerts, Japanese or English headers, optional info sheet);
+- download the weekly reports.
+
+Clients only ever receive fields from the allowlist in
+`src/services/client_fields.py`. Internal AI texts, the AI trace, retracted
+recommendations, notification and delivery records, and file-system paths are
+never exposed.
+
+| Group | Fields |
+|---|---|
+| IDs | `alert_id`, `eset_alert_id` |
+| Times (JST) | `received_at_jst`, `occurred_at_jst` |
+| Alert details | `risk_level`, `eset_severity`, `detection_name`, `endpoint_name`, `endpoint_type`, `os_name`, `user_name`, `action_taken`, `threat_handled`, `isolation_status`, `object_type`, `object_uri`, `file_hash`, `url`, `ip_address`, `domain`, `raw_subject`, `raw_content`, `raw_alert_json` |
+| AI initial findings | `ai_alert_summary_ja`, `ai_risk_reason_ja`, `ai_client_notification_ja`, `ai_recommended_actions_ja`, `ai_confirmation_items_ja` |
+| Engineer recommendations | `engineer_recommendations` (active only) |
+
+### Turning it on
+
+- Set `DASHBOARD_ACCESS_KEY` to at least 16 characters. The portal refuses to
+  run with a blank or shorter key, because that key protects the engineering API
+  on the same host. Turning `client_portal_enabled` on is refused with `409`
+  until the key is strong enough.
+- No CLI and no `.env` edit are needed after deployment. The `CLIENT_*`,
+  `WEEKLY_REPORT_*` and related variables in `.env.example` are defaults only.
+  Each one can be changed in the dashboard and takes effect without a restart.
+- Client accounts are created by engineers in the **Client accounts** panel on the dashboard's Client Portal tab. The runbook also lists the equivalent API calls.
+
+### Recommendations
+
+- Engineers add and retract recommendations on an alert from its detail view in
+  the dashboard. Clients see the active ones on the alert and in exports.
+  Retracted ones are hidden from clients but kept in the record.
+- No email is sent for new recommendations in this release.
+  `src/services/recommendation_notifier.py` is not called. The recipient
+  setting is kept for when that is switched on.
+
+### Weekly report
+
+- Engineers run, preview, download and regenerate reports from the **Weekly reports** panel on the dashboard's Client Portal tab.
+- Due by default on Monday at 09:00 JST (`weekly_report_weekday`,
+  `weekly_report_time`).
+- The period is the full ISO week before the due slot's week, by received time.
+  Keys look like `2026-W45`.
+- The workbook contains LOW and MEDIUM alerts only, with the essential fields:
+  IDs, alert details, initial AI findings and engineer recommendations. A week
+  with no LOW or MEDIUM alerts has no workbook, but its counts are still recorded.
+- HIGH and CRITICAL alerts are not in the workbook. They are counted, and listed
+  in the report summary.
+- Workbooks are archived under `reports/weekly/` beside `OUTPUT_DIR`, for example
+  `output/reports/weekly/2026-W45.xlsx`. They can be downloaded from the portal
+  and from the dashboard API.
+- The first time the report is enabled, the current period is recorded as a
+  baseline, so no report is produced for a past week. Each period is produced
+  once, even across restarts. A failed period is retried automatically, up to 3
+  attempts in total. Manual runs are not limited.
+- **Email is not enabled in this release.** `weekly_report_email_enabled`
+  defaults to off. When it is switched on, the report goes to
+  `weekly_report_emails`, or to `client_notification_emails` when that is blank.
+  The workbook is attached if `email_attachments_enabled` is on and the file is
+  within `email_attachment_max_bytes`. Otherwise the email links to the portal.
+
+### Settings
+
+Each value is editable in the dashboard under **Client Portal → Portal settings**.
+Changes are stored in the database and take effect on the next read. The
+environment variable of the same name (upper case) sets the default, except
+`weekly_report_email_enabled`, which has no environment variable.
+
+| Setting | Meaning | Default | Bounds |
+|---|---|---|---|
+| `client_portal_enabled` | Master switch for the portal login and API | `false` | on/off. Turning it on requires a 16+ character `DASHBOARD_ACCESS_KEY` |
+| `client_portal_url` | Public base URL, used for links in emails (blank = no link) | blank | blank, or an `http(s)://` URL; max 500 characters |
+| `client_session_idle_minutes` | A session ends after this much inactivity | 60 | 1–1440 |
+| `client_session_max_hours` | A session ends this long after sign-in | 12 | 1–168 |
+| `client_login_max_failures` | Wrong passwords in a row before the account is locked | 10 | 1–1000 |
+| `client_login_lockout_minutes` | How long a locked account stays locked | 15 | 1–1440 |
+| `client_export_max_alerts` | Most alerts in one client export | 5000 | 1–100000 |
+| `client_immediate_min_risk` | Minimum risk for an immediate client notification | `LOW` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. Stored, but no code reads it yet, so it has no effect |
+| `weekly_report_enabled` | Run the weekly report schedule | `false` | on/off |
+| `weekly_report_weekday` | Day the report is due (JST) | `MON` | `MON` … `SUN` |
+| `weekly_report_time` | Time the report is due (JST) | `09:00` | `HH:MM`, 24-hour |
+| `weekly_report_check_interval_seconds` | How often the scheduler checks for a due report | 60 | 1–3600 |
+| `weekly_report_max_findings_listed` | Most HIGH and CRITICAL findings listed in the report email | 50 | 1–1000 |
+| `weekly_report_email_enabled` | Email the weekly report. Not enabled in this release | `false` | on/off. Dashboard only |
+| `email_attachments_enabled` | Attach files (the weekly workbook) to emails | `false` | on/off |
+| `email_attachment_max_bytes` | Largest attachment sent. Bigger files are left out | 1000000 | 1024–25000000 |
+
+Recipients are set in the dashboard **Settings** tab. `weekly_report_emails`
+and `recommendation_notification_emails` are comma-separated. A blank value
+falls back to `client_notification_emails`.
+
+### API
+
+The dashboard's Client Portal tab calls these engineer routes. They can also be called directly, using the `X-Dashboard-Key` header:
+
+| Method and path | Purpose |
+|---|---|
+| `GET /dashboard/api/portal-settings` | All portal settings, with value, default, source and bounds |
+| `PUT /dashboard/api/portal-settings/{key}` | Save a value (`{"value": ...}`). `422` if invalid, `409` if turning the portal on is refused |
+| `DELETE /dashboard/api/portal-settings/{key}` | Remove the saved value, so the env default applies again |
+| `GET /dashboard/api/portal/users` | List client accounts |
+| `POST /dashboard/api/portal/users` | Create an account. Omit `password` to generate one (returned once) |
+| `POST /dashboard/api/portal/users/{id}/password` | Reset a password. Clears any lockout and ends sessions |
+| `POST /dashboard/api/portal/users/{id}/disable` / `enable` | Turn an account off or on. Disabling ends its sessions |
+| `POST /dashboard/api/portal/users/{id}/unlock` | Clear a lockout |
+| `POST /dashboard/api/portal/users/{id}/revoke-sessions` | End all of an account's sessions |
+| `DELETE /dashboard/api/portal/users/{id}` | Delete an account |
+| `GET /dashboard/api/alerts/{id}/recommendations` | All recommendations for an alert, including retracted ones |
+| `POST /dashboard/api/alerts/{id}/recommendations` | Add a recommendation (`body`, `author`) |
+| `POST /dashboard/api/recommendations/{id}/retract` | Retract a recommendation. The record is kept |
+| `GET /dashboard/api/recommendations/counts?cids=...` | Active recommendation counts for up to 500 alerts |
+| `GET /dashboard/api/reports/weekly` | Schedule, next run and report history |
+| `GET /dashboard/api/reports/weekly/preview?period_key=` | Build a period's workbook without storing or sending it |
+| `POST /dashboard/api/reports/weekly/run` | Produce a period now (`period_key`, `regenerate`) |
+| `GET /dashboard/api/reports/weekly/{period_key}/download` | Download an archived workbook |
+
+Client routes, using the `X-Client-Session` header (except sign-in):
+
+| Method and path | Purpose |
+|---|---|
+| `POST /client/api/auth/login` | Sign in. Returns the session token |
+| `POST /client/api/auth/logout` | End the session |
+| `GET /client/api/auth/me` | The signed-in user and when the session ends |
+| `GET /client/api/alerts` | Filtered, paged alert list with counts per severity |
+| `GET /client/api/alerts/{alert_id}` | One alert's allowlisted fields and its active recommendations |
+| `GET /client/api/export/fields` | Field catalogue, default and weekly field sets, and the export limit |
+| `POST /client/api/alerts/export` | Build a customized `.xlsx` for the filtered alerts |
+| `GET /client/api/reports` | Weekly reports that were produced |
+| `GET /client/api/reports/{period_key}/download` | Download a weekly workbook |
+
+### Security
+
+- **Three separate credentials,** each accepted only on its own routes: the
+  webhook token (`/webhook/*`), the dashboard key (`/dashboard/api/*`,
+  `/status/*`), and the client session (`/client/api/*`). A client session
+  cannot reach engineering routes, and the dashboard key cannot reach the client API.
+- **Passwords** are hashed with scrypt (N=2^14, r=8, p=1, 16-byte salt). The
+  policy is 12 to 256 characters, not equal to the username. Usernames are
+  unique, ignoring case.
+- **Sign-in is throttled twice.** An account locks after
+  `client_login_max_failures` wrong passwords. Failed checks are also counted per
+  address against the shared `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS`
+  limit. An unknown user, a wrong password, a disabled account and a locked
+  account all get the same `401`.
+- **Sessions** use a 256-bit random token, and only its hash is stored. They
+  expire after the idle and absolute limits. The token travels in the
+  `X-Client-Session` header. There are no cookies, and the browser keeps the
+  token in `sessionStorage`, so it ends when the tab closes.
+- **The client page** has no inline scripts, and falls under the same strict
+  Content-Security-Policy as the rest of the app. Its assets are served from
+  `/client/assets`.
+- **Spreadsheet cells** are always stored as text, never as formulas, so alert
+  content cannot inject formulas.
+- **Cross-origin browser requests** that change state (POST, PUT, DELETE) to the
+  client API are refused with `403`, the same rule the dashboard API follows.
+- **Engineer actions** are written to the audit log as event names with ids and
+  usernames. Passwords and tokens are never logged.
+
 ## Deployment
 
 The image in `Dockerfile` runs everything (API, dashboard, syslog listeners) as
@@ -498,6 +670,10 @@ Read before exposing this beyond localhost:
 - `/health` is intentionally unauthenticated so a load balancer or container probe can
   reach it. It reports component status only — no error text, no paths — but it will
   confirm the service exists.
+- **The client portal** is off by default. Turning it on requires a
+  `DASHBOARD_ACCESS_KEY` of at least 16 characters, and production refuses to
+  start if the portal is enabled with a weaker key. See
+  [Client portal and weekly report](#client-portal-and-weekly-report).
 - `/docs`, `/redoc` and `/openapi.json` are **off** unless `ENABLE_API_DOCS=true`.
   FastAPI serves them itself, so `DASHBOARD_ACCESS_KEY` cannot gate them; left on they
   publish the full route inventory, ingest paths included, to anyone who can reach the

@@ -128,6 +128,112 @@ async def init_db() -> None:
             "ON alert_observations(detection_name, observed_at)"
         )
 
+        # --- Client portal (read-only portal for the client's own staff) ---
+        # Client accounts are created/managed by engineers from the dashboard
+        # (see storage/user_store.py). role is fixed to 'client'; engineers use
+        # the dashboard key, not these accounts.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                display_name TEXT,
+                role TEXT NOT NULL DEFAULT 'client' CHECK(role = 'client'),
+                password_hash TEXT NOT NULL,
+                disabled INTEGER NOT NULL DEFAULT 0,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until REAL,
+                created_at REAL NOT NULL,
+                password_changed_at REAL,
+                last_login_at REAL
+            )
+        """)
+        # token_hash is a hash of the opaque cookie token; the token itself is
+        # never stored. Rows are removed with their user (foreign_keys is ON in
+        # db_session()).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE CASCADE,
+                created_at REAL,
+                last_seen_at REAL,
+                expires_at REAL,
+                client_ip TEXT
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_client_sessions_user ON client_sessions(user_id)"
+        )
+
+        # Query index over alerts (storage/alert_index_store.py): one row per
+        # correlation_id so the portal can filter/page without reading every
+        # result file. The result JSON files stay the source of truth.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_index (
+                correlation_id TEXT PRIMARY KEY,
+                source TEXT,
+                received_at REAL NOT NULL,
+                processed_at REAL,
+                pipeline_status TEXT,
+                risk_level TEXT,
+                eset_severity TEXT,
+                eset_alert_id TEXT,
+                detection_name TEXT,
+                endpoint_name TEXT,
+                has_ai_output INTEGER,
+                updated_at REAL
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_index_risk_received "
+            "ON alert_index(risk_level, received_at)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_index_received ON alert_index(received_at)"
+        )
+
+        # Engineer recommendations shown to the client on an alert
+        # (storage/recommendation_store.py). Retracted, never deleted.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_recommendations (
+                id TEXT PRIMARY KEY,
+                correlation_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                author TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                retracted_at REAL,
+                retracted_by TEXT,
+                retract_reason TEXT,
+                notification_email_id TEXT
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_recommendations_alert "
+            "ON alert_recommendations(correlation_id, created_at)"
+        )
+
+        # Weekly report runs (storage/weekly_report_store.py); period_key is the
+        # idempotency key so a restart or second instance cannot double-send.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_reports (
+                period_key TEXT PRIMARY KEY,
+                period_start REAL,
+                period_end REAL,
+                status TEXT,
+                trigger TEXT,
+                claimed_at REAL,
+                completed_at REAL,
+                email_id TEXT,
+                recipients TEXT,
+                counts_json TEXT,
+                file_path TEXT,
+                file_sha256 TEXT,
+                attachment_included INTEGER DEFAULT 0,
+                resend_count INTEGER DEFAULT 0,
+                attempts INTEGER DEFAULT 0,
+                error TEXT
+            )
+        """)
+
         await conn.commit()
-        
+
     logger.info("database_init_success")

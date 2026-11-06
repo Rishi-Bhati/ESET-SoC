@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 import aiosqlite
 from fastapi.testclient import TestClient
-from src.config import settings
+from src.config import settings, reports_dir
 
 # Redirect ALL persistent state to temp locations before importing any component
 # that captures these paths at import time. Without this the suite writes real
@@ -35,6 +35,7 @@ def setup_test_env() -> Generator[None, None, None]:
     os.makedirs("logs", exist_ok=True)
     os.makedirs(settings.output_dir, exist_ok=True)
     os.makedirs(email_outbox.OUTBOX_DIR, exist_ok=True)
+    os.makedirs(reports_dir(), exist_ok=True)
     yield
     try:
         os.close(test_db_fd)
@@ -46,8 +47,10 @@ def setup_test_env() -> Generator[None, None, None]:
 
 @pytest.fixture(autouse=True)
 def clean_output_dirs() -> Generator[None, None, None]:
-    """Isolates each test: no alert files or queued emails leak between tests."""
-    for directory in (settings.output_dir, email_outbox.OUTBOX_DIR):
+    """Isolates each test: no alert files, queued emails or weekly reports leak between tests."""
+    # reports_dir() derives from settings.output_dir at call time, so it already
+    # lands in the temp tree (<test_output_dir>/reports).
+    for directory in (settings.output_dir, email_outbox.OUTBOX_DIR, reports_dir()):
         shutil.rmtree(directory, ignore_errors=True)
         os.makedirs(directory, exist_ok=True)
     yield
@@ -61,6 +64,13 @@ async def clean_database() -> AsyncGenerator[None, None]:
         await conn.execute("DELETE FROM dedup_log")
         await conn.execute("DELETE FROM app_settings")
         await conn.execute("DELETE FROM alert_observations")
+        # client_sessions rows go with their users (ON DELETE CASCADE), but are
+        # wiped explicitly in case a connection runs without foreign_keys on.
+        await conn.execute("DELETE FROM client_sessions")
+        await conn.execute("DELETE FROM client_users")
+        await conn.execute("DELETE FROM alert_index")
+        await conn.execute("DELETE FROM alert_recommendations")
+        await conn.execute("DELETE FROM weekly_reports")
         await conn.commit()
     yield
 

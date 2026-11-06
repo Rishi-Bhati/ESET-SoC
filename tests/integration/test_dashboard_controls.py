@@ -32,6 +32,7 @@ def test_settings_defaults_to_env(client: TestClient):
     assert set(body["recipients"]) == {
         "client_notification_emails", "cthree_notification_emails",
         "internal_notification_emails", "engineer_notification_emails",
+        "recommendation_notification_emails", "weekly_report_emails",
     }
     assert all(r["source"] == "env" for r in body["recipients"].values())
     assert "dedup_ttl_seconds" in body["runtime"]

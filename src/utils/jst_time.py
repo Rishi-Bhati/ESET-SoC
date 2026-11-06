@@ -129,3 +129,19 @@ def parse_alert_time(value: object) -> AlertTime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return AlertTime(NO_TIMEZONE, text)
     return AlertTime(CONVERTED, text, parsed.astimezone(JST))
+
+
+def jst_day_start_epoch(date_str: str) -> float:
+    """Epoch seconds of 00:00:00 JST on `date_str` (YYYY-MM-DD). Raises ValueError if
+    it is not a valid calendar date. Used for the client portal's date filters: a day
+    is [jst_day_start_epoch(d), jst_day_start_epoch(d + 1 day))."""
+    day = datetime.strptime(date_str, "%Y-%m-%d")
+    return day.replace(tzinfo=JST).timestamp()
+
+
+def jst_range_epoch(from_date: str, to_date: str) -> tuple[float, float]:
+    """(inclusive start, exclusive end) epoch bounds for the JST calendar days
+    from_date..to_date, both inclusive (YYYY-MM-DD). Raises ValueError on a bad date."""
+    start = jst_day_start_epoch(from_date)
+    end = jst_day_start_epoch(to_date) + 86400  # JST has no DST, a day is always 86400 s
+    return start, end

@@ -190,6 +190,33 @@ class Settings(BaseSettings):
     internal_notification_emails: str = Field("", validation_alias="INTERNAL_NOTIFICATION_EMAILS")
     engineer_notification_emails: str = Field("", validation_alias="ENGINEER_NOTIFICATION_EMAILS")
 
+    # --- Client portal / weekly report / email attachments ---
+    # These are ENV DEFAULTS only. Every one is overridable at runtime from the
+    # engineering dashboard (stored in app_settings, see
+    # src/storage/runtime_settings.py and settings_store.py); code must read
+    # them through those modules so changes apply live, not through `settings`.
+    client_portal_enabled: bool = Field(False, validation_alias="CLIENT_PORTAL_ENABLED")
+    # Public base URL of the portal, used in emails ("" = no link).
+    client_portal_url: str = Field("", validation_alias="CLIENT_PORTAL_URL")
+    client_session_idle_minutes: int = Field(60, validation_alias="CLIENT_SESSION_IDLE_MINUTES")
+    client_session_max_hours: int = Field(12, validation_alias="CLIENT_SESSION_MAX_HOURS")
+    client_login_max_failures: int = Field(10, validation_alias="CLIENT_LOGIN_MAX_FAILURES")
+    client_login_lockout_minutes: int = Field(15, validation_alias="CLIENT_LOGIN_LOCKOUT_MINUTES")
+    client_export_max_alerts: int = Field(5000, validation_alias="CLIENT_EXPORT_MAX_ALERTS")
+    # Recipients (comma-separated). Blank = fall back to CLIENT_NOTIFICATION_EMAILS.
+    recommendation_notification_emails: str = Field("", validation_alias="RECOMMENDATION_NOTIFICATION_EMAILS")
+    weekly_report_enabled: bool = Field(False, validation_alias="WEEKLY_REPORT_ENABLED")
+    weekly_report_weekday: str = Field("MON", validation_alias="WEEKLY_REPORT_WEEKDAY")
+    # HH:MM, 24h, Japan Standard Time.
+    weekly_report_time: str = Field("09:00", validation_alias="WEEKLY_REPORT_TIME")
+    weekly_report_emails: str = Field("", validation_alias="WEEKLY_REPORT_EMAILS")
+    weekly_report_check_interval_seconds: int = Field(60, validation_alias="WEEKLY_REPORT_CHECK_INTERVAL_SECONDS")
+    weekly_report_max_findings_listed: int = Field(50, validation_alias="WEEKLY_REPORT_MAX_FINDINGS_LISTED")
+    email_attachments_enabled: bool = Field(False, validation_alias="EMAIL_ATTACHMENTS_ENABLED")
+    email_attachment_max_bytes: int = Field(1_000_000, validation_alias="EMAIL_ATTACHMENT_MAX_BYTES")
+    # Minimum risk level that triggers an immediate client notification: LOW | MEDIUM | HIGH | CRITICAL
+    client_immediate_min_risk: str = Field("LOW", validation_alias="CLIENT_IMMEDIATE_MIN_RISK")
+
     # --- Dashboard ---
     dashboard_access_key: str = Field("", validation_alias="DASHBOARD_ACCESS_KEY")
 
@@ -239,3 +266,13 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+
+def reports_dir() -> str:
+    """
+    Directory for generated weekly report files: a sibling of OUTPUT_DIR
+    (output/alerts -> output/reports), so a persistent volume mounted at OUTPUT_DIR's
+    parent carries reports along. Computed at CALL time (not import time) so a
+    test or runtime change of settings.output_dir is honoured.
+    """
+    return os.path.join(os.path.dirname(os.path.normpath(settings.output_dir)) or ".", "reports")

@@ -22,7 +22,13 @@ STATIC = Path(__file__).resolve().parents[2] / "static"
 _IDEOGRAPH_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿\U00020000-\U0003ffff]")
 
 
-@pytest.mark.parametrize("name", ["i18n.js", "dashboard.js", "dashboard-viz.js", "dashboard.html"])
+CLIENT = STATIC / "client"
+
+
+@pytest.mark.parametrize("name", [
+    "i18n.js", "dashboard.js", "dashboard-viz.js", "dashboard.html",
+    "client/client-i18n.js", "client/client.js", "client/index.html",
+])
 def test_no_chinese_only_characters(name):
     bad = set()
     for char in _IDEOGRAPH_RE.findall((STATIC / name).read_text(encoding="utf-8")):
@@ -84,5 +90,49 @@ class _UntranslatedText(HTMLParser):
 def test_every_visible_html_text_is_translated():
     html = (STATIC / "dashboard.html").read_text(encoding="utf-8")
     parser = _UntranslatedText()
+    parser.feed(html[html.index("<body"):])
+    assert parser.found == []
+
+
+# ----------------------------------------------------------- client portal UI
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_client_ja_and_en_tables_have_the_same_keys():
+    script = (
+        f"eval(require('fs').readFileSync({json.dumps(str(CLIENT / 'client-i18n.js'))},'utf8')"
+        "+';console.log(JSON.stringify({ja:Object.keys(CLIENT_I18N.ja),en:Object.keys(CLIENT_I18N.en)}))');"
+    )
+    keys = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert keys["ja"] and keys["en"]
+    assert sorted(set(keys["en"]) - set(keys["ja"])) == []
+    assert sorted(set(keys["ja"]) - set(keys["en"])) == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_client_i18n_keys_used_by_the_page_exist():
+    """Every data-i18n* attribute and t("key") call refers to a key that exists."""
+    script = (
+        f"eval(require('fs').readFileSync({json.dumps(str(CLIENT / 'client-i18n.js'))},'utf8')"
+        "+';console.log(JSON.stringify(Object.keys(CLIENT_I18N.en)))');"
+    )
+    known = set(json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout))
+    html = (CLIENT / "index.html").read_text(encoding="utf-8")
+    js = (CLIENT / "client.js").read_text(encoding="utf-8")
+    used = set(re.findall(r'data-i18n(?:-aria|-title)?="([^"]+)"', html))
+    used |= set(re.findall(r'\bt\("([a-z_]+)"\s*[,)]', js))
+    used |= {f"sev_{lvl}" for lvl in ("LOW", "MEDIUM", "HIGH", "CRITICAL")}  # t("sev_" + level)
+    assert sorted(used - known) == []
+
+
+class _ClientUntranslatedText(_UntranslatedText):
+    def handle_data(self, data):
+        if data.strip() == "◐":  # theme-toggle glyph (aria-hidden; the button has a translated label)
+            return
+        super().handle_data(data)
+
+
+def test_every_visible_client_html_text_is_translated():
+    html = (CLIENT / "index.html").read_text(encoding="utf-8")
+    parser = _ClientUntranslatedText()
     parser.feed(html[html.index("<body"):])
     assert parser.found == []

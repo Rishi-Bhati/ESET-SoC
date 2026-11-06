@@ -6,6 +6,7 @@ One CloudFormation stack per environment (`poc`, `staging`, `prod`), from `deplo
 ESET PROTECT Cloud ──HTTPS──▶ Elastic IP ─▶ EC2 (Amazon Linux 2023, IMDSv2 only)
                                             ├─ caddy (TLS via Let's Encrypt)
                                             │    /webhook/*, /health  → public (webhook is token-authenticated)
+                                            │    /client, /client/*   → ClientCidr (default: anywhere; client portal login)
                                             │    everything else      → AdminCidr only, 403 otherwise
                                             └─ soc-lite container (read-only root, no capabilities)
                                                  ├─ /data  → encrypted EBS volume, daily snapshots (14 kept)
@@ -35,6 +36,7 @@ To scale out later (for production at volume):
 - A VPC with a public subnet.
 - A DNS name you control, for example `soc-poc.example.com`.
 - The admin network range (office or VPN egress).
+- Optional: the network range(s) your clients use for the client portal (default is the whole internet; see `ClientCidr`).
 - Local tools: Docker and AWS CLI v2.
 - **OpenAI:** a dedicated project per environment, for example `eset-soc-lite-poc` and `eset-soc-lite-prod`, each with a project-scoped key and a monthly budget limit.
 
@@ -60,12 +62,15 @@ aws cloudformation deploy --region $AWS_REGION \
       VpcId=vpc-xxxxxxxx SubnetId=subnet-xxxxxxxx \
       DomainName=soc-poc.example.com \
       AdminCidr=203.0.113.0/24 \
+      ClientCidr=0.0.0.0/0 \
       ImageUri=123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/eset-soc-lite:20260927-0900-abc1234 \
       OpenAIModel=gpt-5-mini \
       EmailApiUrl=https://<mail-worker>/api/send
       # EmailApiUrl blank = email handoff off (alerts still processed and kept in the outbox)
       # SyslogSourceCidr=198.51.100.10/32   # only if using syslog export
 ```
+
+`ClientCidr` controls who can reach the client portal (`/client` and `/client/*`). The portal is protected by its own login, so the default is `0.0.0.0/0` (the internet). Narrow it to your clients' networks if you want a network restriction as well. Caddy sends only those two paths to the app for this range. The dashboard, `/static/*`, `/status`, `/docs` and the rest stay limited to `AdminCidr`, exactly as before, and the portal serves its own assets under `/client/assets/*`.
 
 Then create a DNS **A record** for `DomainName` that points to the `ElasticIp` output.
 
@@ -122,11 +127,41 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
    The cases go through the real pipeline, so when `EmailApiUrl` is set **configured recipients receive the emails**. Set the recipients to your own team first, in the dashboard under Settings.
 4. In ESET PROTECT Cloud, register the `WebhookUrl` output with the header `Authorization: Bearer <ESET_WEBHOOK_AUTH_TOKEN>`, then send a test webhook.
 
+## 5. Client portal
+
+### Rolling out the Caddy change
+
+- **New stack:** nothing extra to do. The template writes the `/client` route into the Caddyfile and `ClientCidr` is a stack parameter.
+- **Existing instance:** the Caddyfile is written by UserData, which runs only on first boot, so updating the stack does not change a running instance. Patch it in place with `deploy/aws/update_config.sh`. It runs through SSM, with no SSH:
+  ```bash
+  export AWS_REGION=ap-northeast-1
+  deploy/aws/update_config.sh eset-soc-lite-poc                   # dry run: shows the diff, changes nothing
+  deploy/aws/update_config.sh eset-soc-lite-poc --client-cidr 0.0.0.0/0 --yes   # apply
+  ```
+  The script is idempotent (it does nothing if the handler is already there). It backs up the Caddyfile to `/opt/soc-lite/Caddyfile.bak.<time>`, validates the new file with `caddy validate`, writes it in place, and reloads Caddy without downtime. If the reload fails, it restores the backup. Pass the same value you use for the stack's `ClientCidr`.
+  Also pass `ClientCidr` the next time you update the stack, so the template and the instance agree. Changing UserData on an existing instance does not re-run it, but it does make CloudFormation stop and start the instance, so schedule that update.
+- Then roll out the application image with `deploy/aws/release.sh <stack>` as usual.
+
+### Enabling the client portal (checklist)
+
+The portal is managed entirely from the engineering dashboard at runtime. It needs no CLI and no new secrets.
+
+1. **Set `DASHBOARD_ACCESS_KEY` to at least 16 characters** in the `app` secret (the step 3 example generates 43), then restart the container. In production the app refuses to enable the portal with a blank or short key, because the key is what protects every engineering API on the same host (`src/services/portal_guard.py`).
+2. Open the dashboard from the admin network and go to the **Client Portal** tab.
+3. **Create the client accounts** (one per client user).
+4. **Turn the portal on.** It stays off until you do this, even though Caddy already routes `/client`.
+5. **Set the portal URL** (the `client_portal_url` setting, `CLIENT_PORTAL_URL`), for example `https://soc-poc.example.com/client/`. Links in later emails will use it.
+6. **Configure the weekly report schedule** (day, time and recipients).
+7. Verify: `curl -s -o /dev/null -w '%{http_code}\n' https://soc-poc.example.com/client/` should return a page (not 403), and `https://soc-poc.example.com/dashboard` should still return 403 from outside `AdminCidr`.
+
+**Not enabled yet:** the weekly report email and the recommendation emails are not enabled in this release. You can configure the schedule and see reports in the portal, but no email is sent for them.
+
 ## Operations
 
 | Task | How |
 |---|---|
 | Deploy a new version | `deploy/aws/release.sh eset-soc-lite-poc` (build, push, then roll out through SSM) |
+| Change the Caddy config on a running instance | `deploy/aws/update_config.sh <stack>` (dry run by default; `--yes` to apply). UserData does not re-run on existing instances. |
 | Rotate the OpenAI key | Create the new key in the OpenAI project, then run `put-secret-value`. The app picks it up within `SECRET_CACHE_TTL_SECONDS` (5 min), or immediately on the next 401. Then revoke the old key. |
 | Rotate the webhook token or dashboard key | Update the `app` secret, restart through SSM (see step 3), and update the token in ESET PROTECT. |
 | Shell on the host | `aws ssm start-session --target $INSTANCE` |
@@ -137,7 +172,7 @@ aws ssm send-command --instance-ids $INSTANCE --document-name AWS-RunShellScript
 ## Security summary
 
 - **No SSH and no inbound admin ports.** Administration goes through SSM Session Manager. IMDSv2 is required.
-- **Dashboard access:** the dashboard is reachable only from `AdminCidr`, at the proxy, *and* requires `DASHBOARD_ACCESS_KEY`. Only `/webhook/*` and `/health` are public.
+- **Dashboard access:** the dashboard is reachable only from `AdminCidr`, at the proxy, *and* requires `DASHBOARD_ACCESS_KEY`. Only `/webhook/*` and `/health` are public to everyone. The client portal (`/client`, `/client/*`) is reachable from `ClientCidr` (default: the internet) behind its own login, and refuses to turn on unless `DASHBOARD_ACCESS_KEY` is at least 16 characters.
 - **Separated environments:** each stack's role can read only `eset-soc-lite/<its env>/*`. Each environment uses a separate OpenAI project and key.
 - **Encryption at rest:** the EBS volumes and Secrets Manager secrets are encrypted. TLS 1.2+ is used on every hop to the internet: ESET to the platform, and the platform to OpenAI and the mail service.
 - **Secrets stay out of storage:** no secrets exist in the image, the template, stack parameters, user data or on disk (`/opt/soc-lite/app.env` holds only secret *names*).

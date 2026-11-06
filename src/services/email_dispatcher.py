@@ -35,6 +35,17 @@ logger = structlog.get_logger(__name__)
 # click can never hand the same queued email off twice.
 _dispatch_lock = asyncio.Lock()
 
+# Notification types that are not about one alert (their correlation_id is not
+# an alert id), so they report no "SEND" stage: Pipeline Flow would otherwise
+# grow a phantom lane for them.
+NON_ALERT_NOTIFICATION_TYPES: frozenset[str] = frozenset({"WEEKLY_REPORT_JA"})
+
+
+async def _emit_send_stage(message: EmailMessage, state: str, detail: str) -> None:
+    if message.notification_type in NON_ALERT_NOTIFICATION_TYPES:
+        return
+    await events.emit_stage(message.correlation_id, "SEND", state, detail=detail)
+
 
 def delivery_status() -> dict[str, Any]:
     """Whether handoff is on and correctly configured — surfaced in the dashboard."""
@@ -138,9 +149,8 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
             "subject": message.subject,
             "remote_id": result.remote_id,
         })
-        await events.emit_stage(
-            message.correlation_id, "SEND", "ok",
-            detail=f"{message.notification_type} accepted (#{result.remote_id})",
+        await _emit_send_stage(
+            message, "ok", f"{message.notification_type} accepted (#{result.remote_id})",
         )
         return "accepted"
 
@@ -163,10 +173,7 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
             "attempts": attempts,
             "permanent": permanent,
         })
-        await events.emit_stage(
-            message.correlation_id, "SEND", "failed",
-            detail=(result.error or "handoff failed")[:120],
-        )
+        await _emit_send_stage(message, "failed", (result.error or "handoff failed")[:120])
         logger.error(
             "email_handoff_gave_up",
             email_id=message.email_id, attempts=attempts,

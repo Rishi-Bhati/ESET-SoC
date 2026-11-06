@@ -158,8 +158,43 @@ def test_a_result_file_without_a_job_row_is_not_lost(client: TestClient, sixty_a
 def test_an_empty_history_exports_a_valid_workbook(client: TestClient):
     res, wb = _export(client)
     assert res.headers["x-alert-count"] == "0"
-    assert wb.sheetnames == ["Alerts", "Risk factors", "Emails", "Export info"]
+    assert wb.sheetnames == ["Alerts", "Risk factors", "Emails", "Recommendations", "Export info"]
     assert "correlation_id" in [c.value for c in wb["Alerts"][1]]
+    assert "engineer_recommendations" in [c.value for c in wb["Alerts"][1]]
+    assert [c.value for c in wb["Recommendations"][1]][:3] == ["correlation_id", "recommendation_id", "status"]
+
+
+def test_recommendations_are_exported_retracted_ones_included(client: TestClient, recipients):
+    from src.storage import recommendation_store
+    cid, other = _ingest(client, 1), _ingest(client, 2)
+
+    async def add():
+        first = await recommendation_store.create(cid, "Isolate HOST-001 after approval", "eng.sato")
+        second = await recommendation_store.create(cid, "=cmd|' /C calc'!A0 wrong advice", "eng.kato")
+        await recommendation_store.retract(second["id"], "eng.kato", "posted on the wrong alert")
+        await recommendation_store.create(other, "Run a full scan", "eng.sato")
+        return first, second
+    first, second = asyncio.run(add())
+
+    res, wb = _export(client)
+    alerts = {r["correlation_id"]: r for r in _rows(wb)}
+    # The Alerts column shows what the client sees: active ones only.
+    assert re.fullmatch(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} JST\] eng\.sato: Isolate HOST-001 after approval",
+                        alerts[cid]["engineer_recommendations"])
+    assert "wrong advice" not in alerts[cid]["engineer_recommendations"]
+    assert alerts[other]["engineer_recommendations"].endswith("eng.sato: Run a full scan")
+
+    recs = {r["recommendation_id"]: r for r in _rows(wb, "Recommendations")}
+    assert len(recs) == 3
+    assert recs[first["id"]]["status"] == "active" and recs[first["id"]]["retracted_at (JST)"] is None
+    retracted = recs[second["id"]]
+    assert retracted["status"] == "retracted" and retracted["correlation_id"] == cid
+    assert retracted["retracted_by"] == "eng.kato" and retracted["retract_reason"] == "posted on the wrong alert"
+    assert isinstance(retracted["retracted_at (JST)"], datetime)
+    assert retracted["body"] == "=cmd|' /C calc'!A0 wrong advice"
+    assert b"<f>" not in _sheet_xml(res.content)
+    info = dict(wb["Export info"].iter_rows(values_only=True))
+    assert info["Recommendation rows (incl. retracted)"] == 3 and info["  retracted"] == 1
 
 
 # ---------------------------------------------------------------- details

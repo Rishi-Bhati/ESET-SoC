@@ -18,6 +18,10 @@ RECIPIENT_KEYS = {
     "cthree_notification_emails": "cthree_notification_emails",
     "internal_notification_emails": "internal_notification_emails",
     "engineer_notification_emails": "engineer_notification_emails",
+    # Blank = fall back to client_notification_emails at send time
+    # (see get_effective_with_fallback).
+    "recommendation_notification_emails": "recommendation_notification_emails",
+    "weekly_report_emails": "weekly_report_emails",
 }
 
 
@@ -48,6 +52,39 @@ async def get_effective(key: str) -> str:
     if stored is not None:
         return stored
     return getattr(settings, RECIPIENT_KEYS.get(key, key), "") or ""
+
+
+async def delete_setting(key: str) -> bool:
+    """Removes the stored override for `key`. Returns True if one existed."""
+    async with db_session() as conn:
+        cursor = await conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        await conn.commit()
+        removed = cursor.rowcount > 0
+    if removed:
+        logger.info("setting_reset", key=key)
+    return removed
+
+
+async def get_settings_with_prefix(prefix: str) -> dict[str, str]:
+    """All stored overrides whose key starts with `prefix`, in one query."""
+    async with db_session() as conn:
+        async with conn.execute(
+            "SELECT key, value FROM app_settings WHERE substr(key, 1, ?) = ?", (len(prefix), prefix)
+        ) as cursor:
+            return {row[0]: row[1] async for row in cursor}
+
+
+async def get_effective_with_fallback(key: str, fallback_key: str) -> str:
+    """
+    Effective value of `key`; when that is blank (never set, or saved empty),
+    the effective value of `fallback_key` instead. Used by recipient lists that
+    default to the client notification recipients, e.g.
+    get_effective_with_fallback("weekly_report_emails", "client_notification_emails").
+    """
+    value = (await get_effective(key)).strip()
+    if value:
+        return value
+    return (await get_effective(fallback_key)).strip()
 
 
 async def get_recipient_config() -> dict[str, Any]:

@@ -11,9 +11,10 @@ from src.utils.logging import setup_logging
 from src.utils.broadcaster import EventBroadcaster
 from src.utils import events
 from src.storage.database import init_db
-from src.storage import job_store, deduplication
-from src.services import syslog_runtime, email_dispatcher, pipeline_capacity, secrets
+from src.storage import job_store, deduplication, alert_index_store
+from src.services import syslog_runtime, email_dispatcher, pipeline_capacity, secrets, weekly_report
 from src.services.ai.factory import PROVIDER_SETTINGS, ai_provider_configured, supported_providers
+from src.services import portal_guard
 from src.api.router import api_router
 from src.middleware.security import SecurityHeadersMiddleware, build_csp, inline_script_hashes
 
@@ -94,6 +95,15 @@ def production_config_problems() -> list[str]:
         problems.append("ENABLE_API_DOCS must be false in production (docs cannot be gated by the dashboard key)")
     if settings.email_delivery_enabled and not (settings.email_api_url and settings.email_api_key):
         problems.append("EMAIL_DELIVERY_ENABLED is true but EMAIL_API_URL / EMAIL_API_KEY are missing")
+    # Client portal: a blank/weak dashboard key would leave the whole engineering
+    # API open to the internet-facing portal's users. This covers the env default
+    # (CLIENT_PORTAL_ENABLED); a dashboard override is checked once the DB is up
+    # (portal_guard.check_at_startup() in lifespan), and the portal itself refuses
+    # service at request time while the prerequisites fail.
+    if settings.client_portal_enabled:
+        portal_ok, portal_reason = portal_guard.portal_prerequisites_ok()
+        if not portal_ok:
+            problems.append("CLIENT_PORTAL_ENABLED is true but " + portal_reason)
     return problems
 
 
@@ -191,6 +201,15 @@ async def lifespan(app: FastAPI):
 
     # Initialize SQLite database schema
     await init_db()
+    # Client portal guard on the EFFECTIVE (dashboard-overridable) switch.
+    await portal_guard.check_at_startup()
+
+    # Bring the client-portal alert index in line with the result files.
+    # The index is derived data: a failure here must never stop startup.
+    try:
+        await alert_index_store.reconcile()
+    except Exception as e:
+        logger.error("alert_index_reconcile_failed", error=str(e))
 
     # Embed the syslog UDP/TCP listeners in this same process/event loop so the
     # whole platform starts with a single command (see src.services.syslog_runtime)
@@ -209,12 +228,17 @@ async def lifespan(app: FastAPI):
         deduplication.run_cleanup_loop(max(60, settings.dedup_ttl_seconds))
     )
 
+    # Weekly client report scheduler. Re-reads its runtime settings every
+    # iteration and does nothing while the report is disabled.
+    app.state.weekly_report_task = asyncio.create_task(weekly_report.run_scheduler_loop())
+
     try:
         yield
     finally:
         # --- Shutdown ---
         background = (
             app.state.recovery_task, app.state.dispatch_task, app.state.dedup_cleanup_task,
+            app.state.weekly_report_task,
         )
         for task in background:
             task.cancel()
@@ -268,6 +292,17 @@ class _RevalidatingStaticFiles(StaticFiles):
 
 app.mount("/static", _RevalidatingStaticFiles(directory=STATIC_DIR), name="static")
 
+# Client portal web UI: its own page and assets under /client/assets, deliberately
+# NOT under /static (the production proxy restricts /static to engineers). The page
+# has no inline scripts, so the shared CSP ('self' scripts/styles/connect) covers it.
+CLIENT_UI_DIR = os.path.join(STATIC_DIR, "client")
+app.mount("/client/assets", _RevalidatingStaticFiles(directory=CLIENT_UI_DIR), name="client_assets")
+
 @app.get("/", include_in_schema=False)
 async def dashboard_root() -> FileResponse:
     return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"), headers={"Cache-Control": "no-cache"})
+
+@app.get("/client", include_in_schema=False)
+@app.get("/client/", include_in_schema=False)
+async def client_portal_page() -> FileResponse:
+    return FileResponse(os.path.join(CLIENT_UI_DIR, "index.html"), headers={"Cache-Control": "no-cache"})

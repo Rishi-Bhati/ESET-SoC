@@ -219,6 +219,62 @@
   .mono{font-family:var(--font-mono);font-size:11.5px;font-variant-ligatures:none}
   .muted{color:var(--muted)} .dim{color:var(--dim)}
 
+  /* ---------- Alert recommendations (modal) ---------- */
+  .rec-list{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+  .rec-item{border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;background:var(--panel2)}
+  .rec-item.retracted{opacity:.62}
+  .rec-item.retracted .rec-body{text-decoration:line-through}
+  .rec-meta{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+  .rec-body{margin-top:6px;font-size:12.5px;overflow-wrap:anywhere}
+  .rec-retract-row{display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+  .rec-retract-row.show{display:flex}
+  .rec-retract-row input{max-width:320px}
+  .rec-compose{border-top:1px solid var(--border);padding-top:14px;margin-top:4px}
+  .rec-count{display:inline-flex;align-items:center;padding:1px 8px;border-radius:99px;font-size:10.5px;font-weight:650;color:var(--text-info);background:color-mix(in srgb,var(--text-info) 14%,transparent);border:1px solid color-mix(in srgb,var(--text-info) 26%,transparent)}
+
+  /* ---------- Client portal settings ---------- */
+  .pset-group{margin-bottom:22px}
+  .pset-group h4{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px}
+  .pset-row{display:grid;grid-template-columns:minmax(180px,250px) minmax(0,1fr);gap:6px 16px;align-items:start;padding:11px 0;border-top:1px solid var(--border)}
+  .pset-row:first-of-type{border-top:none}
+  .pset-label{font-size:12.5px;color:var(--text);font-weight:550;line-height:1.45}
+  .pset-label .key{display:block;margin-top:2px;color:var(--dim);font-family:var(--font-mono);font-size:10.5px}
+  .pset-label .hint{display:block;margin-top:4px;font-size:11px;color:var(--dim);font-weight:400}
+  .pset-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .pset-control input[type=text],.pset-control input[type=number],.pset-control input[type=time],.pset-control select{max-width:280px}
+  .pset-control input[type=checkbox]{width:auto;flex:none}
+  .pset-err{display:none;margin-top:2px;font-size:11px;color:var(--text-danger);width:100%}
+  .pset-err.show{display:block}
+  @media (max-width:760px){ .pset-row{grid-template-columns:minmax(0,1fr)} }
+
+  /* ---------- Client accounts + weekly reports panels ---------- */
+  .pp-bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-bottom:12px;font-size:12.5px}
+  .pp-bar .grow{flex:1 1 auto}
+  .pp-note{padding:9px 12px;border-radius:var(--r-md);font-size:12.5px;border:1px solid var(--border);background:var(--panel2);margin-bottom:12px}
+  .pp-note.warn{border-color:color-mix(in srgb,var(--text-warn) 40%,transparent);background:color-mix(in srgb,var(--text-warn) 10%,transparent)}
+  .pp-note .row{margin-top:6px}
+  .pp-err{display:none;font-size:11.5px;color:var(--text-danger);margin:4px 0;overflow-wrap:anywhere}
+  .pp-err.show{display:block}
+  .pp-form{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-end;padding:12px;border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:14px}
+  .pp-form label{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
+  .pp-form .fld{flex:1 1 170px;min-width:150px}
+  .pp-form .hint{flex:1 1 100%;font-size:11px;color:var(--dim);margin:0}
+  .pp-secret{border:1px solid var(--accent);border-radius:var(--r-md);padding:12px 14px;margin-bottom:14px;background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  .pp-secret h4{margin:0 0 4px;font-size:13px}
+  .pp-secret .pw{font-family:var(--font-mono);font-size:17px;font-weight:650;letter-spacing:.02em;padding:8px 12px;margin:8px 0;background:var(--panel);border:1px dashed var(--border2);border-radius:var(--r-sm);overflow-wrap:anywhere;user-select:all}
+  .pp-secret .warnline{font-size:12px;color:var(--text-warn)}
+  .pp-actions{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+  .pp-inline{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;font-size:12px}
+  .pp-inline input{max-width:240px}
+  .pp-tablewrap{overflow-x:auto}
+  .pp-counts{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px}
+  .pp-counts span{margin-right:8px}
+  .pp-find{margin:4px 0 2px}
+  .pp-find summary{cursor:pointer;font-size:11.5px;color:var(--muted)}
+  .pp-find table{margin-top:6px;font-size:11.5px}
+  .pp-find td,.pp-find th{padding:6px 10px}
+  .pp-clip{overflow-wrap:anywhere;max-width:360px}
+
   /* ---------- Login ---------- */
   #login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
   #login.hidden{display:none}
@@ -719,6 +775,7 @@
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="ai-visibility"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 12S5.8 5.4 12 5.4 21.8 12 21.8 12 18.2 18.6 12 18.6 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg><span data-i18n="nav_ai_visibility">AI Visibility</span><span class="count" id="cAiAlerts">0</span></a>
     <div class="navgroup" data-i18n="navgroup_ops">Operations</div>
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="emails"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2.2"/><path d="m3.2 6.8 7.6 5.4a2 2 0 0 0 2.4 0l7.6-5.4"/></svg><span data-i18n="nav_emails">Emails</span><span class="count" id="cEmails">0</span></a>
+    <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="portal"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.4 9h17.2M3.4 15h17.2"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18Z"/></svg><span data-i18n="nav_portal">Client Portal</span></a>
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="logs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h10"/><path d="M4 12h16"/><path d="M4 17.5h12"/></svg><span data-i18n="nav_logs">Logs</span></a>
     <div class="navgroup" data-i18n="navgroup_system">System</div>
     <a class="tab" role="tab" tabindex="0" aria-selected="false" data-view="settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h4"/><path d="M12 17h8"/><circle cx="10" cy="17" r="2"/></svg><span data-i18n="nav_settings">Settings</span></a>
@@ -842,7 +899,7 @@
           <table>
             <thead><tr>
               <th data-i18n="th_status">Status</th><th data-i18n="th_risk">Risk</th><th data-i18n="th_detection">Detection</th><th data-i18n="th_endpoint">Endpoint</th>
-              <th data-i18n="th_source">Source</th><th data-i18n="th_updated">Updated</th><th data-i18n="th_correlation_id">Correlation ID</th><th></th>
+              <th data-i18n="th_source">Source</th><th data-i18n="th_recommendations">Recommendations</th><th data-i18n="th_updated">Updated</th><th data-i18n="th_correlation_id">Correlation ID</th><th></th>
             </tr></thead>
             <tbody id="alertRows"></tbody>
           </table>
@@ -981,6 +1038,24 @@
       </div>
     </section>
 
+    <!-- ─────── CLIENT PORTAL ─────── -->
+    <section class="view" id="view-portal">
+      <div class="panel">
+        <div class="head"><h3 data-i18n="panel_portal_settings">Portal Settings</h3><span class="muted" style="font-size:11.5px" data-i18n="sub_portal_settings">Changes apply on the next action — no restart</span></div>
+        <div class="body"><div id="portalSettingsBody"><p class="muted" data-i18n="pset_loading">Loading settings…</p></div></div>
+      </div>
+      <div class="grid2" style="grid-template-columns:minmax(0,1fr)">
+        <div class="panel" id="portalUsersPanel">
+          <div class="head"><h3 data-i18n="panel_portal_users">Client accounts</h3></div>
+          <div class="body"><div id="portalUsersBody"><p class="muted" data-i18n="pu_loading">Loading accounts…</p></div></div>
+        </div>
+        <div class="panel" id="portalReportsPanel">
+          <div class="head"><h3 data-i18n="panel_portal_reports">Weekly reports</h3></div>
+          <div class="body"><div id="portalReportsBody"><p class="muted" data-i18n="pw_loading">Loading weekly reports…</p></div></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ─────── LOGS ─────── -->
     <section class="view" id="view-logs">
       <div class="panel">
@@ -1067,6 +1142,16 @@
               <label><span data-i18n="label_engineer">Engineer (EN)</span><span class="srcbadge" id="src-engineer" data-i18n="src_from_env">env</span></label>
               <input id="in-engineer" placeholder="engineering@example.com">
               <div class="hint" data-i18n="hint_engineer">Technical breakdown, unknowns, investigation items.</div>
+            </div>
+            <div class="field">
+              <label><span data-i18n="label_recommendation_emails">Recommendation notices (JA)</span><span class="srcbadge" id="src-recommendation" data-i18n="src_from_env">env</span></label>
+              <input id="in-recommendation" placeholder="client@example.com">
+              <div class="hint" data-i18n="hint_recommendation_emails">Notifies when a recommendation is added. Blank falls back to the client recipients list.</div>
+            </div>
+            <div class="field">
+              <label><span data-i18n="label_weekly_report_emails">Weekly report (JA)</span><span class="srcbadge" id="src-weekly" data-i18n="src_from_env">env</span></label>
+              <input id="in-weekly" placeholder="client@example.com">
+              <div class="hint" data-i18n="hint_weekly_report_emails">Where the weekly report is sent. Blank falls back to the client recipients list.</div>
             </div>
           </div>
           <div class="row">

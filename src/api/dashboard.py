@@ -25,6 +25,7 @@ from src.services import secrets
 from src.services.ai import factory as ai_factory
 from src.services.ai.base import AIConfigurationError
 from src.middleware.security import auth_limiter, client_key
+from src.middleware.auth import check_engineer_access
 
 router = APIRouter(prefix="/dashboard/api", tags=["Dashboard"])
 logger = structlog.get_logger(__name__)
@@ -39,21 +40,15 @@ def _check_access(request: Request) -> None:
     webhook token check in src/middleware/auth.py.
 
     When the key is blank the dashboard is fully open — acceptable for a trusted
-    local bind, but see README's security notes before exposing the port.
+    local bind, but see README's security notes before exposing the port (the
+    client portal refuses to run in that state: services/portal_guard.py).
+
+    Delegates to src.middleware.auth.check_engineer_access, the same check behind
+    the require_engineer dependency and the engineer-prefix gate in
+    middleware/security.py. Only the X-Dashboard-Key header is accepted — never
+    a client-portal session.
     """
-    if not settings.dashboard_access_key:
-        return
-    client_ip = client_key(request)
-    wait = auth_limiter.retry_after(client_ip)
-    if wait:
-        raise HTTPException(status_code=429, detail="Too many failed attempts",
-                            headers={"Retry-After": str(wait)})
-    provided = request.headers.get("x-dashboard-key") or ""
-    if not hmac.compare_digest(provided.encode("utf-8"), settings.dashboard_access_key.encode("utf-8")):
-        if provided:
-            auth_limiter.record_failure(client_ip)
-        logger.warning("dashboard_auth_failed", client_ip=client_ip, path=request.url.path)
-        raise HTTPException(status_code=401, detail="Invalid or missing dashboard key")
+    check_engineer_access(request)
 
 
 # Every NormalizedAlert field. A stored normalized_alert that carries all of them
@@ -400,6 +395,9 @@ class RecipientUpdate(BaseModel):
     cthree_notification_emails: str | None = None
     internal_notification_emails: str | None = None
     engineer_notification_emails: str | None = None
+    # Optional; blank = fall back to client_notification_emails at send time.
+    recommendation_notification_emails: str | None = None
+    weekly_report_emails: str | None = None
 
     @field_validator("*")
     @classmethod

@@ -100,6 +100,26 @@ This is currently running in simulation only. It has no effect on the risk level
 
 ---
 
+## Client portal and weekly report
+
+These run alongside the notification sequence above. They let you review your alerts yourself, and they add a weekly summary.
+
+### Client portal — ⏸️ Built, off by default
+
+Your staff sign in at a separate page to view and filter their alerts by severity and date, open each alert, export the filtered alerts to Excel, and download the weekly reports. Our team creates accounts and manages the weekly reports from the engineering dashboard. You see only an approved list of fields, and the AI's internal texts are never shown.
+
+The portal is switched on only after the engineering dashboard has a strong access key.
+
+### Engineer recommendations — Built
+
+Our engineers add recommendations to an alert in the dashboard. You see the active ones on the alert, in the portal and in exports. Withdrawn recommendations are hidden. A notification email for new recommendations is not switched on yet.
+
+### Weekly report — Built; ⏸️ email not switched on
+
+By default, each Monday at 09:00 JST, the platform builds a workbook of the previous week's LOW and MEDIUM alerts, with the essential fields. The workbook can be downloaded from the portal. HIGH and CRITICAL alerts are counted and listed in the report summary, not in the workbook. Sending the report by email, with the workbook attached, is not switched on yet.
+
+---
+
 ## What we need from you
 
 1. **Trigger one real detection** on a test device, for example by downloading the harmless EICAR test file, so we can confirm the fields ESET sends for an actual threat (step 3).

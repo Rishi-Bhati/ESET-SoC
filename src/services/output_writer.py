@@ -2,10 +2,12 @@ import os
 import tempfile
 import json
 import asyncio
+import time
 from typing import Any
 import structlog
 from src.config import settings
 from src.models.pipeline_result import PipelineResult
+from src.storage import alert_index_store
 from src.utils import events
 
 logger = structlog.get_logger(__name__)
@@ -59,7 +61,22 @@ async def write_result(result: PipelineResult) -> None:
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise e
-        
+
+    # 1b. Index the alert for the client portal. The result file is the source of
+    # truth (alert_index_store.reconcile() rebuilds a missed row), so a failure
+    # here is logged and never blocks the pipeline.
+    try:
+        created_at = await alert_index_store.get_job_created_at(result.correlation_id)
+        if created_at is None:
+            created_at = (
+                alert_index_store.iso_to_epoch(result.processed_at)
+                or alert_index_store.iso_to_epoch(result.received_at)
+                or time.time()
+            )
+        await alert_index_store.upsert_from_result(result, created_at)
+    except Exception as e:
+        logger.error("alert_index_upsert_failed", correlation_id=result.correlation_id, error=str(e))
+
     # 2. Append metadata to index.json in a thread-safe manner
     async with _index_lock:
         index_path = os.path.join(settings.output_dir, "index.json")
