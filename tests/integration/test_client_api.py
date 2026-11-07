@@ -89,6 +89,7 @@ ROUTES = [
     ("GET", f"{BASE}/alerts/some-id", None),
     ("GET", f"{BASE}/export/fields", None),
     ("POST", f"{BASE}/alerts/export", {"fields": ["alert_id"]}),
+    ("GET", f"{BASE}/stats", None),
 ]
 
 
@@ -428,3 +429,160 @@ async def test_internal_material_never_reaches_json_or_spreadsheet(client, auth)
             assert value not in text, f"{name} leaked"
         assert "internal_summary" not in text and "backlog_comment" not in text
         assert settings.output_dir not in text
+
+
+# -------------------------------------------------------------------- stats
+# GET /client/api/stats feeds the Home charts. Counts only; same rows as the list.
+
+STATS_KEYS = {"days", "from", "to", "bucket_days", "buckets", "totals", "total", "devices_affected",
+              "with_advice", "latest_advice_at", "top_devices", "other_devices", "top_threats",
+              "other_threats", "previous"}
+
+
+@pytest.fixture
+def today(monkeypatch):
+    """Pins the portal's 'today' to 9 Nov 2026 JST, so a 7-day period is 3-9 Nov."""
+    from datetime import date
+    monkeypatch.setattr(client_api, "_today_jst", lambda: date(2026, 11, 9))
+
+
+async def name_alert(cid: str, endpoint: str | None, detection: str | None) -> None:
+    async with aiosqlite.connect(settings.sqlite_db_path) as conn:
+        await conn.execute("UPDATE alert_index SET endpoint_name = ?, detection_name = ? WHERE correlation_id = ?",
+                           (endpoint, detection, cid))
+        await conn.commit()
+
+
+def stats(client, auth, days=7):
+    res = client.get(f"{BASE}/stats", params={"days": days}, headers=auth)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+async def test_stats_counts_per_day_and_compares_with_the_previous_period(client, auth, today):
+    await seed("s-first", DAY, "HIGH")                       # 00:00 JST 3 Nov: first second of the period
+    await seed("s-mid", DAY + 2 * 86400 + 50, "LOW")          # 5 Nov
+    await seed("s-mid2", DAY + 2 * 86400 + 60, "LOW")
+    await seed("s-last", DAY + 7 * 86400 - 1, "CRITICAL")     # 23:59:59 JST 9 Nov (today)
+    await seed("s-prev", DAY - 1, "MEDIUM")                   # 23:59:59 JST 2 Nov: previous period
+    await seed("s-old", DAY - 7 * 86400 - 1, "HIGH")          # before the previous period
+    await seed("s-future", DAY + 7 * 86400, "HIGH")           # 10 Nov: after today
+    await seed("s-failed", DAY + 100, "HIGH", status="FAILED")
+    body = stats(client, auth)
+    assert set(body) == STATS_KEYS
+    assert (body["days"], body["from"], body["to"], body["bucket_days"]) == (7, "2026-11-03", "2026-11-09", 1)
+    assert [b["from"] for b in body["buckets"]] == [f"2026-11-0{d}" for d in range(3, 10)]
+    assert all(b["from"] == b["to"] for b in body["buckets"])
+    by_day = {b["from"]: b["counts"] for b in body["buckets"]}
+    assert by_day["2026-11-03"] == {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 0, "LOW": 0}
+    assert by_day["2026-11-05"]["LOW"] == 2
+    assert by_day["2026-11-09"]["CRITICAL"] == 1
+    assert sum(sum(c.values()) for c in by_day.values()) == 4
+    assert body["totals"] == {"CRITICAL": 1, "HIGH": 1, "MEDIUM": 0, "LOW": 2} and body["total"] == 4
+    prev = body["previous"]
+    assert (prev["from"], prev["to"]) == ("2026-10-27", "2026-11-02")
+    assert prev["totals"] == {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 1, "LOW": 0} and prev["total"] == 1
+
+
+async def test_stats_totals_match_the_alert_list_for_the_same_window(client, auth, today):
+    for i, risk in enumerate(["LOW", "LOW", "MEDIUM", "HIGH", "CRITICAL", "LOW"]):
+        await seed(f"m-{i}", DAY - 20 * 86400 + i * 5 * 86400, risk)
+    await seed("m-partial", DAY + 10, "MEDIUM", status="PARTIAL")
+    await seed("m-failed", DAY + 20, "MEDIUM", status="FAILED")
+    body = stats(client, auth, days=30)
+    listed = client.get(f"{BASE}/alerts", params={"from": body["from"], "to": body["to"]}, headers=auth).json()
+    assert body["totals"] == listed["counts_by_risk"]
+    assert body["total"] == listed["total"]
+
+
+async def test_stats_ranks_devices_and_threats_and_groups_missing_names(client, auth, today):
+    names = [("PC-A", "Trojan.X"), ("PC-A", "Trojan.X"), ("PC-A", "Adware.Y"), ("PC-B", "Adware.Y"),
+             ("PC-B", "Trojan.X"), ("UNKNOWN", "UNKNOWN"), ("", None), (None, "Worm.Z")]
+    for i, (endpoint, detection) in enumerate(names):
+        await seed(f"r-{i}", DAY + 100 + i, "LOW")
+        await name_alert(f"r-{i}", endpoint, detection)
+    body = stats(client, auth)
+    assert body["top_devices"] == [{"name": "PC-A", "count": 3}, {"name": None, "count": 3},
+                                   {"name": "PC-B", "count": 2}]
+    assert body["devices_affected"] == 2                       # "not recorded" is not a device
+    assert body["top_threats"] == [{"name": "Trojan.X", "count": 3}, {"name": "Adware.Y", "count": 2},
+                                   {"name": None, "count": 2}, {"name": "Worm.Z", "count": 1}]
+    assert body["other_devices"] == {"names": 0, "alerts": 0}
+
+
+async def test_stats_keeps_the_top_five_and_counts_the_rest(client, auth, today):
+    for i in range(8):
+        for k in range(8 - i):
+            cid = f"t-{i}-{k}"
+            await seed(cid, DAY + 1000 + i * 10 + k, "LOW")
+            await name_alert(cid, f"HOST-{i}", "Same.Threat")
+    body = stats(client, auth)
+    assert [d["name"] for d in body["top_devices"]] == [f"HOST-{i}" for i in range(5)]
+    assert body["other_devices"] == {"names": 3, "alerts": 3 + 2 + 1}
+    assert body["top_threats"] == [{"name": "Same.Threat", "count": 36}]
+    assert body["devices_affected"] == 8
+
+
+async def test_stats_counts_alerts_with_active_advice_only(client, auth, today):
+    await seed("adv-1", DAY + 100, "HIGH")
+    await seed("adv-2", DAY + 200, "HIGH")
+    await seed("adv-old", DAY - 86400, "HIGH")                # previous period
+    await recommendation_store.create("adv-1", "first", "eng.a")
+    latest = await recommendation_store.create("adv-1", "second", "eng.a")
+    gone = await recommendation_store.create("adv-2", "oops", "eng.a")
+    await recommendation_store.retract(gone["id"], "eng.a", "wrong")
+    await recommendation_store.create("adv-old", "outside", "eng.a")
+    body = stats(client, auth)
+    assert body["with_advice"] == 1
+    assert body["latest_advice_at"] == pytest.approx(latest["created_at"])
+
+
+async def test_stats_uses_weekly_buckets_counted_back_from_today_for_90_days(client, auth, today):
+    await seed("w-oldest", jst_day_start_epoch("2026-08-12"), "LOW")      # first day of the 90
+    await seed("w-today", jst_day_start_epoch("2026-11-09") + 3600, "HIGH")
+    await seed("w-before", jst_day_start_epoch("2026-08-11") + 3600, "LOW")  # day 91: previous period
+    body = stats(client, auth, days=90)
+    assert (body["from"], body["to"], body["bucket_days"]) == ("2026-08-12", "2026-11-09", 7)
+    chunks = body["buckets"]
+    assert len(chunks) == 13
+    assert (chunks[0]["from"], chunks[0]["to"]) == ("2026-08-12", "2026-08-17")   # the one short bucket: 6 days
+    assert (chunks[-1]["from"], chunks[-1]["to"]) == ("2026-11-03", "2026-11-09")
+    assert chunks[0]["counts"]["LOW"] == 1 and chunks[-1]["counts"]["HIGH"] == 1
+    assert sum(sum(b["counts"].values()) for b in chunks) == body["total"] == 2
+    assert body["previous"]["total"] == 1
+
+
+async def test_stats_with_no_alerts_is_zero_filled(client, auth, today):
+    body = stats(client, auth, days=30)
+    assert len(body["buckets"]) == 30 and body["total"] == 0
+    assert all(sum(b["counts"].values()) == 0 for b in body["buckets"])
+    assert body["top_devices"] == [] and body["top_threats"] == [] and body["devices_affected"] == 0
+    assert body["with_advice"] == 0 and body["latest_advice_at"] is None
+
+
+@pytest.mark.parametrize("days", ["0", "367", "-7", "abc", "7.5"])
+def test_stats_rejects_out_of_range_days(client, auth, days):
+    assert client.get(f"{BASE}/stats", params={"days": days}, headers=auth).status_code == 422
+
+
+async def test_stats_returns_counts_and_names_but_no_alert_material(client, auth, today):
+    await seed("secret-cid-123", DAY + 100, "HIGH", ai=_ai("SECRET SUMMARY TEXT"))
+    text = client.get(f"{BASE}/stats", headers=auth).text
+    for leaked in ('"secret-cid-123"', "SECRET SUMMARY TEXT", "E-secret-cid-123", "raw_payload", "Cleaned",
+                   "alert_id", "correlation_id"):
+        assert leaked not in text
+    assert "PC-secret-cid-123" in text and "Det-secret-cid-123" in text   # what the list already shows
+
+
+async def test_stats_scope_is_the_same_for_every_client_account(client, monkeypatch, today):
+    """Data scoping matches /alerts: a deployment serves one client organisation, so every
+    client account sees the same finished alerts and no account sees more than the list."""
+    enable_portal(monkeypatch)
+    await seed("scope-1", DAY + 100, "HIGH")
+    await seed("scope-2", DAY + 200, "LOW", status="FAILED")
+    first = session_header(make_client_session(client, "first.user"))
+    second = session_header(make_client_session(client, "second.user"))
+    a, b = stats(client, first), stats(client, second)
+    assert a == b and a["total"] == 1
+    listed = client.get(f"{BASE}/alerts", params={"from": a["from"]}, headers=second).json()
+    assert a["total"] == listed["total"]

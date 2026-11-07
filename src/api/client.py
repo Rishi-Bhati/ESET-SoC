@@ -3,6 +3,8 @@ Client portal read API: alerts list/detail, export field catalogue, spreadsheet 
 Every route requires a client session (X-Client-Session, see middleware/auth.require_client).
 
   GET  /client/api/alerts               filtered, paged list + per-severity counts
+  GET  /client/api/stats?days=N         Home charts: per-day/week severity counts, top devices and
+                                        threats, alerts with advice; plus the previous N days' totals
   GET  /client/api/alerts/{alert_id}    one alert: registry fields grouped, active recommendations
   GET  /client/api/export/fields        the field catalogue the export/UI may offer
   POST /client/api/alerts/export        .xlsx of the filtered alerts with the chosen columns
@@ -23,14 +25,14 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.middleware.auth import require_client
-from src.services import alert_catalog
+from src.services import alert_catalog, client_stats
 from src.services.alert_catalog import AlertBundle, BundleQuery
 from src.services.client_fields import (
     DEFAULT_FIELDS, GROUP_LABELS, REGISTRY, WEEKLY_FIELDS, field_catalog,
 )
 from src.services.client_workbook import build_workbook
 from src.storage import alert_index_store, runtime_settings
-from src.utils.jst_time import JST, jst_day_start_epoch
+from src.utils.jst_time import JST, jst_day_start_epoch, jst_range_epoch
 
 logger = structlog.get_logger(__name__)
 
@@ -145,6 +147,53 @@ async def list_alerts(
         "page": page,
         "pages": max(1, math.ceil(total / page_size)),
         "counts_by_risk": {level: int(counts.get(level, 0)) for level in reversed(RISKS)},
+    }
+
+
+# -------------------------------------------------------------------- stats
+
+def _today_jst():
+    """Today's JST calendar date (a function so tests can pin it)."""
+    return datetime.now(JST).date()
+
+
+@router.get("/stats")
+async def alert_stats(days: int = Query(30, ge=1, le=366)) -> dict[str, Any]:
+    """Aggregates for the Home charts over the `days` JST days ending today, plus the
+    same-length period before it for comparison. Counts only: the names it returns are
+    the device and detection names the alert list already shows."""
+    first, last = client_stats.period_days(_today_jst(), days)
+    prev_first, prev_last = client_stats.previous_period(first, days)
+    cur = await alert_index_store.window_aggregates(*jst_range_epoch(first.isoformat(), last.isoformat()))
+    prev = await alert_index_store.window_aggregates(*jst_range_epoch(prev_first.isoformat(), prev_last.isoformat()))
+
+    chart, size = client_stats.buckets(cur["by_day"], first, last)
+    top_devices, other_devices = client_stats.ranked(cur["devices"])
+    top_threats, other_threats = client_stats.ranked(cur["threats"])
+    cur_totals = client_stats.totals(cur["by_day"])
+    prev_totals = client_stats.totals(prev["by_day"])
+    return {
+        "days": days,
+        "from": first.isoformat(),
+        "to": last.isoformat(),
+        "bucket_days": size,
+        "buckets": chart,
+        "totals": cur_totals,
+        "total": sum(cur_totals.values()),
+        "devices_affected": client_stats.distinct_named(cur["devices"]),
+        "with_advice": cur["with_advice"],
+        "latest_advice_at": cur["latest_advice_at"],
+        "top_devices": top_devices,
+        "other_devices": other_devices,
+        "top_threats": top_threats,
+        "other_threats": other_threats,
+        "previous": {
+            "from": prev_first.isoformat(),
+            "to": prev_last.isoformat(),
+            "totals": prev_totals,
+            "total": sum(prev_totals.values()),
+            "devices_affected": client_stats.distinct_named(prev["devices"]),
+        },
     }
 
 

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>SOC Lite Client Portal</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c8cff'/%3E%3Cpath d='M16 5.5 25 9.2v6.6c0 5.4-3.6 9.6-9 11.2-5.4-1.6-9-5.8-9-11.2V9.2Z' fill='%230a0c18'/%3E%3Cpath d='m11.8 15.6 3 3 5.4-5.6' stroke='%237c8cff' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23165e83'/%3E%3Cpath d='M16 5.5 25 9.2v6.6c0 5.4-3.6 9.6-9 11.2-5.4-1.6-9-5.8-9-11.2V9.2Z' fill='%23ffffff'/%3E%3Cpath d='m11.8 15.6 3 3 5.4-5.6' stroke='%23165e83' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/client/assets/client.css">
 <script src="/client/assets/client-i18n.js" defer></script>
 <script src="/client/assets/client.js" defer></script>
@@ -59,8 +59,18 @@
       <button type="button" role="tab" id="tabReports" class="tab" aria-controls="panelReports" aria-selected="false" tabindex="-1" data-tab="reports" data-i18n="tab_reports">Weekly reports</button>
     </nav>
 
-    <!-- Overview: the one question a client opens the portal for -->
+    <!-- Overview: are we OK, is it getting better or worse, and what happened.
+         One period picker scopes everything below it. -->
     <section id="panelOverview" role="tabpanel" aria-labelledby="tabOverview">
+      <div class="period-row">
+        <span id="homePeriodLabel" class="period-label" data-i18n="home_period_label">Last</span>
+        <div id="homePeriod" class="seg period-seg" role="group" data-i18n-aria="home_period_aria" aria-label="Period shown on this page">
+          <button type="button" class="seg-btn" data-days="7"></button>
+          <button type="button" class="seg-btn" data-days="30"></button>
+          <button type="button" class="seg-btn" data-days="90"></button>
+        </div>
+      </div>
+
       <div id="ovStatus" class="status-card" data-tone="loading" role="status" aria-live="polite">
         <span class="status-icon" aria-hidden="true"></span>
         <div class="status-text">
@@ -70,8 +80,36 @@
         <button type="button" id="ovAction" class="btn btn-primary" hidden></button>
       </div>
 
-      <h2 id="ovGlance" class="section-title"></h2>
-      <div id="ovTiles" class="tiles"></div>
+      <div id="ovStats" class="ov-stats" data-state="loading">
+        <dl id="ovFigures" class="figures"></dl>
+        <p id="ovCompare" class="compare-note muted small"></p>
+
+        <section class="panel trend" aria-labelledby="ovTrendTitle">
+          <div class="panel-head">
+            <h2 id="ovTrendTitle"></h2>
+            <p id="ovTrendSub" class="muted small"></p>
+          </div>
+          <div id="ovLegend" class="legend" role="group" data-i18n-aria="legend_label" aria-label="Alerts by severity"></div>
+          <div id="ovChart" class="chart"></div>
+          <div id="ovChartLive" class="sr-only" aria-live="polite"></div>
+          <details id="ovTableWrap" class="table-view">
+            <summary data-i18n="table_show">Show as a table</summary>
+            <div id="ovTable" class="table-scroll"></div>
+          </details>
+        </section>
+
+        <div class="ov-grid ov-ranks">
+          <section class="panel" aria-labelledby="ovDevicesTitle">
+            <h2 id="ovDevicesTitle" data-i18n="devices_title">Devices with the most alerts</h2>
+            <div id="ovDevices" class="ranked"></div>
+          </section>
+          <section class="panel" aria-labelledby="ovThreatsTitle">
+            <h2 id="ovThreatsTitle" data-i18n="threats_title">Most common threats</h2>
+            <div id="ovThreats" class="ranked"></div>
+            <p class="muted small ranked-note" data-i18n="threats_note">Threat names are shown as ESET reports them.</p>
+          </section>
+        </div>
+      </div>
 
       <div class="ov-grid">
         <section class="card" aria-labelledby="ovListTitle">

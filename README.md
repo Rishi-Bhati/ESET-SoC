@@ -573,6 +573,7 @@ Client routes, using the `X-Client-Session` header (except sign-in):
 | `POST /client/api/auth/logout` | End the session |
 | `GET /client/api/auth/me` | The signed-in user and when the session ends |
 | `GET /client/api/alerts` | Filtered, paged alert list with counts per severity |
+| `GET /client/api/stats?days=N` | Home charts: alerts per day (per week above 31 days) by severity, top 5 devices and threats, alerts with engineer advice, and the previous N days' totals. Counts only, same alerts as the list; `days` 1 to 366, default 30 |
 | `GET /client/api/alerts/{alert_id}` | One alert's allowlisted fields and its active recommendations |
 | `GET /client/api/export/fields` | Field catalogue, default and weekly field sets, and the export limit |
 | `POST /client/api/alerts/export` | Build a customized `.xlsx` for the filtered alerts |

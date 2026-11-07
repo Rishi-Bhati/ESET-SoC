@@ -271,6 +271,53 @@ async def query(
     return rows, total
 
 
+async def window_aggregates(
+    received_from: float,
+    received_to: float,
+    statuses: Collection[str] = DEFAULT_STATUSES,
+) -> dict[str, Any]:
+    """
+    Raw counts for the client portal's Home charts over [received_from, received_to):
+        by_day       {(jst_date "YYYY-MM-DD", risk_level): n}
+        devices      {endpoint_name or None: n}
+        threats      {detection_name or None: n}
+        with_advice  alerts that have at least one ACTIVE recommendation
+        latest_advice_at  newest active recommendation's created_at among them (or None)
+    Same rows as query()/counts_by_risk() (pipeline status filter), restricted to the
+    four known risk levels so every figure adds up to the per-severity counts.
+    Names come back exactly as stored; services/client_stats tidies them.
+    """
+    out: dict[str, Any] = {"by_day": {}, "devices": {}, "threats": {}, "with_advice": 0, "latest_advice_at": None}
+    where = _where(RISK_ORDER, received_from, received_to, statuses)
+    if where is None:
+        return out
+    clause, params = where
+    async with db_session() as conn:
+        # received_at + 9 h, read as UTC, gives the JST calendar day (JST has no DST).
+        async with conn.execute(
+            f"SELECT date(received_at + 32400, 'unixepoch'), risk_level, COUNT(*) FROM alert_index{clause} "
+            "GROUP BY 1, 2", params
+        ) as cursor:
+            async for day, level, n in cursor:
+                out["by_day"][(day, level)] = n
+        for column, key in (("endpoint_name", "devices"), ("detection_name", "threats")):
+            async with conn.execute(
+                f"SELECT {column}, COUNT(*) FROM alert_index{clause} GROUP BY 1", params
+            ) as cursor:
+                async for name, n in cursor:
+                    out[key][name] = n
+        async with conn.execute(
+            "SELECT COUNT(DISTINCT r.correlation_id), MAX(r.created_at) FROM alert_recommendations r "
+            f"WHERE r.retracted_at IS NULL AND r.correlation_id IN (SELECT correlation_id FROM alert_index{clause})",
+            params,
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                out["with_advice"] = int(row[0] or 0)
+                out["latest_advice_at"] = float(row[1]) if row[1] is not None else None
+    return out
+
+
 async def counts_by_risk(
     received_from: float | None = None,
     received_to: float | None = None,

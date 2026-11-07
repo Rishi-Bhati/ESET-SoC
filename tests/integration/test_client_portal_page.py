@@ -163,8 +163,9 @@ def test_alert_detail_leads_with_plain_language_and_collapses_technical_fields()
 def test_portal_ui_calls_only_the_existing_client_api():
     js = _strip_comments((CLIENT_DIR / "client.js").read_text(encoding="utf-8"))
     paths = set(re.findall(r'api(?:Fetch)?\("(/[^"?]*)', js))
+    # /stats: the Home charts' aggregate endpoint (counts only; same scoping as /alerts).
     assert paths <= {"/auth/login", "/auth/logout", "/auth/me", "/alerts", "/alerts/", "/alerts/export",
-                     "/export/fields", "/reports", "/reports/"}, paths
+                     "/export/fields", "/reports", "/reports/", "/stats"}, paths
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -183,3 +184,70 @@ def test_english_wording_avoids_soc_jargon():
     for key, text in en.items():
         for word in ("endpoint", "detection", "telemetry", "IOC", "triage"):
             assert word.lower() not in text.lower(), f"{key}: {text!r} uses {word!r}"
+
+
+# ------------------------------------------------------------------------ Home charts
+
+def _js() -> str:
+    return _strip_comments((CLIENT_DIR / "client.js").read_text(encoding="utf-8"))
+
+
+def _fn(js: str, name: str) -> str:
+    start = js.index(f"function {name}(")
+    nxt = re.search(r"\n(?:async )?function \w+\(", js[start + 1:])
+    return js[start:start + 1 + nxt.start()] if nxt else js[start:]
+
+
+def test_home_period_picker_offers_7_30_90_days_and_drives_the_stats_call():
+    html = _html()
+    picker = re.search(r'<div id="homePeriod"[^>]*>(.*?)</div>', html, flags=re.S)
+    assert picker, "the Home period picker is missing"
+    assert re.findall(r'data-days="(\d+)"', picker.group(1)) == ["7", "30", "90"]
+    # It sits above the status sentence and every chart, so one control scopes the page.
+    assert html.index('id="homePeriod"') < html.index('id="ovStatus"') < html.index('id="ovChart"')
+    js = _js()
+    assert "const HOME_DAYS = [7, 30, 90];" in js
+    load = _fn(js, "loadOverview")
+    assert 'api("/stats?"' in load and "days: String(days)" in load
+
+
+def test_charts_are_built_with_dom_apis_not_markup():
+    """Device and threat names come from alerts (attacker-influenced): the chart, legend,
+    tooltip, table and ranked lists never go through innerHTML."""
+    js = _js()
+    for name in ("renderFigures", "renderLegend", "renderChart", "setChartActive", "renderStatsTable",
+                 "renderRanked", "renderStatsSkeleton"):
+        body = _fn(js, name)
+        assert "innerHTML" not in body and "insertAdjacentHTML" not in body, name
+    assert "createElementNS(SVG_NS" in js and "document.createTextNode(" in js
+    builder = _fn(js, "el")
+    assert "setAttribute(k, String(v))" in builder
+
+
+def test_client_files_load_nothing_from_other_origins():
+    for name in ASSETS + ["index.html"]:
+        text = (CLIENT_DIR / name).read_text(encoding="utf-8")
+        urls = set(re.findall(r"https?://[^\s\"')]+", text))
+        assert urls <= {"http://www.w3.org/2000/svg"}, (name, urls)
+    assert "echarts" not in _js()
+
+
+def test_every_chart_has_a_text_equivalent():
+    html = _html()
+    assert re.search(r'<details id="ovTableWrap"[^>]*>\s*<summary data-i18n="table_show"', html)
+    assert 'id="ovChartLive"' in html and 'aria-live="polite"' in _tag(html, "ovChartLive")
+    js = _js()
+    chart = _fn(js, "renderChart")
+    assert 'setAttribute("tabindex", "0")' in chart and 't("chart_aria"' in chart
+    keys = _fn(js, "bindChart")
+    for key in ("ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Escape"):
+        assert f'"{key}"' in keys
+
+
+def test_severity_fills_are_reserved_for_severity():
+    css = (CLIENT_DIR / "client.css").read_text(encoding="utf-8")
+    for lvl in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+        assert css.count(f"--sev-fill-{lvl}:") == 3, lvl          # dark base, OS light, explicit light
+    # The ranked device/threat bars use a neutral ink, never a severity colour.
+    rank = re.search(r"\.rank-fill\{([^}]*)\}", css).group(1)
+    assert "var(--rank-fill)" in rank and "sev-" not in rank

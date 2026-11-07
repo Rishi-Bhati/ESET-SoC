@@ -8,8 +8,10 @@
  * enforces this).
  *
  * Layout, for a non-technical reader:
- *   Overview      one status sentence for the last OVERVIEW_DAYS days, counts by
- *                 severity, the latest high-priority alerts and the latest report.
+ *   Overview      a period picker (7/30/90 days), one status sentence, four figures
+ *                 against the previous period, alerts over time by severity, the
+ *                 devices and threats seen most, the latest high-priority alerts and
+ *                 the latest report. Charts are hand-built SVG (no library).
  *   All alerts    severity chips + a period picker; dates, order and page size sit
  *                 behind "More options". Alerts are a readable list, not a grid.
  *   Weekly reports one row per week with a plain count and the download.
@@ -26,7 +28,8 @@ const EXPORT_PREFS_KEY = "client_export_prefs";
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];   // display order
 const FILTER_SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 const SERIOUS = ["CRITICAL", "HIGH"];
-const OVERVIEW_DAYS = 7;
+const HOME_DAYS = [7, 30, 90];
+const HOME_DAYS_KEY = "client_home_days";
 const PERIODS = ["all", "7", "30", "90", "custom"];
 const DETAIL_HASH = /^#\/alerts\/([^/?#]+)$/;
 const TAB_HASH = { overview: "#/overview", alerts: "#/alerts", reports: "#/reports" };
@@ -52,8 +55,12 @@ const state = {
   filters: { risk: new Set(), period: "all", from: "", to: "", sort: "desc", size: 25, page: 1 },
   list: null,            // last /alerts response
   alertsSeq: 0,
+  homeDays: 30,          // Home period, days ending today
+  stats: null,           // /stats response for homeDays
   overview: null,        // /alerts response for the overview window (HIGH/CRITICAL items)
   overviewError: "",
+  chartGeom: null,       // last drawn chart's layout, for pointer/keyboard lookup
+  chartActive: -1,
   overviewSeq: 0,
   catalog: null,         // /export/fields response
   detailId: null,
@@ -286,6 +293,7 @@ function endSession(reason) {
   state.tab = "";
   state.list = null;
   state.overview = null;
+  state.stats = null;
   state.overviewError = "";
   state.detail = null;
   state.reports = null;
@@ -357,85 +365,489 @@ async function onLogout() {
 }
 
 // ------------------------------------------------------------------- overview
+//
+// Home answers three questions for the chosen period (7, 30 or 90 days, ending today):
+//   Are we OK?                 the status sentence (high/critical count) and four figures,
+//                              each compared with the same-length period before it
+//   Better or worse, and when? alerts per day (per week for 90 days), stacked by severity;
+//                              a bar or a severity opens those alerts in the list
+//   Where and what?            devices with the most alerts and the most common threats
+// Everything comes from GET /client/api/stats (counts only) plus the five newest
+// high/critical alerts from /alerts. Chart text is set with textContent / attributes.
 
 async function loadOverview() {
   const seq = ++state.overviewSeq;
+  const days = state.homeDays;
   state.overviewError = "";
-  if (!state.overview) renderOverview();
-  const q = new URLSearchParams({
-    from: jstDaysAgo(OVERVIEW_DAYS - 1), risk: SERIOUS.join(","), page: "1", page_size: "5", sort: "desc",
-  });
+  if (state.stats) $("ovStats").dataset.state = "refreshing";   // keep the old render, dimmed
+  else renderOverview();
   if (state.reports === null) loadReports();
+  const q = new URLSearchParams({
+    from: jstDaysAgo(days - 1), risk: SERIOUS.join(","), page: "1", page_size: "5", sort: "desc",
+  });
   try {
-    const data = await api("/alerts?" + q.toString());
+    const [stats, recent] = await Promise.all([
+      api("/stats?" + new URLSearchParams({ days: String(days) }).toString()),
+      api("/alerts?" + q.toString()),
+    ]);
     if (seq !== state.overviewSeq) return;
-    state.overview = data;
+    state.stats = stats;
+    state.overview = recent;
   } catch (e) {
     if (seq !== state.overviewSeq || !state.token || (e && e.name === "AbortError")) return;
+    state.stats = null;
     state.overview = null;
     state.overviewError = t("err_load_overview");
   }
   renderOverview();
 }
 
+function setHomeDays(days) {
+  if (!HOME_DAYS.includes(days) || days === state.homeDays) return;
+  state.homeDays = days;
+  storeSet("local", HOME_DAYS_KEY, String(days));
+  renderPeriodPicker();
+  loadOverview();
+}
+
+function renderPeriodPicker() {
+  $("homePeriod").querySelectorAll("button[data-days]").forEach((b) => {
+    b.textContent = t("days_n", b.dataset.days);
+    b.setAttribute("aria-pressed", String(Number(b.dataset.days) === state.homeDays));
+  });
+}
+
 function renderOverview() {
+  renderPeriodPicker();
+  renderOverviewReport();
   const card = $("ovStatus");
   const headline = $("ovHeadline");
   const sub = $("ovSub");
   const action = $("ovAction");
-  const data = state.overview;
-  $("ovGlance").textContent = t("ov_glance_title", OVERVIEW_DAYS);
-  renderOverviewReport();
+  const stats = state.stats;
+  const days = stats ? stats.days : state.homeDays;
+  const wrap = $("ovStats");
 
-  if (state.overviewError || !data) {
+  if (state.overviewError || !stats) {
     card.dataset.tone = state.overviewError ? "error" : "loading";
     headline.textContent = state.overviewError || t("loading");
     sub.textContent = "";
     show(action, !!state.overviewError);
     action.textContent = t("btn_retry");
     action.dataset.go = "retry";
-    $("ovTiles").innerHTML = "";
+    wrap.dataset.state = state.overviewError ? "error" : "loading";
+    renderStatsSkeleton(!!state.overviewError);
     $("ovList").innerHTML = "";
     show($("ovListState"), false);
     return;
   }
+  wrap.dataset.state = "ready";
 
-  const counts = data.counts_by_risk || {};
+  const counts = stats.totals || {};
   const serious = sumCounts(counts, SERIOUS);
   const total = sumCounts(counts);
   if (serious > 0) {
     card.dataset.tone = "attention";
-    headline.textContent = t("ov_attention", fmtNum(serious), OVERVIEW_DAYS);
+    headline.textContent = t("ov_attention", fmtNum(serious), days);
     sub.textContent = t("ov_attention_sub");
     action.textContent = t("ov_review");
     action.dataset.go = "serious";
   } else if (total > 0) {
     card.dataset.tone = "ok";
-    headline.textContent = t("ov_ok", OVERVIEW_DAYS);
+    headline.textContent = t("ov_ok", days);
     sub.textContent = t("ov_ok_sub", fmtNum(total));
     action.textContent = t("ov_view_alerts");
     action.dataset.go = "all";
   } else {
     card.dataset.tone = "clear";
-    headline.textContent = t("ov_clear", OVERVIEW_DAYS);
+    headline.textContent = t("ov_clear", days);
     sub.textContent = t("ov_clear_sub");
     action.dataset.go = "";
   }
   show(action, !!action.dataset.go);
 
-  $("ovTiles").innerHTML = SEVERITIES.map((lvl) => `
-    <button type="button" class="tile tile-${esc(lvl)}" data-risk="${esc(lvl)}"
-      aria-label="${esc(t("tile_aria", t("sev_" + lvl), fmtNum(counts[lvl])))}">
-      <span class="tile-n">${esc(fmtNum(counts[lvl]))}</span>
-      <span class="tile-label">${sevBadge(lvl)}</span>
-    </button>`).join("");
+  renderFigures(stats);
+  renderLegend(stats);
+  renderChart();
+  renderStatsTable(stats);
+  renderRanked($("ovDevices"), stats.top_devices, stats.other_devices, "devices", stats.total);
+  renderRanked($("ovThreats"), stats.top_threats, stats.other_threats, "threats", stats.total);
 
+  const data = state.overview || {};
   const items = Array.isArray(data.items) ? data.items : [];
   const stateEl = $("ovListState");
   stateEl.classList.remove("error");
-  stateEl.textContent = t("ov_list_empty", OVERVIEW_DAYS);
+  stateEl.textContent = t("ov_list_empty", days);
   show(stateEl, !items.length);
   $("ovList").innerHTML = items.map((a) => alertItemHtml(a)).join("");
+}
+
+/** Placeholder shapes while the first load runs (or a plain line if it failed). */
+function renderStatsSkeleton(failed) {
+  const figs = $("ovFigures");
+  figs.replaceChildren();
+  $("ovCompare").textContent = "";
+  for (let i = 0; i < 4; i++) {
+    figs.append(el("div", { class: "fig" }, [
+      el("dt", { class: "sk sk-line" }), el("dd", { class: "sk sk-num" }), el("dd", { class: "sk sk-line" })]));
+  }
+  $("ovTrendTitle").textContent = t(state.homeDays > 31 ? "chart_title_week" : "chart_title_day");
+  $("ovTrendSub").textContent = "";
+  $("ovLegend").replaceChildren();
+  $("ovTable").replaceChildren();
+  const chart = $("ovChart");
+  chart.removeAttribute("tabindex");
+  chart.removeAttribute("aria-label");
+  chart.replaceChildren(failed
+    ? el("p", { class: "chart-msg error" }, t("err_load_stats"))
+    : el("div", { class: "sk sk-chart" }));
+  for (const id of ["ovDevices", "ovThreats"]) {
+    const box = $(id);
+    box.replaceChildren();
+    if (!failed) for (let i = 0; i < 3; i++) box.append(el("div", { class: "sk sk-row" }));
+  }
+}
+
+// --- small DOM builders (text only ever via textContent) ---
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null) node.setAttribute(k, String(v));
+  appendChildren(node, children);
+  return node;
+}
+function svg(tag, attrs, children) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== undefined && v !== null) node.setAttribute(k, String(v));
+  appendChildren(node, children);
+  return node;
+}
+function appendChildren(node, children) {
+  if (children === undefined || children === null) return;
+  for (const c of Array.isArray(children) ? children : [children]) {
+    if (c === null || c === undefined || c === false) continue;
+    node.append(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
+  }
+}
+
+// --- figures ---
+
+/** "Down 9 from 40" as {text, dir}; dir is down/up/same. */
+function deltaInfo(cur, prev, unit) {
+  const diff = Number(cur || 0) - Number(prev || 0);
+  if (diff === 0) return { dir: "same", text: t("delta_same") };
+  const key = (unit === "devices" ? "delta_dev_" : "delta_") + (diff < 0 ? "fewer" : "more");
+  return { dir: diff < 0 ? "down" : "up", text: t(key, fmtNum(Math.abs(diff)), fmtNum(prev)) };
+}
+
+function figure(label, value, note) {
+  const noteNode = note
+    ? el("dd", { class: "fig-note" + (note.dir ? " delta-" + note.dir : "") }, [
+      note.dir && note.dir !== "same" ? el("span", { class: "delta-mark", "aria-hidden": "true" }, note.dir === "down" ? "▼" : "▲") : null,
+      note.text])
+    : null;
+  return el("div", { class: "fig" }, [el("dt", null, label), el("dd", { class: "fig-n" }, fmtNum(value)), noteNode]);
+}
+
+function renderFigures(s) {
+  const prev = s.previous || {};
+  const serious = sumCounts(s.totals, SERIOUS);
+  const advice = Number(s.with_advice) || 0;
+  $("ovFigures").replaceChildren(
+    figure(t("fig_total"), s.total, deltaInfo(s.total, prev.total)),
+    figure(t("fig_serious"), serious, deltaInfo(serious, sumCounts(prev.totals, SERIOUS))),
+    figure(t("fig_devices"), s.devices_affected, deltaInfo(s.devices_affected, prev.devices_affected, "devices")),
+    figure(t("fig_advice"), advice, {
+      dir: "", text: advice && typeof s.latest_advice_at === "number"
+        ? t("advice_latest", fmtShortDay(s.latest_advice_at)) : t("advice_none"),
+    }),
+  );
+  $("ovCompare").textContent = t("compare_note", s.days, t("range", fmtShortDay(prev.from), fmtShortDay(prev.to)));
+}
+
+// --- severity breakdown (the chart's legend; each opens the list) ---
+
+function renderLegend(s) {
+  const box = $("ovLegend");
+  box.replaceChildren(...SEVERITIES.map((lvl) => {
+    const n = Number((s.totals || {})[lvl]) || 0;
+    return el("button", {
+      type: "button", class: "legend-item", "data-risk": lvl, disabled: n ? null : "",
+      "aria-label": t("legend_aria", t("sev_" + lvl), fmtNum(n)),
+    }, [el("span", { class: "swatch sw-" + lvl, "aria-hidden": "true" }), el("span", { class: "legend-name" }, t("sev_" + lvl)),
+      el("span", { class: "legend-n" }, fmtNum(n))]);
+  }));
+}
+
+function onLegendClick(ev) {
+  const b = ev.target.closest("button[data-risk]");
+  if (b && !b.disabled) goToAlerts([b.dataset.risk], String(state.homeDays));
+}
+
+// --- alerts over time: stacked columns, CRITICAL on the baseline ---
+
+const STACK = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];   // bottom to top
+
+const _shortFmt = {};
+function shortFormatter(kind) {
+  const key = uiLocale() + kind;
+  if (!_shortFmt[key]) {
+    const opts = { timeZone: "Asia/Tokyo", month: "short", day: "numeric" };
+    if (kind === "wd") { delete opts.month; opts.weekday = "short"; }
+    _shortFmt[key] = new Intl.DateTimeFormat(uiLocale(), opts);
+  }
+  return _shortFmt[key];
+}
+function dayDate(v) { return new Date(String(v).slice(0, 10) + "T12:00:00+09:00"); }
+/** "8 Nov" / "11月8日" from a YYYY-MM-DD day or an epoch (seconds). */
+function fmtShortDay(v) {
+  const d = typeof v === "number" ? new Date(v * 1000) : dayDate(v);
+  return isNaN(d.getTime()) ? "—" : shortFormatter("md").format(d);
+}
+function bucketLabel(b) {
+  return b.from === b.to ? fmtDay(b.from) : t("range", fmtShortDay(b.from), fmtShortDay(b.to));
+}
+function bucketDays(b) { return Math.round((dayDate(b.to) - dayDate(b.from)) / 86400000) + 1; }
+function bucketTotal(b) { return sumCounts(b.counts); }
+
+/** A clean axis: top value and step, at most 4 steps, never below 4 so one alert is not a full-height bar. */
+function niceScale(max) {
+  const top = Math.max(4, max);
+  for (const base of [1, 2, 2.5, 5]) {
+    for (let p = 1; p <= 1e6; p *= 10) {
+      const step = base * p;
+      if (Number.isInteger(step) && Math.ceil(top / step) <= 4) return { top: Math.ceil(top / step) * step, step };
+    }
+  }
+  return { top, step: top };
+}
+
+/** Column with a 4px rounded top and square base. */
+function topRoundedPath(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h));
+  return "M" + x + "," + (y + h) + "V" + (y + r) + "Q" + x + "," + y + " " + (x + r) + "," + y
+    + "H" + (x + w - r) + "Q" + (x + w) + "," + y + " " + (x + w) + "," + (y + r) + "V" + (y + h) + "Z";
+}
+
+function renderChart() {
+  const s = state.stats;
+  const box = $("ovChart");
+  if (!s || !Array.isArray(s.buckets)) return;
+  const buckets = s.buckets;
+  const n = buckets.length;
+  const weekly = s.bucket_days > 1;
+  $("ovTrendTitle").textContent = t(weekly ? "chart_title_week" : "chart_title_day");
+  $("ovTrendSub").textContent = t(weekly ? "chart_sub_week" : "chart_sub");
+  box.setAttribute("tabindex", "0");
+  box.setAttribute("aria-label", t("chart_aria", s.days, fmtNum(s.total)));
+  box.setAttribute("aria-describedby", "ovTrendSub");
+
+  const width = Math.max(240, Math.floor(box.clientWidth || 0) || 640);
+  const narrow = width < 520;
+  const plotH = narrow ? 150 : 190;
+  const totals = buckets.map(bucketTotal);
+  const max = Math.max(0, ...totals);
+  const scale = niceScale(max);
+  const yLabelW = 8 + 7 * String(scale.top).length;
+  const m = { top: 10, right: 14, bottom: 26, left: yLabelW };   // right: room for the centred last label
+  const plotW = width - m.left - m.right;
+  const slot = plotW / Math.max(1, n);
+  const barW = Math.max(2, Math.min(24, Math.floor(slot * (narrow ? 0.7 : 0.62))));
+  const y = (v) => m.top + plotH - (v / scale.top) * plotH;
+  const root = svg("svg", { width, height: m.top + plotH + m.bottom, viewBox: "0 0 " + width + " " + (m.top + plotH + m.bottom),
+    class: "chart-svg", "aria-hidden": "true", focusable: "false" });
+
+  for (let v = 0; v <= scale.top; v += scale.step) {
+    root.append(svg("line", { class: v === 0 ? "axis-base" : "grid", x1: m.left, x2: width - m.right, y1: y(v), y2: y(v) }));
+    root.append(svg("text", { class: "axis-text", x: m.left - 8, y: y(v), "text-anchor": "end", "dominant-baseline": "middle" }, fmtNum(v)));
+  }
+
+  // x labels: today's bar is always labelled, then every `step` bars back.
+  const maxLabels = Math.max(2, Math.floor(plotW / (state.lang === "ja" ? 62 : 56)));
+  const labelStep = Math.max(1, Math.ceil(n / maxLabels));
+  const cols = svg("g", { class: "cols" });
+  buckets.forEach((b, i) => {
+    const cx = m.left + slot * (i + 0.5);
+    const x = Math.round(cx - barW / 2);
+    const g = svg("g", { class: "col", "data-i": i });
+    let acc = 0;
+    const present = STACK.filter((lvl) => Number(b.counts[lvl]) > 0);
+    present.forEach((lvl, k) => {
+      const v = Number(b.counts[lvl]);
+      const y0 = y(acc), y1 = y(acc + v);
+      acc += v;
+      const isTop = k === present.length - 1;
+      const h = Math.max(1, (y0 - y1) - (isTop ? 0 : 2));   // 2px surface gap above each lower segment
+      const top = y0 - h;
+      g.append(isTop
+        ? svg("path", { class: "seg-fill sev-fill-" + lvl, d: topRoundedPath(x, top, barW, h, 4) })
+        : svg("rect", { class: "seg-fill sev-fill-" + lvl, x, y: top, width: barW, height: h }));
+    });
+    cols.append(g);
+    if ((n - 1 - i) % labelStep === 0) {
+      const label = weekly || n > 7 ? fmtShortDay(b.from) : shortFormatter("wd").format(dayDate(b.from));
+      root.append(svg("text", { class: "axis-text", x: cx, y: m.top + plotH + 18, "text-anchor": "middle" }, label));
+    }
+  });
+  root.append(cols);
+  // Hit areas: the whole slot, full height, so a thin bar is easy to point at.
+  const hits = svg("g", { class: "hits" });
+  buckets.forEach((b, i) => {
+    hits.append(svg("rect", { class: "hit" + (totals[i] ? " has-data" : ""), "data-i": i,
+      x: m.left + slot * i, y: m.top, width: slot, height: plotH }));
+  });
+  root.append(hits);
+
+  const children = [root, el("div", { id: "ovTip", class: "tip", hidden: "" })];
+  if (max === 0) children.push(el("p", { class: "chart-msg" }, el("span", null, t("chart_empty", s.days))));
+  show($("ovTableWrap"), max > 0);
+  box.replaceChildren(...children);
+  state.chartGeom = { left: m.left, slot, n, width };
+  state.chartActive = -1;
+}
+
+function setChartActive(i, announce) {
+  const s = state.stats;
+  const geom = state.chartGeom;
+  if (!s || !geom) return;
+  const box = $("ovChart");
+  const svgEl = box.querySelector("svg");
+  const tip = $("ovTip");
+  if (i < 0 || i >= geom.n) {
+    state.chartActive = -1;
+    if (svgEl) svgEl.classList.remove("has-active");
+    box.querySelectorAll(".col.is-active").forEach((c) => c.classList.remove("is-active"));
+    if (tip) show(tip, false);
+    return;
+  }
+  state.chartActive = i;
+  const b = s.buckets[i];
+  svgEl.classList.add("has-active");
+  box.querySelectorAll(".col").forEach((c) => c.classList.toggle("is-active", Number(c.dataset.i) === i));
+
+  const total = bucketTotal(b);
+  const days = bucketDays(b);
+  const rows = SEVERITIES.filter((lvl) => Number(b.counts[lvl]) > 0).map((lvl) =>
+    el("div", { class: "tip-row" }, [el("span", { class: "swatch sw-" + lvl, "aria-hidden": "true" }),
+      el("span", null, t("sev_" + lvl)), el("span", { class: "tip-n" }, fmtNum(b.counts[lvl]))]));
+  tip.replaceChildren(
+    el("div", { class: "tip-title" }, [bucketLabel(b), s.bucket_days > 1 && days !== s.bucket_days ? " " + t("tip_partial", days) : ""]),
+    ...rows,
+    el("div", { class: "tip-total" }, t("tip_total", fmtNum(total))),
+    total ? el("div", { class: "tip-hint" }, t("tip_open")) : null,
+  );
+  show(tip, true);
+  // Place beside the bar, flipped to the left near the right edge.
+  const cx = geom.left + geom.slot * (i + 0.5);
+  const tw = tip.offsetWidth;
+  let left = cx + geom.slot / 2 + 6;
+  if (left + tw > geom.width) left = cx - geom.slot / 2 - 6 - tw;
+  tip.style.left = Math.max(0, left) + "px";
+  if (announce) {
+    $("ovChartLive").textContent = [bucketLabel(b), t("tip_total", fmtNum(total)),
+      ...SEVERITIES.filter((lvl) => Number(b.counts[lvl]) > 0).map((lvl) => t("sev_" + lvl) + " " + fmtNum(b.counts[lvl]))].join(t("list_sep"));
+  }
+}
+
+function chartIndexAt(ev) {
+  const geom = state.chartGeom;
+  const svgEl = $("ovChart").querySelector("svg");
+  if (!geom || !svgEl) return -1;
+  const x = ev.clientX - svgEl.getBoundingClientRect().left;
+  const i = Math.floor((x - geom.left) / geom.slot);
+  return i >= 0 && i < geom.n ? i : -1;
+}
+
+function openBucket(i) {
+  const s = state.stats;
+  if (!s || !s.buckets[i] || !bucketTotal(s.buckets[i])) return;
+  const b = s.buckets[i];
+  goToAlerts([], "custom", b.from, b.to);
+}
+
+let chartPointer = "mouse";
+function bindChart() {
+  const box = $("ovChart");
+  box.addEventListener("pointerdown", (ev) => { chartPointer = ev.pointerType || "mouse"; });
+  box.addEventListener("pointermove", (ev) => {
+    if (ev.pointerType === "touch") return;
+    const i = chartIndexAt(ev);
+    if (i !== state.chartActive) setChartActive(i, false);
+  });
+  box.addEventListener("pointerleave", (ev) => { if (ev.pointerType !== "touch") setChartActive(-1); });
+  box.addEventListener("click", (ev) => {
+    const i = chartIndexAt(ev);
+    if (i < 0) return;
+    // Touch: the first tap shows the numbers, a second tap on the same bar opens the list.
+    if (chartPointer === "touch" && state.chartActive !== i) { setChartActive(i, false); return; }
+    openBucket(i);
+  });
+  box.addEventListener("keydown", (ev) => {
+    const geom = state.chartGeom;
+    if (!geom || !geom.n) return;
+    let i = state.chartActive;
+    if (ev.key === "ArrowRight") i = i < 0 ? geom.n - 1 : Math.min(geom.n - 1, i + 1);
+    else if (ev.key === "ArrowLeft") i = i < 0 ? geom.n - 1 : Math.max(0, i - 1);
+    else if (ev.key === "Home") i = 0;
+    else if (ev.key === "End") i = geom.n - 1;
+    else if ((ev.key === "Enter" || ev.key === " ") && i >= 0) { ev.preventDefault(); openBucket(i); return; }
+    else if (ev.key === "Escape") { setChartActive(-1); return; }
+    else return;
+    ev.preventDefault();
+    setChartActive(i, true);
+  });
+  box.addEventListener("blur", () => setChartActive(-1));
+  if (window.ResizeObserver) {
+    let lastW = 0;
+    new ResizeObserver(() => {
+      const w = Math.floor(box.clientWidth);
+      if (w && Math.abs(w - lastW) > 2 && state.stats) { lastW = w; renderChart(); }
+    }).observe(box);
+  }
+}
+
+// --- the same numbers as a table ---
+
+function renderStatsTable(s) {
+  const weekly = s.bucket_days > 1;
+  const head = el("tr", null, [el("th", { scope: "col" }, t(weekly ? "table_week" : "table_date")),
+    ...SEVERITIES.map((lvl) => el("th", { scope: "col", class: "num" }, t("sev_" + lvl))),
+    el("th", { scope: "col", class: "num" }, t("table_total"))]);
+  const rows = s.buckets.slice().reverse().map((b) => el("tr", { class: bucketTotal(b) ? null : "is-zero" }, [
+    el("th", { scope: "row" }, bucketLabel(b)),
+    ...SEVERITIES.map((lvl) => el("td", { class: "num" }, fmtNum(b.counts[lvl]))),
+    el("td", { class: "num" }, fmtNum(bucketTotal(b)))]));
+  $("ovTable").replaceChildren(el("table", { class: "data-table" }, [
+    el("caption", { class: "sr-only" }, $("ovTrendTitle").textContent), el("thead", null, head), el("tbody", null, rows)]));
+}
+
+// --- ranked lists: devices and threats ---
+
+/** Bars are each name's share of ALL alerts in the period (not of the top name), so five
+ * names with one alert each do not read as five full bars. */
+function renderRanked(box, items, other, kind, total) {
+  items = Array.isArray(items) ? items : [];
+  if (!items.length) {
+    box.replaceChildren(el("p", { class: "muted rank-empty" }, t(kind === "devices" ? "rank_empty_devices" : "rank_empty_threats")));
+    return;
+  }
+  const whole = Math.max(1, Number(total) || 0, ...items.map((it) => Number(it.count) || 0));
+  const list = el("ol", { class: "rank-list" }, items.map((it) => {
+    const named = typeof it.name === "string" && it.name !== "";
+    const name = named ? it.name : t(kind === "devices" ? "not_reported_device" : "not_reported_threat");
+    const fill = el("span", { class: "rank-fill" });
+    fill.style.width = Math.max(1, (Number(it.count) / whole) * 100) + "%";
+    return el("li", { class: "rank-row", "aria-label": t("rank_item_aria", name, fmtNum(it.count)) }, [
+      el("span", { class: "rank-name" + (named ? "" : " muted"), title: name }, name),
+      el("span", { class: "rank-track", "aria-hidden": "true" }, fill),
+      el("span", { class: "rank-n", "aria-hidden": "true" }, fmtNum(it.count))]);
+  }));
+  const more = other && other.names > 0
+    ? el("p", { class: "muted small rank-more" },
+      t(kind === "devices" ? "rank_more_devices" : "rank_more_threats", fmtNum(other.names), fmtNum(other.alerts)))
+    : null;
+  box.replaceChildren(list, ...(more ? [more] : []));
 }
 
 function renderOverviewReport() {
@@ -454,19 +866,15 @@ function renderOverviewReport() {
 function onOverviewAction() {
   const go = $("ovAction").dataset.go;
   if (go === "retry") loadOverview();
-  else if (go === "serious") goToAlerts(SERIOUS, String(OVERVIEW_DAYS));
-  else if (go === "all") goToAlerts([], String(OVERVIEW_DAYS));
+  else if (go === "serious") goToAlerts(SERIOUS, String(state.homeDays));
+  else if (go === "all") goToAlerts([], String(state.homeDays));
 }
 
-function onTileClick(ev) {
-  const tile = ev.target.closest("button[data-risk]");
-  if (tile) goToAlerts([tile.dataset.risk], String(OVERVIEW_DAYS));
-}
-
-/** Switch to All alerts with the given severities and period. */
-function goToAlerts(risks, period) {
+/** Switch to All alerts with the given severities and period (custom: from/to days). */
+function goToAlerts(risks, period, from, to) {
   state.filters.risk = new Set(risks);
   setPeriod(period);
+  if (state.filters.period === "custom") { state.filters.from = from || ""; state.filters.to = to || ""; }
   state.filters.page = 1;
   syncFilterInputs();
   showTab("alerts");
@@ -528,7 +936,8 @@ function filterWords() {
   const f = state.filters;
   const parts = [];
   if (f.risk.size) parts.push(SEVERITIES.filter((l) => f.risk.has(l)).map((l) => t("sev_" + l)).join(t("list_sep")));
-  if (f.period === "custom" && (f.from || f.to)) parts.push(t("range", f.from ? fmtDay(f.from) : "…", f.to ? fmtDay(f.to) : "…"));
+  if (f.period === "custom" && f.from && f.from === f.to) parts.push(fmtDay(f.from));
+  else if (f.period === "custom" && (f.from || f.to)) parts.push(t("range", f.from ? fmtDay(f.from) : "…", f.to ? fmtDay(f.to) : "…"));
   else if (f.period !== "all" && f.period !== "custom") parts.push(t("period_" + f.period));
   return parts.join(" · ");
 }
@@ -1168,7 +1577,12 @@ function bind() {
   $("loginForm").addEventListener("submit", onLogin);
 
   $("ovAction").addEventListener("click", onOverviewAction);
-  $("ovTiles").addEventListener("click", onTileClick);
+  $("homePeriod").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-days]");
+    if (b) setHomeDays(Number(b.dataset.days));
+  });
+  $("ovLegend").addEventListener("click", onLegendClick);
+  bindChart();
   $("ovAllAlerts").addEventListener("click", () => goToAlerts([], "all"));
   $("ovAllReports").addEventListener("click", () => { showTab("reports"); window.scrollTo(0, 0); });
   $("ovReport").addEventListener("click", onReportDownload);
@@ -1209,6 +1623,8 @@ function bind() {
 
 async function init() {
   state.lang = initialLang();
+  const savedDays = Number(storeGet("local", HOME_DAYS_KEY));
+  if (HOME_DAYS.includes(savedDays)) state.homeDays = savedDays;
   applyTheme(storeGet("local", THEME_KEY));
   applyStaticI18n();
   bind();
