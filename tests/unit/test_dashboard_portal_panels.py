@@ -162,3 +162,69 @@ def test_helpers_escape_hostile_values_under_node():
 @pytest.mark.parametrize("name", ["dashboard.js", "i18n.js"])
 def test_scripts_parse(name):
     subprocess.run(["node", "--check", str(STATIC / name)], check=True)
+
+
+# ------------------------------------------------- tab layout for the operating engineer
+
+def _portal_section() -> str:
+    start = HTML.index('id="view-portal"')
+    return HTML[start:HTML.index("</section>", start)]
+
+
+def test_status_summary_leads_and_settings_come_last():
+    section = _portal_section()
+    order = [section.index(f'id="{pid}"') for pid in
+             ("portalStatusPanel", "portalUsersPanel", "portalReportsPanel", "portalSettingsPanel")]
+    assert order == sorted(order), "status, accounts, reports, then settings"
+    assert 'id="portalStatusBody"' in section and 'data-i18n="pp_intro"' in section
+
+
+def test_status_summary_answers_the_operator_questions():
+    js = _panel_js()
+    for fn in ("function ppPortalCard", "function ppAccountsCard", "function ppWeeklyCard",
+               "function ppLatestCard", "function ppNextSteps"):
+        assert fn in js, fn
+    # The on/off switch lives in the status summary (one place, not two panels).
+    assert "data-pu-toggle-portal" in js[js.index("function ppPortalCard"):js.index("function ppAccountsCard")]
+    # Times on this tab follow the JST schedule.
+    assert 'timeZone: "Asia/Tokyo"' in js
+
+
+def test_live_probe_sends_no_credentials():
+    """The status check asks /client/api/auth/me with no session: a missing session
+    is not counted as a failed sign-in, so the probe cannot throttle anyone."""
+    js = _panel_js()
+    probe = js[js.index("async function probePortalLive"):js.index("function ppScrollTo")]
+    assert '"/api/auth/me"' in probe and 'credentials: "omit"' in probe
+    assert "X-Client-Session" not in probe and "X-Dashboard-Key" not in probe
+
+
+def test_panels_do_not_retranslate_the_whole_page():
+    """applyStaticI18n() rewrites every [data-i18n] on the page, including the view
+    header, which made this tab's title read "Overview"."""
+    js = _panel_js()
+    assert "applyStaticI18n()" not in js
+    assert "function translateWithin(" in js
+
+
+def test_every_portal_setting_has_a_named_section():
+    from src.storage.runtime_settings import REGISTRY
+
+    block = JS[JS.index("const PSET_SECTIONS"):JS.index("const PSET_WEEKDAY_I18N")]
+    placed = set(re.findall(r'"([a-z_]+)"', block))
+    missing = sorted(k for k in REGISTRY if k not in placed)
+    assert missing == [], f"settings without a section (would fall into Advanced): {missing}"
+    # Only the weekly-report schedule starts expanded.
+    assert 'open: new Set(["schedule"])' in JS
+
+
+@NEED_NODE
+def test_tab_keys_exist_in_both_languages():
+    keys = _tables()
+    used = set(re.findall(r'\bt\("((?:pp|pps)_[a-z_]+)"', JS))
+    used |= set(re.findall(r'data-i18n="((?:pp|pps)_[a-z_]+)"', JS + HTML))
+    used |= set(re.findall(r'(?:title|sub): "(pps_[a-z_]+)"', JS))
+    assert used, "no tab keys found"
+    for key in sorted(used):
+        assert key in keys["ja"], f"missing ja: {key}"
+        assert key in keys["en"], f"missing en: {key}"

@@ -232,30 +232,41 @@
   .rec-compose{border-top:1px solid var(--border);padding-top:14px;margin-top:4px}
   .rec-count{display:inline-flex;align-items:center;padding:1px 8px;border-radius:99px;font-size:10.5px;font-weight:650;color:var(--text-info);background:color-mix(in srgb,var(--text-info) 14%,transparent);border:1px solid color-mix(in srgb,var(--text-info) 26%,transparent)}
 
-  /* ---------- Client portal settings ---------- */
-  .pset-group{margin-bottom:22px}
-  .pset-group h4{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px}
-  .pset-row{display:grid;grid-template-columns:minmax(180px,250px) minmax(0,1fr);gap:6px 16px;align-items:start;padding:11px 0;border-top:1px solid var(--border)}
-  .pset-row:first-of-type{border-top:none}
-  .pset-label{font-size:12.5px;color:var(--text);font-weight:550;line-height:1.45}
-  .pset-label .key{display:block;margin-top:2px;color:var(--dim);font-family:var(--font-mono);font-size:10.5px}
-  .pset-label .hint{display:block;margin-top:4px;font-size:11px;color:var(--dim);font-weight:400}
-  .pset-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-  .pset-control input[type=text],.pset-control input[type=number],.pset-control input[type=time],.pset-control select{max-width:280px}
-  .pset-control input[type=checkbox]{width:auto;flex:none}
-  .pset-err{display:none;margin-top:2px;font-size:11px;color:var(--text-danger);width:100%}
-  .pset-err.show{display:block}
-  @media (max-width:760px){ .pset-row{grid-template-columns:minmax(0,1fr)} }
-
-  /* ---------- Client accounts + weekly reports panels ---------- */
-  .pp-bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-bottom:12px;font-size:12.5px}
-  .pp-bar .grow{flex:1 1 auto}
-  .pp-note{padding:9px 12px;border-radius:var(--r-md);font-size:12.5px;border:1px solid var(--border);background:var(--panel2);margin-bottom:12px}
-  .pp-note.warn{border-color:color-mix(in srgb,var(--text-warn) 40%,transparent);background:color-mix(in srgb,var(--text-warn) 10%,transparent)}
-  .pp-note .row{margin-top:6px}
+  /* ---------- Client portal tab ----------
+     Read top to bottom it answers: is the portal on, who can sign in, is the
+     weekly report going out, and what to do next (status panel); then the
+     accounts, the report history, and last the settings, grouped and mostly
+     collapsed because they are rarely changed. */
+  #view-portal [hidden]{display:none !important}
+  .pp-lede{margin:0 0 16px;font-size:12.5px;color:var(--muted);line-height:1.65;max-width:90ch}
+  .pp-sub{font-size:11.5px;color:var(--muted)}
+  .pp-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-bottom:16px}
+  .pp-card{display:flex;flex-direction:column;gap:6px}
+  .pp-card .l{margin:0;order:-1;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;font-weight:650}
+  .pp-card .v{font-size:16px;font-weight:650;letter-spacing:-.015em;line-height:1.3;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .pp-card .d{font-size:11.5px;color:var(--muted);line-height:1.55;overflow-wrap:anywhere}
+  .pp-card .act{margin-top:auto;padding-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .pp-card.good{--tone:var(--text-good)} .pp-card.warn{--tone:var(--text-warn)} .pp-card.bad{--tone:var(--text-danger)}
+  .pp-url{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0;margin-top:3px}
+  .pp-url code{font-size:11px;overflow-wrap:anywhere;min-width:0;flex:1 1 140px}
+  .pp-url button{flex:none;white-space:nowrap}
+  .pp-next{border:1px solid var(--border);border-radius:var(--r-md);padding:12px 14px;background:var(--panel2)}
+  .pp-next h4{margin:0 0 8px;font-size:12px;font-weight:650}
+  .pp-next ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+  .pp-next li{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:12.5px;line-height:1.5}
+  .pp-next li .txt{flex:1 1 320px;min-width:0}
+  .pp-next li .txt::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:8px;vertical-align:1px;background:var(--text-info)}
+  .pp-next li.bad .txt::before{background:var(--text-danger)}
+  .pp-next li.warn .txt::before{background:var(--text-warn)}
+  .pp-next li.done .txt::before{background:var(--text-good)}
+  .pp-next li .why{display:block;font-size:11.5px;color:var(--muted);margin-left:15px}
+  .pp-toolbar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-bottom:14px}
+  .pp-toolbar .grow{flex:1 1 260px;min-width:0;font-size:12.5px;line-height:1.55}
+  .pp-toolbar .grow .muted{display:block;font-size:11.5px}
   .pp-err{display:none;font-size:11.5px;color:var(--text-danger);margin:4px 0;overflow-wrap:anywhere}
   .pp-err.show{display:block}
-  .pp-form{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-end;padding:12px;border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:14px}
+  .pp-form{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-end;padding:14px;border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:14px;background:var(--panel2)}
+  .pp-form h4{flex:1 1 100%;margin:0;font-size:12px;font-weight:650}
   .pp-form label{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
   .pp-form .fld{flex:1 1 170px;min-width:150px}
   .pp-form .hint{flex:1 1 100%;font-size:11px;color:var(--dim);margin:0}
@@ -264,16 +275,58 @@
   .pp-secret .pw{font-family:var(--font-mono);font-size:17px;font-weight:650;letter-spacing:.02em;padding:8px 12px;margin:8px 0;background:var(--panel);border:1px dashed var(--border2);border-radius:var(--r-sm);overflow-wrap:anywhere;user-select:all}
   .pp-secret .warnline{font-size:12px;color:var(--text-warn)}
   .pp-actions{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
-  .pp-inline{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px;font-size:12px}
+  .pp-more{position:relative}
+  .pp-more>summary{list-style:none;cursor:pointer;font-size:11.5px;padding:5px 10px;border:1px solid var(--border);border-radius:var(--r-sm);color:var(--muted);background:var(--panel2)}
+  .pp-more>summary::-webkit-details-marker{display:none}
+  .pp-more>summary:hover{color:var(--text);border-color:var(--border2)}
+  .pp-more[open]>summary{color:var(--text)}
+  .pp-more .menu{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+  .pp-inline{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;font-size:12px}
   .pp-inline input{max-width:240px}
   .pp-tablewrap{overflow-x:auto}
-  .pp-counts{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px}
-  .pp-counts span{margin-right:8px}
+  .pp-table td{vertical-align:top}
+  .pp-who strong{display:block}
+  .pp-who .dim,.pp-cell-sub{display:block;font-size:11.5px;color:var(--muted);margin-top:2px}
+  .pp-counts{font-size:11.5px;color:var(--muted);display:block;margin-top:2px}
   .pp-find{margin:4px 0 2px}
   .pp-find summary{cursor:pointer;font-size:11.5px;color:var(--muted)}
   .pp-find table{margin-top:6px;font-size:11.5px}
   .pp-find td,.pp-find th{padding:6px 10px}
   .pp-clip{overflow-wrap:anywhere;max-width:360px}
+  /* Settings: a few named sections, collapsed except the weekly schedule. */
+  details.pset-sec{border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:10px;background:var(--panel)}
+  details.pset-sec>summary{cursor:pointer;list-style:none;padding:11px 14px;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+  details.pset-sec>summary::-webkit-details-marker{display:none}
+  details.pset-sec>summary::before{content:"\203A";color:var(--dim);font-size:15px;line-height:1;transition:transform .15s ease;display:inline-block}
+  details.pset-sec[open]>summary::before{transform:rotate(90deg)}
+  details.pset-sec>summary .t{font-size:12.5px;font-weight:650}
+  details.pset-sec>summary .s{font-size:11.5px;color:var(--muted);flex:1 1 260px}
+  details.pset-sec>summary .changed{margin-left:auto}
+  .pset-body{padding:0 14px 6px}
+  .pset-row{display:grid;grid-template-columns:minmax(200px,300px) minmax(0,1fr);gap:6px 18px;align-items:start;padding:12px 0;border-top:1px solid var(--border)}
+  .pset-label{font-size:12.5px;color:var(--text);font-weight:550;line-height:1.45}
+  .pset-label .hint{display:block;margin-top:3px;font-size:11.5px;color:var(--muted);font-weight:400}
+  .pset-label .key{display:block;margin-top:3px;color:var(--dim);font-family:var(--font-mono);font-size:10.5px;font-weight:400}
+  .pset-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .pset-control input[type=text],.pset-control input[type=number],.pset-control input[type=time],.pset-control select{max-width:260px}
+  .pset-control input[type=checkbox]{width:auto;flex:none}
+  .pset-control .onoff{display:inline-flex;gap:6px;align-items:center;font-size:12.5px}
+  .pset-err{display:none;margin-top:4px;font-size:11px;color:var(--text-danger);width:100%}
+  .pset-err.show{display:block}
+  @media (prefers-reduced-motion: reduce){ details.pset-sec>summary::before{transition:none} }
+  @media (max-width:760px){
+    .pset-row{grid-template-columns:minmax(0,1fr)}
+    /* Narrow screens: account and report rows become stacked cards, so every
+       column (including the actions) stays visible without sideways scrolling. */
+    .pp-table thead{display:none}
+    .pp-table,.pp-table tbody,.pp-table tr,.pp-table td{display:block;width:100%}
+    .pp-table tr{border-bottom:1px solid var(--border);padding:8px 0}
+    .pp-table tbody tr:last-child{border-bottom:none}
+    .pp-table td{border:none;padding:5px 2px}
+    .pp-table td[data-label]{display:grid;grid-template-columns:96px minmax(0,1fr);gap:4px 10px;align-items:start}
+    .pp-table td[data-label]::before{content:attr(data-label);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:650;padding-top:2px}
+    .pp-table td[data-label]>*{grid-column:2;justify-self:start}
+  }
 
   /* ---------- Login ---------- */
   #login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
@@ -1040,19 +1093,22 @@
 
     <!-- ─────── CLIENT PORTAL ─────── -->
     <section class="view" id="view-portal">
-      <div class="panel">
-        <div class="head"><h3 data-i18n="panel_portal_settings">Portal Settings</h3><span class="muted" style="font-size:11.5px" data-i18n="sub_portal_settings">Changes apply on the next action — no restart</span></div>
-        <div class="body"><div id="portalSettingsBody"><p class="muted" data-i18n="pset_loading">Loading settings…</p></div></div>
+      <p class="pp-lede" data-i18n="pp_intro">The client portal is the separate site at /client where your clients sign in to read their alerts and download weekly reports. Here you switch it on, manage who can sign in, and check that the weekly report is being produced.</p>
+      <div class="panel" id="portalStatusPanel">
+        <div class="head"><h3 data-i18n="pp_status_title">At a glance</h3><button class="small" id="pp-refresh" data-i18n="pp_refresh">Refresh</button></div>
+        <div class="body"><div id="portalStatusBody"><p class="muted" data-i18n="pp_loading">Loading…</p></div></div>
       </div>
-      <div class="grid2" style="grid-template-columns:minmax(0,1fr)">
-        <div class="panel" id="portalUsersPanel">
-          <div class="head"><h3 data-i18n="panel_portal_users">Client accounts</h3></div>
-          <div class="body"><div id="portalUsersBody"><p class="muted" data-i18n="pu_loading">Loading accounts…</p></div></div>
-        </div>
-        <div class="panel" id="portalReportsPanel">
-          <div class="head"><h3 data-i18n="panel_portal_reports">Weekly reports</h3></div>
-          <div class="body"><div id="portalReportsBody"><p class="muted" data-i18n="pw_loading">Loading weekly reports…</p></div></div>
-        </div>
+      <div class="panel" id="portalUsersPanel">
+        <div class="head"><h3 data-i18n="panel_portal_users">Client accounts</h3><span class="pp-sub" data-i18n="pp_users_sub">Who can sign in to the portal</span></div>
+        <div class="body"><div id="portalUsersBody"><p class="muted" data-i18n="pu_loading">Loading accounts…</p></div></div>
+      </div>
+      <div class="panel" id="portalReportsPanel">
+        <div class="head"><h3 data-i18n="panel_portal_reports">Weekly reports</h3><span class="pp-sub" data-i18n="pp_reports_sub">The Excel report clients download each week</span></div>
+        <div class="body"><div id="portalReportsBody"><p class="muted" data-i18n="pw_loading">Loading weekly reports…</p></div></div>
+      </div>
+      <div class="panel" id="portalSettingsPanel">
+        <div class="head"><h3 data-i18n="panel_portal_settings">Portal settings</h3><span class="pp-sub" data-i18n="sub_portal_settings">Changes apply on the next action — no restart</span></div>
+        <div class="body"><div id="portalSettingsBody"><p class="muted" data-i18n="pset_loading">Loading settings…</p></div></div>
       </div>
     </section>
 

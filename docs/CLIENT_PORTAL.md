@@ -6,7 +6,7 @@ For engineers who run the platform. The feature overview, the full settings tabl
 
 - **Everything is configured at runtime from the engineering dashboard.** There is no CLI, and after deployment no `.env` edit is needed. Environment variables only set defaults. A value saved in the dashboard is stored in the database, takes precedence, and applies on the next read without a restart. Deleting the dashboard value returns the setting to its env default.
 - **Exception:** `DASHBOARD_ACCESS_KEY` is an environment variable only. Change it in the deployment secret and restart the container.
-- **Manage it in the dashboard's Client Portal tab first.** It has three panels: **Portal Settings**, **Client accounts** (the portal address, the on/off switch, and the accounts) and **Weekly reports**. The API calls in this runbook do the same things and are an alternative for scripts.
+- **Manage it in the dashboard's Client Portal tab first.** It has four panels: **At a glance** (the portal on/off switch and address, how many accounts can sign in, the weekly report schedule and latest report, and a **What to do next** list), **Client accounts**, **Weekly reports** and **Portal settings** (grouped into sections; only the weekly report schedule is expanded by default). The API calls in this runbook do the same things and are an alternative for scripts.
 
 ## Credentials
 
@@ -25,7 +25,7 @@ Three credentials exist. Each is accepted only on its own routes, and none can b
 3. **Set `client_portal_url`** to the public address, for example `https://soc-poc.example.com/client/`. It is used for links in emails only.
 4. **Check the weekly report schedule** (`weekly_report_weekday`, `weekly_report_time`). The default is Monday 09:00 JST.
 5. **Check the recipients** in the dashboard Settings tab: `weekly_report_emails` and `recommendation_notification_emails`. Blank falls back to `client_notification_emails`. These addresses are only used once the emails are switched on, which is not in this release.
-6. **Set `client_portal_enabled` to on.** Use the **Enable portal** button in the **Client accounts** panel, or the **Enable client portal** setting in Portal Settings. The portal stays off until you do this. If the key is blank or shorter than 16 characters, the dashboard refuses with **409** and the message says which problem it found.
+6. **Set `client_portal_enabled` to on.** Use the **Enable portal** button in the **At a glance** panel, or the **Enable client portal** setting under Portal settings, **Advanced**. The portal stays off until you do this. If the key is blank or shorter than 16 characters, the dashboard refuses with **409** and the message says which problem it found.
 7. **Verify:**
    ```bash
    curl -s -o /dev/null -w '%{http_code}\n' "$BASE/client/"              # 200: the sign-in page always loads
@@ -46,12 +46,12 @@ H=(-H "X-Dashboard-Key: $KEY" -H 'Content-Type: application/json')
 
 There is no self-service sign-up and no self-service password change. Engineers create and reset every account.
 
-Manage accounts in the **Client accounts** panel on the dashboard's Client Portal tab:
+Manage accounts in the **Client accounts** panel on the dashboard's Client Portal tab (the portal address and switch are in the **At a glance** panel above it):
 
-- **Portal address and switch:** the panel shows the client portal URL with a **Copy** button, and the portal state with an **Enable portal** or **Disable portal** button. If the switch cannot be turned on, the reason is shown next to it (for example, a dashboard key that is too short).
-- **Add an account:** enter a username and, optionally, a display name and a password. Leave the password blank to generate a strong one.
-- **Accounts table:** username, display name, status (**Active**, **Disabled** or **Locked**), last sign-in, active sessions, and actions.
-- **Actions per account:** **Reset password**, **Disable** or **Enable**, **Unlock** (shown only when the account is locked), **Sign out everywhere**, and **Delete**. Reset password opens a field: type a new password, or leave it blank to generate one. Delete asks you to confirm in the same row.
+- **Portal address and switch (At a glance panel):** the client portal URL with a **Copy** button, and the portal state with an **Enable portal** or **Disable portal** button. If the switch cannot be turned on, the reason is shown next to it (for example, a dashboard key that is too short). If the portal is on but the server is refusing sign-ins, the state reads **On, but refusing sign-ins**.
+- **Add an account:** press **Add account**, then enter a username and, optionally, a display name and a password. Leave the password blank to generate a strong one.
+- **Accounts table:** account (username and display name), status (**Active**, **Disabled** or **Locked**), last sign-in in JST (with the number of active sessions when there are any), and actions.
+- **Actions per account:** **Reset password**, **Enable** (shown when the account is disabled) and **Unlock** (shown when it is locked) are always visible; **Disable**, **Sign out everywhere** and **Delete** are under **More**. Reset password opens a field: type a new password, or leave it blank to generate one. Delete asks you to confirm in the same row.
 - **Generated and reset passwords** are shown once, in a box above the table, with a **Copy** button. Passwords are not stored, so the box cannot show one again after it is dismissed, or after you leave the Client Portal tab. If a password is lost, reset it.
 
 The same actions as API calls, as an alternative for scripts:
@@ -131,7 +131,7 @@ Workbooks are written to `reports/weekly/<period_key>.xlsx` beside `OUTPUT_DIR`.
 - **First enable:** the current period is recorded as a baseline (status `SKIPPED`), so no report is produced for a past week. The first report is the next scheduled one.
 - **Idempotent:** each period is claimed in the database and produced once, including across restarts.
 - **Failures** are recorded as `FAILED` with the error text. The scheduler retries a failed period until it has been attempted **3 times in total**. A run stuck in `CLAIMED` for 15 minutes is taken over on the next check. Manual runs are not limited by that cap.
-- **Missed slots:** only the most recent due slot is considered. If the service was down for the whole slot and the next slot has also passed, that period is **not** produced automatically. Run it by hand through the API (below). **Generate / Run now** in the panel only produces the latest due period.
+- **Missed slots:** only the most recent due slot is considered. If the service was down for the whole slot and the next slot has also passed, that period is **not** produced automatically. Run it by hand through the API (below). **Create report now** in the panel only produces the latest due period.
 
 ### Status values
 
@@ -152,10 +152,10 @@ Workbooks are written to `reports/weekly/<period_key>.xlsx` beside `OUTPUT_DIR`.
 
 Use the **Weekly reports** panel on the dashboard's Client Portal tab:
 
-- **Header:** whether automatic generation is on, the schedule (day and time, JST), the next run, the next period and the latest due period. A line says whether email delivery is on. Email is off in this release, so reports are generated only.
-- **Generate / Run now:** produces the latest due period. If that period is already generated, nothing is generated again, and the panel points you to **Regenerate**.
-- **Preview xlsx:** downloads the workbook for the latest due period. Nothing is stored or sent.
-- **History table:** one row per period, with status, counts for LOW, MEDIUM, HIGH and CRITICAL, file (Yes or No), trigger (Scheduled, Manual or Baseline), completed time and any error.
+- **Header:** whether automatic creation is on and the schedule (day and time, JST), a line saying whether email delivery is on, and which week **Create report now** would produce. Email is off in this release, so reports are generated only. The next run and the period it covers are shown in the **At a glance** panel.
+- **Create report now:** produces the latest due period. If that period is already generated, nothing is generated again, and the panel points you to **Regenerate**.
+- **Preview (xlsx):** downloads the workbook for the latest due period. Nothing is stored or sent.
+- **History table:** one row per period (dates and period key), with status and any error, the alert total with the non-zero levels underneath (and "No Excel file" when the period has no workbook), the completed time in JST with the trigger (Scheduled, Manual or Baseline) underneath, and the actions.
 - **Per row:** **Download** (when the period has a file) and **Regenerate**. Regenerate asks you to confirm first. It overwrites the archived file and, when email is on, sends the report again.
 - **High-risk findings:** a period with HIGH or CRITICAL alerts has a **High-risk findings (n)** list. Expand it to see each alert's ID, risk, detection, endpoint and AI summary.
 
@@ -210,7 +210,7 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
 | The report email never arrives | Email is not enabled in this release (`weekly_report_email_enabled` is off by default). If it is on and the status is `NO_RECIPIENTS`, no recipients are set | Expected while email is off. Set recipients if you enable it |
 | Export returns **429** `An export is already running` | One export at a time per user | Wait for the first export to finish |
 | Export returns **400** `limit must be between 1 and N` | The requested count is above `client_export_max_alerts` | Lower the count, or raise the setting |
-| The **Portal Settings** panel shows a load error | The browser may be using a cached copy of the dashboard's static files | Hard-refresh the page (Ctrl+Shift+R, or Cmd+Shift+R on macOS) |
+| The **Portal settings** panel shows a load error | The browser may be using a cached copy of the dashboard's static files | Hard-refresh the page (Ctrl+Shift+R, or Cmd+Shift+R on macOS) |
 | Run now / regenerate returns **400** for a week | A manual run of a week that has not ended yet is refused, because it would archive a partial report and stop the scheduler from producing the real one | Wait until the week has ended. Preview still works for the current week |
 | A client API request returns **413** | Requests to `/client/api/*` are limited to 64 KB (this protects the unauthenticated login from memory exhaustion) | Expected for oversized bodies; normal use is far below the limit |
 | Many clients behind one proxy share the login throttle, or a client can dodge the per-address limit | `FORWARDED_ALLOW_IPS=*` makes the app trust the leftmost `X-Forwarded-For` entry. That is only safe when your edge **replaces** the header (the AWS Caddy setup does). If your platform appends to a client-supplied header, set `FORWARDED_ALLOW_IPS` to the proxy's address instead. The per-account lockout applies either way | Review `FORWARDED_ALLOW_IPS` for your platform |

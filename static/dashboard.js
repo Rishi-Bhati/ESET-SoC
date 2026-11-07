@@ -266,12 +266,8 @@ function refreshCurrentViewTranslations() {
   }
   if (state.view === "logs" && logState.res) renderLogs();
   if (state.view === "settings") loadSettings();
-  if (state.view === "portal") {
-    loadPortalSettings();
-    // Cached data only — no refetch, and the one-time password box is kept as is.
-    if (portalAdmin.users !== null) renderPortalUsers();
-    renderPortalReports();
-  }
+  // Cached data only — no refetch, and the one-time password box is kept as is.
+  if (state.view === "portal") renderPortalTab();
   // Built once at boot and not on tab switch, so it has to follow the toggle
   // whichever tab is open (no network involved).
   renderApiDocs();
@@ -2159,21 +2155,40 @@ document.getElementById("saveRecipients").onclick = async () => {
 };
 document.getElementById("reloadRecipients").onclick = loadSettings;
 
-/* ══════════════ client portal settings ══════════════ */
+/* ══════════════ client portal settings ══════════════
+ *
+ * The settings are shown in a few named sections rather than as one long list:
+ * the weekly-report schedule (open, the thing changed most), sign-in and
+ * security, address and exports, email (not active in this release) and
+ * advanced. Save is enabled only once a value differs from what is stored, and
+ * "Reset to default" only appears when a value was changed here.
+ */
 
-// Weekly-report settings first: this tab is opened to change when the report is
-// sent far more often than for anything else here, so that group leads.
-const PORTAL_GROUP_ORDER = ["weekly_report", "portal", "email"];
-const PORTAL_GROUP_I18N = {
-  weekly_report: "pgroup_weekly_report",
-  portal: "pgroup_portal",
-  email: "pgroup_email",
-};
+const PSET_SECTIONS = [
+  { id: "schedule", title: "pps_schedule", sub: "pps_schedule_sub",
+    keys: ["weekly_report_enabled", "weekly_report_weekday", "weekly_report_time"] },
+  { id: "signin", title: "pps_signin", sub: "pps_signin_sub",
+    keys: ["client_session_idle_minutes", "client_session_max_hours",
+      "client_login_max_failures", "client_login_lockout_minutes"] },
+  { id: "access", title: "pps_access", sub: "pps_access_sub",
+    keys: ["client_portal_url", "client_export_max_alerts"] },
+  { id: "email", title: "pps_email", sub: "pps_email_sub",
+    keys: ["weekly_report_email_enabled", "email_attachments_enabled",
+      "email_attachment_max_bytes", "client_immediate_min_risk"] },
+  // Anything not listed above (a setting added later) also lands here.
+  { id: "advanced", title: "pps_advanced", sub: "pps_advanced_sub",
+    keys: ["client_portal_enabled", "weekly_report_check_interval_seconds",
+      "weekly_report_max_findings_listed"] },
+];
 const PSET_WEEKDAY_I18N = {
   MON: "weekday_mon", TUE: "weekday_tue", WED: "weekday_wed", THU: "weekday_thu",
   FRI: "weekday_fri", SAT: "weekday_sat", SUN: "weekday_sun",
 };
 const PSET_RISK = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
+const psetState = {
+  settings: null,                 // last GET /portal-settings "settings" dict
+  open: new Set(["schedule"]),    // which sections are expanded (kept across re-renders)
+};
 
 function psetLabel(key) {
   const k = "pset_k_" + key;
@@ -2192,7 +2207,9 @@ function psetChoiceLabel(value) {
 function psetControlHtml(key, spec) {
   const id = "pset-" + esc(key);
   const c = spec.constraints || {};
-  if (spec.type === "bool") return `<input type="checkbox" id="${id}" style="width:auto">`;
+  if (spec.type === "bool") {
+    return `<label class="onoff"><input type="checkbox" id="${id}"> ${esc(t("pps_on"))}</label>`;
+  }
   if (spec.type === "enum") {
     const opts = (c.choices || []).map((v) =>
       `<option value="${esc(v)}">${esc(psetChoiceLabel(v))}</option>`).join("");
@@ -2211,18 +2228,19 @@ function psetControlHtml(key, spec) {
 }
 
 function psetRowHtml(key, spec) {
+  const changed = spec.source === "db";
   return `<div class="pset-row" data-pset-row="${esc(key)}">
     <div class="pset-label">
       <label for="pset-${esc(key)}">${esc(psetLabel(key))}</label>
-      <span class="key">${esc(key)}</span>
       <span class="hint">${esc(psetHint(key, spec))}</span>
+      <span class="key">${esc(key)}</span>
     </div>
     <div>
       <div class="pset-control">
         ${psetControlHtml(key, spec)}
-        <button class="small primary" data-pset-save="${esc(key)}">${esc(t("pset_save"))}</button>
-        <button class="small" data-pset-reset="${esc(key)}">${esc(t("pset_reset"))}</button>
-        <span class="srcbadge" style="margin-left:0">${esc(spec.source === "db" ? t("src_saved_here") : t("src_from_env"))}</span>
+        <button class="small primary" data-pset-save="${esc(key)}" disabled>${esc(t("pset_save"))}</button>
+        ${changed ? `<button class="small" data-pset-reset="${esc(key)}">${esc(t("pset_reset"))}</button>` : ""}
+        ${changed ? `<span class="srcbadge" style="margin-left:0" title="${esc(t("pps_changed_title"))}">${esc(t("src_saved_here"))}</span>` : ""}
       </div>
       <div class="pset-err" role="alert" data-pset-err="${esc(key)}"></div>
     </div>
@@ -2237,10 +2255,28 @@ function psetSetValue(key, spec, value) {
   else el.value = value === null || value === undefined ? "" : String(value);
 }
 
+/** A comparable form of a value, so Save can tell whether anything changed. */
+function psetNorm(spec, value) {
+  if (spec.type === "bool") return String(!!value);
+  if (spec.type === "list") {
+    const parts = Array.isArray(value) ? value : String(value || "").split(",");
+    return parts.map((p) => String(p).trim()).filter(Boolean).join(",");
+  }
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+function psetInputRaw(spec, el) { return spec.type === "bool" ? el.checked : el.value; }
+
+function psetSyncDirty(key) {
+  const spec = psetState.settings && psetState.settings[key];
+  const el = document.getElementById("pset-" + key);
+  const save = document.querySelector(`[data-pset-save="${CSS.escape(key)}"]`);
+  if (!spec || !el || !save) return;
+  save.disabled = psetNorm(spec, psetInputRaw(spec, el)) === psetNorm(spec, spec.value);
+}
+
 function renderPortalSettings(settings) {
   const box = document.getElementById("portalSettingsBody");
   if (!box) return;
-  const groups = {};
   if (!Object.keys(settings || {}).length) {
     box.innerHTML = `<p class="muted">${esc(t("pset_empty"))}</p>`;
     return;
@@ -2248,19 +2284,21 @@ function renderPortalSettings(settings) {
   for (const [settingKey, spec] of Object.entries(settings || {})) {
     // The API keys the dict by setting name; the spec itself carries no "key".
     spec.key = settingKey;
-    const group = spec.group || "other";
-    if (!groups[group]) groups[group] = [];
-    groups[group].push(spec);
   }
-  const groupKeys = [
-    ...PORTAL_GROUP_ORDER.filter((g) => groups[g]),
-    ...Object.keys(groups).filter((g) => !PORTAL_GROUP_ORDER.includes(g)).sort(),
-  ];
-  box.innerHTML = groupKeys.map((group) => `
-    <div class="pset-group">
-      <h4>${esc(PORTAL_GROUP_I18N[group] ? t(PORTAL_GROUP_I18N[group]) : t("pgroup_other"))}</h4>
-      ${groups[group].map((spec) => psetRowHtml(spec.key, spec)).join("")}
-    </div>`).join("");
+  psetState.settings = settings;
+  const listed = new Set(PSET_SECTIONS.flatMap((s) => s.keys));
+  const extra = Object.keys(settings).filter((k) => !listed.has(k)).sort();
+  box.innerHTML = PSET_SECTIONS.map((sec) => {
+    const keys = sec.keys.filter((k) => settings[k]).concat(sec.id === "advanced" ? extra : []);
+    if (!keys.length) return "";
+    const changed = keys.filter((k) => settings[k].source === "db").length;
+    const open = psetState.open.has(sec.id) ? " open" : "";
+    return `<details class="pset-sec" data-pset-sec="${esc(sec.id)}"${open}>
+      <summary><span class="t">${esc(t(sec.title))}</span><span class="s">${esc(t(sec.sub))}</span>
+        ${changed ? `<span class="srcbadge changed">${esc(t("pps_changed_n", changed))}</span>` : ""}</summary>
+      <div class="pset-body">${keys.map((k) => psetRowHtml(k, settings[k])).join("")}</div>
+    </details>`;
+  }).join("");
 
   for (const [key, spec] of Object.entries(settings || {})) {
     psetSetValue(key, spec, spec.value);
@@ -2302,6 +2340,7 @@ async function savePortalSetting(key, spec) {
     });
     toast(t("pset_saved", psetLabel(key)));
     await loadPortalSettings();
+    if (key.startsWith("weekly_report")) loadPortalReports();
   } catch (e) {
     if (err) { err.textContent = psetErrorMessage(e); err.classList.add("show"); }
     else toast(t("toast_save_failed") + psetErrorMessage(e), true);
@@ -2315,6 +2354,7 @@ async function resetPortalSetting(key) {
     await api(`/portal-settings/${encodeURIComponent(key)}`, { method: "DELETE" });
     toast(t("pset_reset_done", psetLabel(key)));
     await loadPortalSettings();
+    if (key.startsWith("weekly_report")) loadPortalReports();
   } catch (e) {
     if (err) { err.textContent = psetErrorMessage(e); err.classList.add("show"); }
     else toast(t("toast_save_failed") + psetErrorMessage(e), true);
@@ -2327,11 +2367,33 @@ async function loadPortalSettings() {
   if (!box.innerHTML) box.innerHTML = `<p class="muted">${esc(t("pset_loading"))}</p>`;
   try {
     const res = await api("/portal-settings");
-    renderPortalSettings((res && res.settings) || {});
+    const settings = (res && res.settings) || {};
+    renderPortalSettings(settings);
+    const spec = settings.client_portal_enabled;
+    if (spec && typeof spec.value === "boolean") portalAdmin.enabled = spec.value;
+    renderPortalStatus();
   } catch (e) {
     box.innerHTML = `<p class="muted">${esc(t("pset_load_failed"))}${esc(psetErrorMessage(e))}</p>`;
   }
 }
+
+(function wirePortalSettingsPanel() {
+  const box = document.getElementById("portalSettingsBody");
+  if (!box) return;
+  const onEdit = (e) => {
+    const row = e.target.closest && e.target.closest("[data-pset-row]");
+    if (row) psetSyncDirty(row.dataset.psetRow);
+  };
+  box.addEventListener("input", onEdit);
+  box.addEventListener("change", onEdit);
+  // <details> toggle does not bubble: capture it to remember open sections.
+  box.addEventListener("toggle", (e) => {
+    const d = e.target.closest && e.target.closest("[data-pset-sec]");
+    if (!d) return;
+    if (d.open) psetState.open.add(d.dataset.psetSec);
+    else psetState.open.delete(d.dataset.psetSec);
+  }, true);
+})();
 
 /* ══════════════ client portal: accounts + weekly reports ══════════════
  *
@@ -2343,6 +2405,7 @@ async function loadPortalSettings() {
  */
 
 const PORTAL_CLIENT_PATH = "/client";
+const PORTAL_MIN_KEY_LENGTH = 16;   // src/services/portal_guard.py MIN_DASHBOARD_KEY_LENGTH
 const portalAdmin = {
   users: null,          // [User] from the last successful load
   enabled: null,        // client_portal_enabled, or null when unknown
@@ -2350,6 +2413,7 @@ const portalAdmin = {
   noticeErr: "",
   resetFor: null,       // user id whose inline reset form is open
   deleteFor: null,      // user id whose inline delete confirm is open
+  formOpen: false,      // the "new account" form is shown
   busy: false,
 };
 const portalReports = {
@@ -2358,6 +2422,10 @@ const portalReports = {
   openFindings: new Set(),
   busy: false,
 };
+// What the client sign-in endpoint answers right now: "ok" (401 without a
+// session: the portal is serving), "closed" (404: switched off, or refusing
+// because the dashboard key is unsafe), "unknown", or null before the check.
+const portalLive = { state: null };
 
 const PW_STATUS_BADGE = {
   CLAIMED: "PROCESSING", GENERATED: "SUCCESS", QUEUED: "STARTED", SENT: "SUCCESS",
@@ -2371,6 +2439,35 @@ function portalPill(cls, label) {
 /** Epoch seconds (what the portal APIs return) in the dashboard's usual local format. */
 function fmtEpoch(sec) {
   return typeof sec === "number" && isFinite(sec) && sec > 0 ? fmtDateTime(new Date(sec * 1000)) : "";
+}
+
+// The portal's schedule and periods are defined in Japan time, so this tab shows
+// its times in JST (and says so) rather than in the browser's zone.
+const _ppFmt = {};
+function ppJstFormatter(withTime) {
+  const key = uiLocale() + (withTime ? ":t" : ":d");
+  if (!_ppFmt[key]) {
+    const o = { timeZone: "Asia/Tokyo", year: "numeric", month: "short", day: "numeric" };
+    if (withTime) Object.assign(o, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+    _ppFmt[key] = new Intl.DateTimeFormat(uiLocale(), o);
+  }
+  return _ppFmt[key];
+}
+/** Epoch seconds or an ISO string -> "Mon, 9 Nov 2026, 09:00 JST". */
+function fmtJst(v) {
+  const d = typeof v === "number" ? new Date(v * 1000) : new Date(v);
+  return v && !isNaN(d) ? ppJstFormatter(true).format(d) + " JST" : "";
+}
+/** "2026-10-26" (a JST calendar day) -> "26 Oct 2026". */
+function fmtJstDay(v) {
+  const s = String(v || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return "";
+  return ppJstFormatter(false).format(new Date(s + "T12:00:00+09:00"));
+}
+function pwRange(p) {
+  if (!p) return "";
+  const a = fmtJstDay(p.period_start), b = fmtJstDay(p.last_day);
+  return a && b ? t("pp_range", a, b) : String(p.period_key || "");
 }
 
 function portalErrText(e) {
@@ -2401,6 +2498,224 @@ function clearPortalSecret() {
   if (box) box.innerHTML = "";
 }
 
+/** Translates the [data-i18n] text inside one panel only. (The page-wide
+ * page-wide translation pass would also reset the view header to "Overview".) */
+function translateWithin(root) {
+  root.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t(el.getAttribute("data-i18n")); });
+}
+
+/* ---------- status: is it on, who can sign in, is the report going out ---------- */
+
+function portalCounts() {
+  const users = portalAdmin.users || [];
+  return {
+    total: users.length,
+    active: users.filter((u) => !u.disabled && !u.locked).length,
+    disabled: users.filter((u) => u.disabled).length,
+    locked: users.filter((u) => u.locked).length,
+  };
+}
+
+/** The dashboard key this browser signed in with; the server refuses to run the
+ * portal when that key is shorter than 16 characters. */
+function portalKeyTooShort() {
+  const k = dashKey();
+  return !!k && k.length < PORTAL_MIN_KEY_LENGTH;
+}
+
+function latestPortalReport() {
+  const d = portalReports.data;
+  const list = d && Array.isArray(d.reports) ? d.reports : [];
+  return list.find((r) => r.status !== "SKIPPED" && r.status !== "CLAIMED") || null;
+}
+
+function ppCard(tone, label, valueHtml, detailHtml, actHtml) {
+  return `<div class="card pp-card ${esc(tone)}">
+    <div class="v">${valueHtml}</div>
+    <p class="l">${esc(label)}</p>
+    ${detailHtml ? `<div class="d">${detailHtml}</div>` : ""}
+    ${actHtml ? `<div class="act">${actHtml}</div>` : ""}
+  </div>`;
+}
+
+function ppPortalCard() {
+  const label = t("pp_card_portal");
+  const on = portalAdmin.enabled;
+  if (on === null) return ppCard("", label, esc(t("pp_loading")), "", "");
+  const url = location.origin + PORTAL_CLIENT_PATH + "/";
+  const urlHtml = `<span class="pp-url"><code class="mono">${esc(url)}</code>
+    <button class="small" data-pp-copy-url>${esc(t("pu_copy"))}</button></span>`;
+  const errHtml = portalAdmin.noticeErr
+    ? `<div class="pp-err show" role="alert">${esc(portalAdmin.noticeErr)}</div>` : "";
+  if (on && portalLive.state === "closed") {
+    return ppCard("bad", label, portalPill("FAILED", t("pp_portal_refusing")),
+      `${esc(t("pp_portal_refusing_why"))}${errHtml}`,
+      `<button class="small" data-pu-toggle-portal>${esc(t("pu_disable_portal"))}</button>`);
+  }
+  if (on) {
+    return ppCard("good", label, portalPill("SUCCESS", t("pp_on")),
+      `${esc(t("pp_portal_on_detail"))}${urlHtml}${errHtml}`,
+      `<button class="small" data-pu-toggle-portal>${esc(t("pu_disable_portal"))}</button>`);
+  }
+  // The server's own refusal (409), once seen, says the same thing: show only one.
+  const keyHtml = portalKeyTooShort() && !portalAdmin.noticeErr
+    ? `<div class="pp-err show">${esc(t("pp_key_short"))}</div>` : "";
+  return ppCard("warn", label, portalPill("PENDING", t("pp_off")),
+    `${esc(t("pp_portal_off_detail"))}${keyHtml}${errHtml}`,
+    `<button class="small primary" data-pu-toggle-portal>${esc(t("pu_enable_portal"))}</button>`);
+}
+
+function ppAccountsCard() {
+  const label = t("pp_card_accounts");
+  if (portalAdmin.users === null) return ppCard("", label, esc(t("pp_loading")), "", "");
+  const c = portalCounts();
+  const add = `<button class="small" data-pp-go="add">${esc(t("pu_add"))}</button>`;
+  if (!c.total) return ppCard("warn", label, esc(t("pp_accounts_none")), esc(t("pp_accounts_none_detail")), add);
+  const extra = [];
+  if (c.disabled) extra.push(t("pp_n_disabled", c.disabled));
+  if (c.locked) extra.push(t("pp_n_locked", c.locked));
+  return ppCard(c.active ? "good" : "warn", label, esc(t("pp_accounts_value", c.active, c.total)),
+    esc(extra.length ? extra.join(" · ") : t("pp_accounts_all_ok")), add);
+}
+
+function ppWeeklyCard() {
+  const label = t("pp_card_weekly");
+  const d = portalReports.data;
+  if (!d) return ppCard("", label, esc(t("pp_loading")), "", "");
+  const sch = d.schedule || {};
+  const day = PSET_WEEKDAY_I18N[sch.weekday] ? t(PSET_WEEKDAY_I18N[sch.weekday]) : sch.weekday;
+  const change = `<button class="small" data-pp-go="schedule">${esc(t("pp_change_schedule"))}</button>`;
+  const emailHtml = `<span class="pp-cell-sub">${esc(t(d.email_enabled ? "pp_email_on" : "pp_email_off"))}</span>`;
+  if (!d.enabled) {
+    return ppCard("warn", label, portalPill("PENDING", t("pp_weekly_off")),
+      `${esc(t("pp_weekly_off_detail"))}${emailHtml}`, change);
+  }
+  const next = fmtJst(d.next_run_at);
+  return ppCard("good", label, esc(t("pp_weekly_on", day, sch.time)),
+    `${esc(next ? t("pp_weekly_next", next, pwRange(d.next_period)) : "")}${emailHtml}`, change);
+}
+
+function ppLatestCard() {
+  const label = t("pp_card_latest");
+  const d = portalReports.data;
+  if (!d) return ppCard("", label, esc(t("pp_loading")), "", "");
+  const r = latestPortalReport();
+  const view = `<button class="small" data-pp-go="reports">${esc(t("pp_view_history"))}</button>`;
+  if (!r) {
+    return ppCard("", label, esc(t("pp_latest_none")),
+      esc(t(d.enabled ? "pp_latest_none_auto" : "pp_latest_none_manual")), view);
+  }
+  const total = Number((r.counts || {}).total) || 0;
+  const when = fmtJst(r.completed_at);
+  const detail = [when ? t("pp_created_at", when) : "", total ? t("pp_n_alerts", total) : t("pp_no_alerts")]
+    .filter(Boolean).join(" · ");
+  return ppCard(r.status === "FAILED" ? "bad" : "good", label,
+    `${esc(pwRange(r))} ${portalPill(PW_STATUS_BADGE[r.status] || "UNKNOWN", pwStatusLabel(r.status))}`,
+    esc(detail), view);
+}
+
+/** The short to-do list under the cards: what, if anything, needs doing now. */
+function ppNextSteps() {
+  const steps = [];
+  const on = portalAdmin.enabled;
+  const c = portalCounts();
+  const d = portalReports.data;
+  if (on === true && portalLive.state === "closed") {
+    steps.push({ tone: "bad", text: t("pp_step_fix_key"), why: t("pp_step_fix_key_why") });
+  } else if (on === false) {
+    steps.push({ tone: "warn", text: t("pp_step_enable"),
+      why: t(portalKeyTooShort() ? "pp_key_short" : "pp_step_enable_why"),
+      act: `<button class="small primary" data-pu-toggle-portal>${esc(t("pu_enable_portal"))}</button>` });
+  }
+  if (portalAdmin.users !== null && !c.active) {
+    steps.push({ tone: "warn", text: t("pp_step_add"), why: t("pp_step_add_why"),
+      act: `<button class="small" data-pp-go="add">${esc(t("pu_add"))}</button>` });
+  }
+  if (c.locked) steps.push({ tone: "info", text: t("pp_step_locked", c.locked), why: t("pp_step_locked_why") });
+  if (d && !d.enabled) {
+    steps.push({ tone: "warn", text: t("pp_step_weekly"), why: t("pp_step_weekly_why"),
+      act: `<button class="small" data-pp-weekly-on>${esc(t("pp_turn_on"))}</button>` });
+  }
+  const r = latestPortalReport();
+  if (r && r.status === "FAILED") {
+    steps.push({ tone: "bad", text: t("pp_step_failed", pwRange(r)), why: t("pp_step_failed_why"),
+      act: `<button class="small" data-pp-go="reports">${esc(t("pp_view_history"))}</button>` });
+  }
+  return steps;
+}
+
+function renderPortalStatus() {
+  const box = document.getElementById("portalStatusBody");
+  if (!box) return;
+  const ready = portalAdmin.enabled !== null && portalAdmin.users !== null && portalReports.data;
+  const steps = ppNextSteps();
+  let listHtml;
+  if (steps.length) {
+    listHtml = steps.map((s) => `<li class="${esc(s.tone)}">
+      <span class="txt">${esc(s.text)}<span class="why">${esc(s.why)}</span></span>${s.act || ""}</li>`).join("");
+  } else if (ready) {
+    listHtml = `<li class="done"><span class="txt">${esc(t("pp_all_good"))}</span></li>`;
+  } else {
+    listHtml = `<li><span class="txt">${esc(t("pp_loading"))}</span></li>`;
+  }
+  box.innerHTML = `
+    <div class="pp-cards">${ppPortalCard()}${ppAccountsCard()}${ppWeeklyCard()}${ppLatestCard()}</div>
+    <div class="pp-next"><h4>${esc(t("pp_next_title"))}</h4><ol>${listHtml}</ol></div>`;
+}
+
+/** Asks the client sign-in endpoint, without a session, whether it is serving.
+ * A request with no session is not counted as a failed sign-in (see
+ * src/middleware/auth.py require_client), so this cannot lock anyone out. */
+async function probePortalLive() {
+  try {
+    const res = await fetch(PORTAL_CLIENT_PATH + "/api/auth/me", { cache: "no-store", credentials: "omit" });
+    portalLive.state = res.status === 401 ? "ok" : res.status === 404 ? "closed" : "unknown";
+  } catch (e) {
+    portalLive.state = "unknown";
+  }
+  renderPortalStatus();
+}
+
+function ppScrollTo(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function ppGo(where) {
+  if (where === "add") {
+    portalAdmin.formOpen = true;
+    renderPortalUsers();
+    ppScrollTo("portalUsersPanel");
+    const input = document.getElementById("pu-username");
+    if (input) input.focus({ preventScroll: true });
+  } else if (where === "schedule") {
+    psetState.open.add("schedule");
+    if (psetState.settings) renderPortalSettings(psetState.settings);
+    ppScrollTo("portalSettingsPanel");
+  } else if (where === "reports") {
+    ppScrollTo("portalReportsPanel");
+  }
+}
+
+async function turnWeeklyReportOn() {
+  try {
+    await api("/portal-settings/weekly_report_enabled", { method: "PUT", body: JSON.stringify({ value: true }) });
+    toast(t("pset_saved", psetLabel("weekly_report_enabled")));
+    await Promise.all([loadPortalSettings(), loadPortalReports()]);
+  } catch (e) {
+    toast(t("toast_save_failed") + portalErrText(e), true);
+  }
+}
+
+function onPortalViewClick(e) {
+  if (e.target.closest("[data-pu-toggle-portal]")) { togglePortalEnabled(); return; }
+  if (e.target.closest("[data-pp-copy-url]")) { copyPortalText(location.origin + PORTAL_CLIENT_PATH + "/"); return; }
+  if (e.target.closest("[data-pp-weekly-on]")) { turnWeeklyReportOn(); return; }
+  if (e.target.closest("#pp-refresh")) { loadPortalPanels(); return; }
+  const go = e.target.closest("[data-pp-go]");
+  if (go) ppGo(go.dataset.ppGo);
+}
+
 /* ---------- client accounts ---------- */
 
 function ensurePortalUsersShell() {
@@ -2408,56 +2723,51 @@ function ensurePortalUsersShell() {
   if (!root) return null;
   if (root.querySelector("#pu-table")) return root;
   root.innerHTML = `
-    <div id="pu-notice"></div>
-    <div class="pp-bar">
-      <span class="muted" data-i18n="pu_url_label"></span>
-      <code class="mono" id="pu-url"></code>
-      <button class="small" id="pu-copy-url" data-i18n="pu_copy"></button>
-    </div>
     <div id="pu-secret" aria-live="polite"></div>
-    <div class="pp-form" id="pu-form">
+    <div class="pp-toolbar">
+      <div class="grow"><span id="pu-summary"></span><span class="muted" data-i18n="pp_users_help"></span></div>
+      <button class="primary" id="pu-add-toggle" data-i18n="pu_add"></button>
+    </div>
+    <div class="pp-form" id="pu-form" hidden>
+      <h4 data-i18n="pu_add_title"></h4>
       <div class="fld"><label for="pu-username" data-i18n="pu_f_username"></label>
         <input type="text" id="pu-username" maxlength="64" autocomplete="off" spellcheck="false"></div>
       <div class="fld"><label for="pu-display" data-i18n="pu_f_display_name"></label>
         <input type="text" id="pu-display" maxlength="100" autocomplete="off"></div>
       <div class="fld"><label for="pu-password" data-i18n="pu_f_password"></label>
         <input type="password" id="pu-password" autocomplete="new-password" spellcheck="false"></div>
-      <button class="primary" id="pu-add" data-i18n="pu_add"></button>
+      <div class="row">
+        <button class="primary" id="pu-add" data-i18n="pp_create_account"></button>
+        <button id="pu-add-cancel" data-i18n="pu_cancel"></button>
+      </div>
       <p class="hint" data-i18n="pu_pw_hint"></p>
       <div class="pp-err" id="pu-form-err" role="alert"></div>
     </div>
     <div class="pp-err" id="pu-row-err" role="alert"></div>
     <div id="pu-table"><p class="muted">${esc(t("pu_loading"))}</p></div>`;
-  document.getElementById("pu-url").textContent = location.origin + PORTAL_CLIENT_PATH;
-  document.getElementById("pu-copy-url").onclick = () => copyPortalText(location.origin + PORTAL_CLIENT_PATH);
   document.getElementById("pu-add").onclick = addPortalUser;
+  document.getElementById("pu-add-toggle").onclick = () => {
+    portalAdmin.formOpen = !portalAdmin.formOpen;
+    renderPortalUsers();
+    if (portalAdmin.formOpen) document.getElementById("pu-username").focus();
+  };
+  document.getElementById("pu-add-cancel").onclick = () => {
+    portalAdmin.formOpen = false;
+    showPortalErr("pu-form-err", "");
+    renderPortalUsers();
+  };
   root.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
-    if (e.target.closest("#pu-form")) { e.preventDefault(); addPortalUser(); }
+    if (e.target.closest("#pu-form") && e.target.tagName === "INPUT") { e.preventDefault(); addPortalUser(); }
     const reset = e.target.closest("[data-pu-reset-input]");
     if (reset) { e.preventDefault(); runPortalUserAction(reset.dataset.puResetInput, "reset"); }
   });
   root.addEventListener("click", onPortalUsersClick);
-  applyStaticI18n();
   return root;
 }
 
 function portalUserById(id) {
   return (portalAdmin.users || []).find((u) => u.id === id);
-}
-
-function renderPortalNotice() {
-  const box = document.getElementById("pu-notice");
-  if (!box) return;
-  if (portalAdmin.enabled === null) { box.innerHTML = ""; return; }
-  const on = portalAdmin.enabled === true;
-  box.innerHTML = `<div class="pp-note${on ? "" : " warn"}">
-    <div>${esc(t(on ? "pu_portal_on" : "pu_portal_off"))}</div>
-    <div class="row">
-      <button class="small${on ? "" : " primary"}" data-pu-toggle-portal>${esc(t(on ? "pu_disable_portal" : "pu_enable_portal"))}</button>
-    </div>
-    <div class="pp-err${portalAdmin.noticeErr ? " show" : ""}" role="alert">${esc(portalAdmin.noticeErr)}</div>
-  </div>`;
 }
 
 function renderPortalSecret() {
@@ -2481,12 +2791,16 @@ function puRowActions(u) {
   const id = esc(u.id);
   const btn = (act, key, cls) =>
     `<button class="small${cls ? " " + cls : ""}" data-pu-act="${act}" data-uid="${id}">${esc(t(key))}</button>`;
+  // The likely next action stays visible; the rest sit under "More".
   let html = `<div class="pp-actions">
+    ${u.locked ? btn("unlock", "pu_act_unlock", "primary") : ""}
+    ${u.disabled ? btn("enable", "pu_act_enable") : ""}
     ${btn("reset", "pu_act_reset")}
-    ${u.disabled ? btn("enable", "pu_act_enable") : btn("disable", "pu_act_disable")}
-    ${u.locked ? btn("unlock", "pu_act_unlock") : ""}
-    ${btn("revoke-sessions", "pu_act_signout")}
-    ${btn("delete", "pu_act_delete", "danger")}
+    <details class="pp-more"><summary>${esc(t("pp_more_actions"))}</summary><div class="menu">
+      ${u.disabled ? "" : btn("disable", "pu_act_disable")}
+      ${btn("revoke-sessions", "pu_act_signout")}
+      ${btn("delete", "pu_act_delete", "danger")}
+    </div></details>
   </div>`;
   if (portalAdmin.resetFor === u.id) {
     html += `<div class="pp-inline">
@@ -2507,35 +2821,43 @@ function puRowActions(u) {
 }
 
 function renderPortalUsers() {
-  if (!ensurePortalUsersShell()) return;
-  renderPortalNotice();
+  const root = ensurePortalUsersShell();
+  if (!root) return;
+  translateWithin(root);
   renderPortalSecret();
-  const box = document.getElementById("pu-table");
   const users = portalAdmin.users;
+  const form = document.getElementById("pu-form");
+  // With no accounts yet, the form is the only useful thing here: show it.
+  form.hidden = !(portalAdmin.formOpen || (users !== null && !users.length));
+  document.getElementById("pu-add-toggle").hidden = !form.hidden;
+  document.getElementById("pu-add-cancel").hidden = users !== null && !users.length;
+  const c = portalCounts();
+  document.getElementById("pu-summary").textContent = users === null ? ""
+    : users.length ? t("pp_users_summary", c.total, c.active) : "";
+  const box = document.getElementById("pu-table");
   if (users === null) return;
   if (!users.length) {
     box.innerHTML = `<div class="empty">${esc(t("pu_empty"))}</div>`;
     return;
   }
+  const L = (k) => esc(t(k));
   const rows = users.map((u) => {
     const badges = (u.disabled ? portalPill("PENDING", t("pu_status_disabled")) : "")
       + (u.locked ? portalPill("BLOCKED", t("pu_status_locked")) : "")
       + (!u.disabled && !u.locked ? portalPill("SUCCESS", t("pu_status_active")) : "");
-    const last = fmtEpoch(u.last_login_at);
+    const last = fmtJst(u.last_login_at);
+    const sessions = Number(u.active_sessions) || 0;
     return `<tr>
-      <td><strong>${esc(u.username)}</strong></td>
-      <td>${u.display_name ? esc(u.display_name) : DASH}</td>
-      <td>${badges}</td>
-      <td>${last ? esc(last) : `<span class="dim">${esc(t("pu_never"))}</span>`}</td>
-      <td>${esc(u.active_sessions || 0)}</td>
-      <td>${puRowActions(u)}</td>
+      <td class="pp-who" data-label="${L("pu_th_username")}"><strong>${esc(u.username)}</strong>${u.display_name ? `<span class="dim">${esc(u.display_name)}</span>` : ""}</td>
+      <td data-label="${L("pu_th_status")}">${badges}</td>
+      <td data-label="${L("pu_th_last_login")}">${last ? esc(last) : `<span class="dim">${esc(t("pu_never"))}</span>`}${sessions ? `<span class="pp-cell-sub">${esc(t("pp_signed_in_now", sessions))}</span>` : ""}</td>
+      <td data-label="${L("pu_th_actions")}">${puRowActions(u)}</td>
     </tr>`;
   }).join("");
-  box.innerHTML = `<div class="pp-tablewrap"><table>
+  box.innerHTML = `<div class="pp-tablewrap"><table class="pp-table">
     <thead><tr>
-      <th>${esc(t("pu_th_username"))}</th><th>${esc(t("pu_th_display_name"))}</th>
-      <th>${esc(t("pu_th_status"))}</th><th>${esc(t("pu_th_last_login"))}</th>
-      <th>${esc(t("pu_th_sessions"))}</th><th>${esc(t("pu_th_actions"))}</th>
+      <th>${esc(t("pp_th_account"))}</th><th>${esc(t("pu_th_status"))}</th>
+      <th>${esc(t("pu_th_last_login"))}</th><th>${esc(t("pu_th_actions"))}</th>
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
@@ -2559,6 +2881,7 @@ async function loadPortalUsers() {
     showPortalErr("pu-row-err", t("pu_load_failed") + portalErrText(usersRes.reason));
   }
   renderPortalUsers();
+  renderPortalStatus();
 }
 
 async function addPortalUser() {
@@ -2578,6 +2901,7 @@ async function addPortalUser() {
   try {
     const res = await api("/portal/users", { method: "POST", body: JSON.stringify(body) });
     nameEl.value = ""; displayEl.value = ""; pwEl.value = "";
+    portalAdmin.formOpen = false;
     const created = (res && res.user && res.user.username) || username;
     if (res && res.generated_password) portalAdmin.secret = { username: created, password: res.generated_password };
     else clearPortalSecret();
@@ -2643,16 +2967,16 @@ async function togglePortalEnabled() {
     portalAdmin.enabled = next;
     toast(t(next ? "pu_portal_enabled_done" : "pu_portal_disabled_done"));
     loadPortalSettings();
+    probePortalLive();
   } catch (e) {
     // e.g. 409 "dashboard key too short": shown right where the switch is.
     portalAdmin.noticeErr = t("pu_portal_toggle_failed") + portalErrText(e);
   }
   portalAdmin.busy = false;
-  renderPortalNotice();
+  renderPortalStatus();
 }
 
 function onPortalUsersClick(e) {
-  if (e.target.closest("[data-pu-toggle-portal]")) { togglePortalEnabled(); return; }
   if (e.target.closest("[data-pu-secret-copy]")) {
     if (portalAdmin.secret) copyPortalText(portalAdmin.secret.password);
     return;
@@ -2684,9 +3008,8 @@ function onPortalUsersClick(e) {
 
 function pwPeriodLabel(p) {
   if (!p) return "";
-  const start = String(p.period_start || "").slice(0, 10);
-  const last = String(p.last_day || "");
-  return start || last ? `${p.period_key} (${start} – ${last})` : String(p.period_key || "");
+  const range = pwRange(p);
+  return p.period_key && range !== p.period_key ? `${range} (${p.period_key})` : range;
 }
 
 function pwStatusLabel(status) {
@@ -2699,10 +3022,14 @@ function pwTriggerLabel(trigger) {
   return t(k) === k ? String(trigger || "") : t(k);
 }
 
+/** "17 alerts" plus the non-zero levels underneath, or "No alerts". */
 function pwCountsHtml(c) {
-  const n = (v) => esc(typeof v === "number" ? v : 0);
-  return `<span class="pp-counts">${["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-    .map((lvl) => `<span>${esc(tBadgeLabel(lvl))} ${n((c || {})[lvl])}</span>`).join("")}</span>`;
+  const counts = c || {};
+  const total = Number(counts.total) || 0;
+  if (!total) return `<span class="dim">${esc(t("pp_no_alerts"))}</span>`;
+  const parts = ["CRITICAL", "HIGH", "MEDIUM", "LOW"].filter((lvl) => Number(counts[lvl]) > 0)
+    .map((lvl) => `${tBadgeLabel(lvl)} ${Number(counts[lvl])}`);
+  return `<strong>${esc(t("pp_n_alerts", total))}</strong><span class="pp-counts">${esc(parts.join(" · "))}</span>`;
 }
 
 function pwFindingsHtml(r) {
@@ -2727,7 +3054,8 @@ function pwFindingsHtml(r) {
 
 function pwRowHtml(r) {
   const key = esc(r.period_key);
-  const completed = fmtEpoch(r.completed_at);
+  const completed = fmtJst(r.completed_at);
+  const L = (k) => esc(t(k));
   let actions = `<div class="pp-actions">
     ${r.has_file ? `<button class="small" data-pw-act="download" data-period="${key}">${esc(t("pw_download"))}</button>` : ""}
     <button class="small" data-pw-act="regen" data-period="${key}">${esc(t("pw_regenerate"))}</button>
@@ -2741,15 +3069,14 @@ function pwRowHtml(r) {
   }
   const err = r.error
     ? `<div class="pp-err show">${esc(t("pw_error_prefix"))}${esc(r.error)}</div>` : "";
+  const fileHtml = r.has_file ? "" : `<span class="pp-cell-sub">${esc(t("pp_no_file"))}</span>`;
   return `<tr>
-    <td>${esc(pwPeriodLabel(r))}</td>
-    <td>${portalPill(PW_STATUS_BADGE[r.status] || "UNKNOWN", pwStatusLabel(r.status))}${err}</td>
-    <td>${pwCountsHtml(r.counts)}</td>
-    <td>${esc(t(r.has_file ? "pw_file_yes" : "pw_file_no"))}</td>
-    <td>${esc(pwTriggerLabel(r.trigger))}</td>
-    <td>${completed ? esc(completed) : DASH}</td>
-    <td>${actions}</td>
-  </tr>${(r.findings || []).length ? `<tr><td colspan="7" style="padding-top:0">${pwFindingsHtml(r)}</td></tr>` : ""}`;
+    <td data-label="${L("pw_th_period")}">${esc(pwRange(r))}<span class="pp-cell-sub mono">${key}</span></td>
+    <td data-label="${L("pw_th_status")}">${portalPill(PW_STATUS_BADGE[r.status] || "UNKNOWN", pwStatusLabel(r.status))}${err}</td>
+    <td data-label="${L("pw_th_counts")}">${pwCountsHtml(r.counts)}${fileHtml}</td>
+    <td data-label="${L("pw_th_completed")}">${completed ? esc(completed) : DASH}<span class="pp-cell-sub">${esc(pwTriggerLabel(r.trigger))}</span></td>
+    <td data-label="${L("pw_th_actions")}">${actions}</td>
+  </tr>${(r.findings || []).length ? `<tr><td colspan="5" style="padding-top:0">${pwFindingsHtml(r)}</td></tr>` : ""}`;
 }
 
 function renderPortalReports() {
@@ -2758,34 +3085,23 @@ function renderPortalReports() {
   const d = portalReports.data;
   if (!d) return;
   const sch = d.schedule || {};
-  const dayKey = PSET_WEEKDAY_I18N[sch.weekday];
-  const nextRun = d.next_run_at ? fmtDateTime(d.next_run_at) : "";
+  const day = PSET_WEEKDAY_I18N[sch.weekday] ? t(PSET_WEEKDAY_I18N[sch.weekday]) : sch.weekday;
   const reports = Array.isArray(d.reports) ? d.reports : [];
   const table = reports.length
-    ? `<div class="pp-tablewrap"><table><thead><tr>
+    ? `<div class="pp-tablewrap"><table class="pp-table"><thead><tr>
         <th>${esc(t("pw_th_period"))}</th><th>${esc(t("pw_th_status"))}</th><th>${esc(t("pw_th_counts"))}</th>
-        <th>${esc(t("pw_th_file"))}</th><th>${esc(t("pw_th_trigger"))}</th><th>${esc(t("pw_th_completed"))}</th>
-        <th>${esc(t("pw_th_actions"))}</th>
+        <th>${esc(t("pw_th_completed"))}</th><th>${esc(t("pw_th_actions"))}</th>
       </tr></thead><tbody>${reports.map(pwRowHtml).join("")}</tbody></table></div>`
     : `<div class="empty">${esc(t("pw_empty"))}</div>`;
+  const due = d.latest_due_period;
   box.innerHTML = `
-    <div class="pp-bar">
-      ${portalPill(d.enabled ? "SUCCESS" : "PENDING", t(d.enabled ? "pw_auto_on" : "pw_auto_off"))}
-      <span>${esc(t("pw_schedule", dayKey ? t(dayKey) : sch.weekday, sch.time))}</span>
-    </div>
-    <div class="pp-bar">
-      <span><span class="muted">${esc(t("pw_next_run"))}:</span> ${nextRun ? esc(nextRun) : DASH}</span>
-      <span><span class="muted">${esc(t("pw_next_period"))}:</span> ${esc(pwPeriodLabel(d.next_period))}</span>
-      <span><span class="muted">${esc(t("pw_due_period"))}:</span> ${esc(pwPeriodLabel(d.latest_due_period))}</span>
-    </div>
-    <div class="pp-note${d.email_enabled ? "" : " warn"}">
-      <div>${esc(t(d.email_enabled ? "pw_email_on" : "pw_email_off"))}</div>
-      <div class="muted" style="font-size:11.5px;margin-top:3px">${esc(t("pw_settings_hint"))}</div>
-    </div>
-    <div class="pp-bar">
+    <div class="pp-toolbar">
+      <div class="grow">${esc(d.enabled ? t("pp_weekly_on_sentence", day, sch.time) : t("pp_weekly_off_sentence"))}
+        <span class="muted">${esc(t(d.email_enabled ? "pw_email_on" : "pp_email_off"))}</span></div>
       <button class="primary" data-pw-act="run">${esc(t("pw_run"))}</button>
       <button data-pw-act="preview">${esc(t("pw_preview"))}</button>
     </div>
+    ${due ? `<p class="pp-sub" style="margin:-6px 0 14px">${esc(t("pp_run_explain", pwPeriodLabel(due)))}</p>` : ""}
     <div class="pp-err" id="pw-err" role="alert"></div>
     ${table}`;
 }
@@ -2793,7 +3109,7 @@ function renderPortalReports() {
 async function loadPortalReports() {
   const box = document.getElementById("portalReportsBody");
   if (!box) return;
-  if (!portalReports.data && !box.querySelector(".pp-bar")) {
+  if (!portalReports.data && !box.querySelector(".pp-toolbar")) {
     box.innerHTML = `<p class="muted">${esc(t("pw_loading"))}</p>`;
   }
   try {
@@ -2803,6 +3119,7 @@ async function loadPortalReports() {
     if (portalReports.data) { renderPortalReports(); showPortalErr("pw-err", t("pw_load_failed") + portalErrText(e)); }
     else box.innerHTML = `<p class="muted">${esc(t("pw_load_failed"))}${esc(portalErrText(e))}</p>`;
   }
+  renderPortalStatus();
 }
 
 /** Same fetch -> blob -> a[download] pattern as the alert export: the request
@@ -2890,12 +3207,25 @@ async function onPortalReportsClick(e) {
     if (d.open) portalReports.openFindings.add(d.dataset.pwFind);
     else portalReports.openFindings.delete(d.dataset.pwFind);
   }, true);
+  const view = document.getElementById("view-portal");
+  if (view) view.addEventListener("click", onPortalViewClick);
 })();
+
+/** Re-renders the whole tab from cached data (language switch); no refetch. */
+function renderPortalTab() {
+  const lede = document.getElementById("view-portal");
+  if (lede) translateWithin(lede);
+  if (psetState.settings) renderPortalSettings(psetState.settings);
+  if (portalAdmin.users !== null) renderPortalUsers();
+  renderPortalReports();
+  renderPortalStatus();
+}
 
 function loadPortalPanels() {
   loadPortalSettings();
   loadPortalUsers();
   loadPortalReports();
+  probePortalLive();
 }
 
 /* ══════════════ API docs ══════════════ */
