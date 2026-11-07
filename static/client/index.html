@@ -14,18 +14,20 @@
 <a class="skip" href="#main" data-i18n="skip_link">Skip to main content</a>
 
 <header class="topbar">
-  <div class="brand">
-    <span class="logo" aria-hidden="true">SL</span>
-    <span class="brand-text"><strong>ESET SOC Lite</strong><span class="brand-sub" data-i18n="portal_name">Client Portal</span></span>
-  </div>
-  <div class="topbar-actions">
-    <span id="userName" class="user-name" hidden></span>
-    <div class="seg" role="group" data-i18n-aria="lang_label" aria-label="Language">
-      <button type="button" id="langJa" class="seg-btn" lang="ja">日本語</button>
-      <button type="button" id="langEn" class="seg-btn" lang="en">EN</button>
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">SL</span>
+      <span class="brand-text"><strong>ESET SOC Lite</strong><span class="brand-sub" data-i18n="portal_name">Client Portal</span></span>
     </div>
-    <button type="button" id="themeBtn" class="btn btn-ghost btn-icon" data-i18n-aria="theme_toggle" data-i18n-title="theme_toggle" aria-label="Toggle theme"><span aria-hidden="true">◐</span></button>
-    <button type="button" id="logoutBtn" class="btn" data-i18n="btn_logout" hidden>Sign out</button>
+    <div class="topbar-actions">
+      <span id="userName" class="user-name" hidden></span>
+      <div class="seg" role="group" data-i18n-aria="lang_label" aria-label="Language">
+        <button type="button" id="langJa" class="seg-btn" lang="ja">日本語</button>
+        <button type="button" id="langEn" class="seg-btn" lang="en">EN</button>
+      </div>
+      <button type="button" id="themeBtn" class="btn btn-ghost btn-icon" data-i18n-aria="theme_toggle" data-i18n-title="theme_toggle" aria-label="Toggle theme"><span aria-hidden="true">◐</span></button>
+      <button type="button" id="logoutBtn" class="btn btn-ghost" data-i18n="btn_logout" hidden>Sign out</button>
+    </div>
   </div>
 </header>
 
@@ -35,7 +37,7 @@
   <section id="loginView" class="login-wrap" hidden>
     <form id="loginForm" class="card login-card" novalidate>
       <h1 data-i18n="login_title">Sign in</h1>
-      <p class="muted" data-i18n="login_intro">Sign in to review alerts and download weekly reports.</p>
+      <p class="muted" data-i18n="login_intro">Sign in to see your security status, alerts and weekly reports.</p>
       <div id="loginNotice" class="notice" role="status" hidden></div>
       <div id="loginError" class="notice notice-error" role="alert" hidden></div>
       <label class="field" for="loginUser"><span data-i18n="login_username">Username</span>
@@ -45,68 +47,104 @@
         <input id="loginPass" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
       </label>
       <button type="submit" id="loginSubmit" class="btn btn-primary btn-block" data-i18n="login_submit">Sign in</button>
+      <p class="muted small" data-i18n="login_help">Forgot your password? Please contact your engineer.</p>
     </form>
   </section>
 
   <!-- Application -->
   <div id="appView" hidden>
-    <div class="tabs" role="tablist" data-i18n-aria="tabs_label" aria-label="Sections">
-      <button type="button" role="tab" id="tabAlerts" class="tab" aria-controls="panelAlerts" aria-selected="true" data-tab="alerts" data-i18n="tab_alerts">Alerts</button>
+    <nav class="tabs" role="tablist" data-i18n-aria="tabs_label" aria-label="Sections">
+      <button type="button" role="tab" id="tabOverview" class="tab" aria-controls="panelOverview" aria-selected="true" data-tab="overview" data-i18n="tab_overview">Overview</button>
+      <button type="button" role="tab" id="tabAlerts" class="tab" aria-controls="panelAlerts" aria-selected="false" tabindex="-1" data-tab="alerts" data-i18n="tab_alerts">All alerts</button>
       <button type="button" role="tab" id="tabReports" class="tab" aria-controls="panelReports" aria-selected="false" tabindex="-1" data-tab="reports" data-i18n="tab_reports">Weekly reports</button>
-    </div>
+    </nav>
 
-    <!-- Alerts -->
-    <section id="panelAlerts" role="tabpanel" aria-labelledby="tabAlerts">
-      <div class="card filters">
-        <fieldset class="sev-filter">
-          <legend data-i18n="filter_severity">Severity</legend>
-          <div id="sevFilter" class="sev-options"></div>
-        </fieldset>
-        <label class="field" for="fFrom"><span data-i18n="filter_from">From (JST)</span>
-          <input id="fFrom" type="date">
-        </label>
-        <label class="field" for="fTo"><span data-i18n="filter_to">To (JST)</span>
-          <input id="fTo" type="date">
-        </label>
-        <label class="field" for="fSort"><span data-i18n="filter_sort">Sort</span>
-          <select id="fSort">
-            <option value="desc" data-i18n="sort_desc">Newest first</option>
-            <option value="asc" data-i18n="sort_asc">Oldest first</option>
-          </select>
-        </label>
-        <label class="field" for="fSize"><span data-i18n="filter_page_size">Per page</span>
-          <select id="fSize">
-            <option value="10">10</option>
-            <option value="25" selected>25</option>
-            <option value="50">50</option>
-            <option value="100">100</option>
-          </select>
-        </label>
-        <div class="filter-actions">
-          <button type="button" id="clearFilters" class="btn btn-ghost" data-i18n="btn_clear_filters">Clear filters</button>
-          <button type="button" id="refreshBtn" class="btn" data-i18n="btn_refresh">Refresh</button>
-          <button type="button" id="exportBtn" class="btn btn-primary" data-i18n="btn_export">Export to Excel</button>
+    <!-- Overview: the one question a client opens the portal for -->
+    <section id="panelOverview" role="tabpanel" aria-labelledby="tabOverview">
+      <div id="ovStatus" class="status-card" data-tone="loading" role="status" aria-live="polite">
+        <span class="status-icon" aria-hidden="true"></span>
+        <div class="status-text">
+          <h1 id="ovHeadline" class="status-headline"></h1>
+          <p id="ovSub" class="status-sub"></p>
+        </div>
+        <button type="button" id="ovAction" class="btn btn-primary" hidden></button>
+      </div>
+
+      <h2 id="ovGlance" class="section-title"></h2>
+      <div id="ovTiles" class="tiles"></div>
+
+      <div class="ov-grid">
+        <section class="card" aria-labelledby="ovListTitle">
+          <h2 id="ovListTitle" data-i18n="ov_list_title">Recent high-priority alerts</h2>
+          <div id="ovListState" class="state" role="status" hidden></div>
+          <ul id="ovList" class="alert-list compact"></ul>
+          <button type="button" id="ovAllAlerts" class="btn btn-link" data-i18n="ov_see_all">See all alerts</button>
+        </section>
+        <section class="card" aria-labelledby="ovReportTitle">
+          <h2 id="ovReportTitle" data-i18n="ov_report_title">Latest weekly report</h2>
+          <div id="ovReport"></div>
+          <button type="button" id="ovAllReports" class="btn btn-link" data-i18n="ov_see_reports">All weekly reports</button>
+        </section>
+      </div>
+      <p class="help muted" data-i18n="ov_help">Questions about an alert? Please contact your engineer.</p>
+    </section>
+
+    <!-- All alerts -->
+    <section id="panelAlerts" role="tabpanel" aria-labelledby="tabAlerts" hidden>
+      <div class="toolbar">
+        <div id="countChips" class="chips" role="group" data-i18n-aria="counts_label" aria-label="Filter by severity"></div>
+        <div class="toolbar-right">
+          <label class="field field-inline" for="fPeriod"><span data-i18n="filter_period">Period</span>
+            <select id="fPeriod">
+              <option value="all" data-i18n="period_all">All time</option>
+              <option value="7" data-i18n="period_7">Last 7 days</option>
+              <option value="30" data-i18n="period_30">Last 30 days</option>
+              <option value="90" data-i18n="period_90">Last 90 days</option>
+              <option value="custom" data-i18n="period_custom">Choose dates…</option>
+            </select>
+          </label>
+          <button type="button" id="exportBtn" class="btn" data-i18n="btn_export">Download as Excel</button>
         </div>
       </div>
 
-      <div id="countChips" class="chips" role="group" data-i18n-aria="counts_label" aria-label="Alerts by severity"></div>
+      <div id="customDates" class="custom-dates" hidden>
+        <label class="field" for="fFrom"><span data-i18n="filter_from">From</span>
+          <input id="fFrom" type="date">
+        </label>
+        <label class="field" for="fTo"><span data-i18n="filter_to">To</span>
+          <input id="fTo" type="date">
+        </label>
+      </div>
 
-      <div class="card table-card">
-        <div id="alertsState" class="state" role="status" aria-live="polite" hidden></div>
-        <div class="table-scroll">
-          <table id="alertsTable" class="grid">
-            <caption class="sr-only" data-i18n="table_caption">Alert list</caption>
-            <thead><tr>
-              <th scope="col" data-i18n="col_time">Received (JST)</th>
-              <th scope="col" data-i18n="col_severity">Severity</th>
-              <th scope="col" data-i18n="col_detection">Detection</th>
-              <th scope="col" data-i18n="col_endpoint">Endpoint</th>
-              <th scope="col" class="col-summary" data-i18n="col_summary">AI summary</th>
-              <th scope="col" data-i18n="col_recs">Recommendations</th>
-            </tr></thead>
-            <tbody id="alertRows"></tbody>
-          </table>
+      <details id="moreFilters" class="disclose">
+        <summary data-i18n="more_options">More options</summary>
+        <div class="disclose-body more-grid">
+          <label class="field" for="fSort"><span data-i18n="filter_sort">Order</span>
+            <select id="fSort">
+              <option value="desc" data-i18n="sort_desc">Newest first</option>
+              <option value="asc" data-i18n="sort_asc">Oldest first</option>
+            </select>
+          </label>
+          <label class="field" for="fSize"><span data-i18n="filter_page_size">Alerts per page</span>
+            <select id="fSize">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <div class="more-actions">
+            <button type="button" id="clearFilters" class="btn btn-ghost" data-i18n="btn_clear_filters">Reset filters</button>
+            <button type="button" id="refreshBtn" class="btn btn-ghost" data-i18n="btn_refresh">Refresh</button>
+          </div>
         </div>
+      </details>
+
+      <p id="filterSummary" class="filter-summary muted" aria-live="polite"></p>
+
+      <div class="card list-card">
+        <div id="alertsState" class="state" role="status" aria-live="polite" hidden></div>
+        <ul id="alertRows" class="alert-list" data-i18n-aria="table_caption" aria-label="Alert list"></ul>
         <nav class="pager" data-i18n-aria="pager_label" aria-label="Pagination">
           <button type="button" id="pagePrev" class="btn" data-i18n="btn_prev">Previous</button>
           <span id="pageInfo" class="muted" aria-live="polite"></span>
@@ -117,26 +155,13 @@
 
     <!-- Weekly reports -->
     <section id="panelReports" role="tabpanel" aria-labelledby="tabReports" hidden>
-      <div class="card">
-        <h2 data-i18n="reports_title">Weekly reports</h2>
-        <p class="muted" data-i18n="reports_intro">Excel reports summarizing the alerts of each week.</p>
-        <div id="reportsState" class="state" role="status" aria-live="polite" hidden></div>
-        <div class="table-scroll">
-          <table id="reportsTable" class="grid" hidden>
-            <caption class="sr-only" data-i18n="reports_title">Weekly reports</caption>
-            <thead><tr>
-              <th scope="col" data-i18n="col_period">Period (JST)</th>
-              <th scope="col" data-i18n="col_generated">Generated (JST)</th>
-              <th scope="col" data-i18n="col_counts">Alerts</th>
-              <th scope="col" data-i18n="col_download">Download</th>
-            </tr></thead>
-            <tbody id="reportRows"></tbody>
-          </table>
-        </div>
-      </div>
+      <h1 class="page-title" data-i18n="reports_title">Weekly reports</h1>
+      <p class="muted lead" data-i18n="reports_intro">Each week we prepare an Excel file listing that week's low and medium alerts. High and critical alerts are counted here and can be seen under All alerts.</p>
+      <div id="reportsState" class="state card" role="status" aria-live="polite" hidden></div>
+      <ul id="reportRows" class="report-list"></ul>
     </section>
 
-    <p class="footnote muted" data-i18n="footer_tz">All times are shown in Japan Standard Time (JST).</p>
+    <p class="footnote muted" data-i18n="footer_tz">All times are Japan time (JST).</p>
   </div>
 </main>
 
@@ -152,21 +177,21 @@
 </dialog>
 
 <!-- Export -->
-<dialog id="exportDialog" class="modal" aria-labelledby="exportTitle">
+<dialog id="exportDialog" class="modal modal-narrow" aria-labelledby="exportTitle">
   <form id="exportForm" method="dialog" novalidate>
     <div class="modal-head">
-      <h2 id="exportTitle" data-i18n="export_title">Export alerts</h2>
+      <h2 id="exportTitle" data-i18n="export_title">Download alerts as Excel</h2>
       <button type="button" id="exportClose" class="btn btn-ghost" data-i18n="btn_close">Close</button>
     </div>
     <div class="modal-body">
-      <p id="exportScope" class="muted"></p>
+      <p id="exportScope" class="lead"></p>
       <div id="exportBody"></div>
       <div id="exportStatus" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="exportProgress" class="progress" hidden><span></span></div>
     </div>
     <div class="modal-foot">
       <button type="button" id="exportCancel" class="btn" data-i18n="btn_cancel">Cancel</button>
-      <button type="submit" id="exportGo" class="btn btn-primary" data-i18n="btn_export_start">Export</button>
+      <button type="submit" id="exportGo" class="btn btn-primary" data-i18n="btn_export_start">Download</button>
     </div>
   </form>
 </dialog>

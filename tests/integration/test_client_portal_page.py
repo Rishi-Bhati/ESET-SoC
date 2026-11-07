@@ -3,7 +3,10 @@ The client portal web UI (static/client/*), served at /client with its assets
 under /client/assets. These are static-file / header checks; the API behind the
 page is covered by the other client tests.
 """
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -104,3 +107,79 @@ def test_client_js_uses_the_session_header_and_jst():
     assert 'timeZone: "Asia/Tokyo"' in js
     assert "encodeURIComponent(" in js
     assert "console.log" not in js, "tokens must never reach the console"
+
+
+# ------------------------------------------------------- layout for a non-technical reader
+
+def _html() -> str:
+    return (CLIENT_DIR / "index.html").read_text(encoding="utf-8")
+
+
+def _tag(html: str, element_id: str) -> str:
+    m = re.search(rf'<[a-z]+\b[^>]*\bid="{element_id}"[^>]*>', html)
+    assert m, f"#{element_id} is missing"
+    return m.group(0)
+
+
+def test_overview_is_the_first_and_default_view():
+    html = _html()
+    tabs = re.findall(r'role="tab"[^>]*\bdata-tab="([a-z]+)"', html)
+    assert tabs == ["overview", "alerts", "reports"]
+    assert 'aria-selected="true"' in _tag(html, "tabOverview")
+    assert " hidden" not in _tag(html, "panelOverview")
+    for panel in ("panelAlerts", "panelReports"):
+        assert " hidden" in _tag(html, panel)
+    js = (CLIENT_DIR / "client.js").read_text(encoding="utf-8")
+    # Anything that is not a known tab route lands on the overview.
+    assert 'return "overview";' in js
+
+
+def test_secondary_alert_controls_sit_behind_a_disclosure():
+    html = _html()
+    more = re.search(r'<details id="moreFilters"[^>]*>(.*?)</details>', html, flags=re.S)
+    assert more, "the 'More options' disclosure is missing"
+    assert "<details id=\"moreFilters\" open" not in html, "secondary options start collapsed"
+    for control in ("fSort", "fSize", "clearFilters", "refreshBtn"):
+        assert f'id="{control}"' in more.group(1), f"#{control} should be under More options"
+    # Severity is chosen in one place (the count chips), not a second checkbox row.
+    assert 'id="sevFilter"' not in html
+    # Custom dates appear only when "Choose dates" is picked.
+    assert " hidden" in _tag(html, "customDates")
+
+
+def test_alert_detail_leads_with_plain_language_and_collapses_technical_fields():
+    js = _strip_comments((CLIENT_DIR / "client.js").read_text(encoding="utf-8"))
+    body = js[js.index("function renderDetail("):js.index("function onDetailClosed(")]
+    page = body[body.index("body.innerHTML = `"):]           # the rendered order
+    order = [page.index(k) for k in ('t("section_story")', 't("section_recs")', "${factsSectionHtml}",
+                                     "${aiMoreSectionHtml}", 't("section_technical")')]
+    assert order == sorted(order), "detail order: what happened, engineer advice, key facts, technical"
+    assert '<details class="disclose"><summary>${esc(t("section_technical"))}' in body
+    assert '<details class="disclose" open' not in body
+    # Every field the server sends stays reachable: the technical section lists the rest.
+    assert "!shown.has(k)" in body and "raw_alert_json" in body
+
+
+def test_portal_ui_calls_only_the_existing_client_api():
+    js = _strip_comments((CLIENT_DIR / "client.js").read_text(encoding="utf-8"))
+    paths = set(re.findall(r'api(?:Fetch)?\("(/[^"?]*)', js))
+    assert paths <= {"/auth/login", "/auth/logout", "/auth/me", "/alerts", "/alerts/", "/alerts/export",
+                     "/export/fields", "/reports", "/reports/"}, paths
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("name", ["client.js", "client-i18n.js"])
+def test_client_scripts_parse(name):
+    subprocess.run(["node", "--check", str(CLIENT_DIR / name)], check=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_english_wording_avoids_soc_jargon():
+    script = (
+        f"eval(require('fs').readFileSync({json.dumps(str(CLIENT_DIR / 'client-i18n.js'))},'utf8')"
+        "+';console.log(JSON.stringify(CLIENT_I18N.en))');"
+    )
+    en = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    for key, text in en.items():
+        for word in ("endpoint", "detection", "telemetry", "IOC", "triage"):
+            assert word.lower() not in text.lower(), f"{key}: {text!r} uses {word!r}"
