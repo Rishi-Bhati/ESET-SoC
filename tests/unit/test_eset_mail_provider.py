@@ -343,10 +343,11 @@ def test_recipients_are_cleaned_of_crlf_and_blanks():
     assert payload["to"] == ["soc@example.com", "bad@example.com"]
 
 
-def test_email_id_is_carried_for_cross_referencing():
-    provider = make_provider()
-    payload = provider.build_payload(make_message(email_id="em-42"))
-    assert payload["email_id"] == "em-42"
+def test_unsupported_fields_are_not_sent():
+    """The worker silently ignores reply_to, metadata and email_id — don't send them."""
+    payload = make_provider().build_payload(make_message(email_id="em-42"))
+    for field in ("email_id", "reply_to", "metadata"):
+        assert field not in payload
 
 
 # --------------------------------------------------------------------------
@@ -664,12 +665,16 @@ def test_lone_surrogate_does_not_break_serialisation():
 
 
 @pytest.mark.asyncio
-async def test_send_never_raises_on_unserialisable_content():
+async def test_send_never_raises_on_unserialisable_content(monkeypatch):
     """
     base.EmailDeliveryProvider requires send() to return a failed result rather
     than raise. An exception here would abort the dispatcher's entire sweep and
     leave the offending entry in the outbox to do it again on every later run.
     """
+    async def fake_post(self, url, **kwargs):
+        return _response(202, {"success": True, "id": 1})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)  # never touch the network
     provider = make_provider()
     result = await provider.send(
         make_message(subject=LONE_SURROGATE, body=LONE_SURROGATE, to=["a@b.test"])
@@ -683,8 +688,8 @@ async def test_send_never_raises_on_unserialisable_content():
 async def test_send_returns_permanent_failure_if_serialisation_fails(monkeypatch):
     provider = make_provider()
     monkeypatch.setattr(
-        EsetMailProvider, "build_request",
-        lambda self, payload: (_ for _ in ()).throw(UnicodeEncodeError("utf-8", "", 0, 1, "boom")),
+        EsetMailProvider, "serialise",
+        staticmethod(lambda payload: (_ for _ in ()).throw(UnicodeEncodeError("utf-8", "", 0, 1, "boom"))),
     )
     result = await provider.send(make_message())
     assert not result.success

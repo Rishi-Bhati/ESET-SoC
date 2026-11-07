@@ -239,6 +239,16 @@ class Settings(BaseSettings):
     # cold-start / SMTP handoff is less likely to trigger an ambiguous retry.
     email_timeout_seconds: int = Field(60, validation_alias="EMAIL_TIMEOUT_SECONDS")
     email_max_attempts: int = Field(3, validation_alias="EMAIL_MAX_ATTEMPTS")
+    # In-call retries of ONE handoff for network errors and 5xx responses, all
+    # carrying the same idempotency key (so a retry can never double-send) but a
+    # fresh timestamp, nonce and signature. Separate from EMAIL_MAX_ATTEMPTS,
+    # which counts sweeps by the dispatcher.
+    email_send_attempts: int = Field(3, validation_alias="EMAIL_SEND_ATTEMPTS")
+    # Delay before the first in-call retry; doubles each time (with jitter).
+    email_retry_backoff_seconds: float = Field(1.0, validation_alias="EMAIL_RETRY_BACKOFF_SECONDS")
+    # No new in-call retry starts after this long since the first request, so an
+    # outage cannot hold the dispatcher's sweep for minutes per queued email.
+    email_retry_budget_seconds: float = Field(90.0, validation_alias="EMAIL_RETRY_BUDGET_SECONDS")
     email_dispatch_interval_seconds: int = Field(60, validation_alias="EMAIL_DISPATCH_INTERVAL_SECONDS")
 
     # --- Email Sender Routing (mail service multi-provider support) ---

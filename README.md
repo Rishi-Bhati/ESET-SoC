@@ -347,7 +347,30 @@ EMAIL_SECURITY_MODE=full      # must match the worker's SECURITY_MODE
 EMAIL_TIMEOUT_SECONDS=60       # avoid ambiguous retry windows after slow worker starts
 EMAIL_MAX_ATTEMPTS=3          # handoff attempts, not delivery retries
 EMAIL_DISPATCH_INTERVAL_SECONDS=60
+EMAIL_SEND_ATTEMPTS=3         # in-call retries of one handoff (network errors / 5xx)
+EMAIL_RETRY_BACKOFF_SECONDS=1 # first retry delay; doubles each time
+EMAIL_RETRY_BUDGET_SECONDS=90 # no new retry starts after this long
 ```
+
+#### Attachments, idempotency and retries
+
+- **Attachments.** `EmailMessage.attachments` are sent as the worker's
+  `attachments` array (`{filename, content, mimeType}`). They are checked first
+  against the worker's limits (at most 20; filename 1-255 chars; valid base64;
+  body + base64 attachments under ~1.9 MB, about 1.4 MB of raw file), and a
+  message over them fails permanently without a request. Today the only
+  attachment is the weekly report workbook (`weekly_report_email_enabled` and
+  `email_attachments_enabled`); if it is too big for the worker the report is
+  still sent, pointing at the portal.
+- **Idempotency.** Each send carries an `idempotency_key` in the signed body,
+  derived from `email_id` plus the recipient set, so re-queuing the same
+  alert for the same recipients returns the original email (200,
+  `idempotent_replay`) instead of sending a second. The worker remembers keys
+  24 hours. The same key with different content is a 409 and is dropped.
+- **Retries.** Network errors and 5xx are retried in the same call with the same
+  key and a fresh timestamp, nonce and signature; other 4xx are not. Failures are
+  classified on the worker's error `code`, and `code` and `reason` are logged.
+- `reply_to`, `metadata` and `email_id` are not sent: the worker ignores them.
 
 #### Choosing a sender (optional)
 

@@ -45,10 +45,39 @@ falling over to the next by priority when a send fails. This platform can either
 say nothing (the service applies its own default/priority order) or pin a
 specific sender. A pinned sender must be active on the service, or it answers
 400 "Unauthorized Sender/Provider" — which is a permanent, non-retryable error.
+
+Attachments
+-----------
+`message.attachments` go out as the worker's `attachments` array
+(`{filename, content (base64), mimeType}`; our `content_type` is the worker's
+`mimeType`). They are validated against the worker's documented limits first
+(src/services/email_delivery/limits.py), so an oversized or malformed attachment
+fails fast and permanently here rather than as a 400/413 from the worker.
+
+Idempotency and retries
+-----------------------
+Every send carries an `idempotency_key` in the signed JSON body (the body field
+is the only form allowed in signed/full mode — the `Idempotency-Key` header is
+not covered by the HMAC). The key is derived from the message (see
+`idempotency_key_for`), so the same logical email always has the same key: a
+repeat returns 200 + `idempotent_replay: true` with the original id instead of a
+second email, and the worker remembers keys for 24 hours by default.
+
+Retry policy (Email Service README, "Idempotent Sends"): network errors and 5xx
+responses are retried IN-CALL up to EMAIL_SEND_ATTEMPTS times with exponential
+backoff, reusing the SAME payload and idempotency key but with a fresh
+timestamp, nonce and signature on every attempt. Other 4xx responses are never
+retried in-call. Errors are classified on the worker's stable `code`
+(`{ error, code, reason }`), not on message text.
+
+The worker silently ignores `reply_to`, `metadata` and `email_id`, so none of
+them is sent.
 """
+import asyncio
 import hashlib
 import hmac
 import json
+import random
 import re
 import time
 import uuid
@@ -56,6 +85,7 @@ import httpx
 import structlog
 from src.config import settings
 from src.models.email_message import EmailMessage
+from src.services.email_delivery import limits
 from src.services.email_delivery.base import DeliveryResult, EmailDeliveryProvider
 
 logger = structlog.get_logger(__name__)
@@ -77,6 +107,34 @@ SUBJECT_MAX_CHARS = 1000
 
 _CRLF = re.compile(r"[\r\n\x00]+")
 
+# The worker accepts 1-255 printable ASCII characters (0x21-0x7e), no spaces.
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[\x21-\x7e]{1,255}$")
+IDEMPOTENCY_KEY_PREFIX = "esetsoc:"
+
+# Error `code`s (Email Service README, "Error Responses") that are worth another
+# attempt on a LATER dispatcher sweep. 5xx codes (internal_error,
+# server_misconfigured) are also retried in-call; the two auth codes below are
+# not retried in-call (they are 4xx) but are transient in practice: every
+# attempt carries a fresh timestamp and nonce, so a corrected clock or a
+# replayed nonce recovers by itself, and the idempotency key makes the repeat
+# safe.
+SWEEP_RETRYABLE_CODES = frozenset({
+    "internal_error", "server_misconfigured", "timestamp_skew", "nonce_reused", "rate_limited",
+})
+
+# Everything else the worker documents for 4xx is permanent: the same input
+# fails identically. Listed for the log/tests; classification treats any 4xx
+# with a code outside SWEEP_RETRYABLE_CODES as permanent.
+PERMANENT_CODES = frozenset({
+    "validation_error", "invalid_json", "invalid_idempotency_key", "unauthorized_sender",
+    "bad_request", "invalid_api_key", "invalid_header", "invalid_nonce", "missing_signature",
+    "invalid_signature", "unauthorized", "forbidden", "not_found",
+    "idempotency_key_conflict", "payload_too_large",
+})
+
+# Reported by this client (never by the worker) when limits.py rejects a message.
+CODE_CLIENT_LIMIT = "client_limit_exceeded"
+
 
 class EsetMailProvider(EmailDeliveryProvider):
     name = "eset_mail"
@@ -92,6 +150,9 @@ class EsetMailProvider(EmailDeliveryProvider):
         sender_name: str | None = None,
         provider_id: str | None = None,
         routing_via_headers: bool | None = None,
+        send_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
+        retry_budget_seconds: float | None = None,
     ) -> None:
         self.url = (url if url is not None else settings.email_api_url).strip()
         self.api_key = (api_key if api_key is not None else settings.email_api_key).strip()
@@ -111,6 +172,17 @@ class EsetMailProvider(EmailDeliveryProvider):
             settings.email_routing_via_headers
             if routing_via_headers is None
             else routing_via_headers
+        )
+        self.send_attempts = max(
+            1, settings.email_send_attempts if send_attempts is None else send_attempts
+        )
+        self.retry_backoff_seconds = max(
+            0.0, settings.email_retry_backoff_seconds
+            if retry_backoff_seconds is None else retry_backoff_seconds
+        )
+        self.retry_budget_seconds = (
+            settings.email_retry_budget_seconds
+            if retry_budget_seconds is None else retry_budget_seconds
         )
 
     # ------------------------------------------------------------------ config
@@ -209,18 +281,56 @@ class EsetMailProvider(EmailDeliveryProvider):
         """
         return value.encode("utf-8", "replace").decode("utf-8")
 
-    def build_payload(self, message: EmailMessage) -> dict:
-        """
-        The JSON the worker receives. Split out from send() so the wire contract
-        is directly testable.
-        """
-        recipients = [
+    @staticmethod
+    def _clean_recipients(message: EmailMessage) -> list[str]:
+        return [
             cleaned
             for cleaned in (
-                self._encodable(_CRLF.sub("", addr or "")).strip() for addr in message.to
+                EsetMailProvider._encodable(_CRLF.sub("", addr or "")).strip()
+                for addr in message.to
             )
             if cleaned
         ]
+
+    @classmethod
+    def idempotency_key_for(cls, message: EmailMessage) -> str:
+        """
+        The idempotency key for one logical email: stable across every retry of
+        that email (in-call, dispatcher sweep, or a pipeline re-run that composes
+        the same alert again), different for a different email.
+
+        Built from `email_id` (alert correlation id + notification type, or
+        weekly-report-<period>[-rN]) plus a digest of the sorted recipient set,
+        so the same alert to the same recipients is the same key regardless of
+        recipient order, while a changed recipient list is a new logical email.
+        `message.idempotency_key` overrides it when set.
+        """
+        if message.idempotency_key:
+            explicit = message.idempotency_key.strip()
+            if not IDEMPOTENCY_KEY_PATTERN.match(explicit):
+                raise limits.MailLimitError(
+                    "idempotency_key must be 1-255 printable ASCII characters without spaces"
+                )
+            return explicit
+        recipients = sorted({addr.lower() for addr in cls._clean_recipients(message)})
+        digest = hashlib.sha256("\n".join(recipients).encode("utf-8")).hexdigest()[:12]
+        ident = re.sub(r"[^\x21-\x7e]", "_", message.email_id or "")
+        key = f"{IDEMPOTENCY_KEY_PREFIX}{ident}:{digest}"
+        if not ident or len(key) > 255:
+            full = hashlib.sha256((message.email_id or "").encode("utf-8")).hexdigest()
+            key = f"{IDEMPOTENCY_KEY_PREFIX}{full}:{digest}"
+        return key
+
+    def build_payload(self, message: EmailMessage) -> dict:
+        """
+        The JSON the worker receives. Split out from send() so the wire contract
+        is directly testable. Raises limits.MailLimitError for a message the
+        worker is documented to reject (bad/oversized attachments or body).
+        """
+        recipients = self._clean_recipients(message)
+        body_value = self._encodable(message.html) if message.html else self._encodable(message.body)
+        wire_attachments = limits.prepare_attachments(message.attachments)
+        limits.check_sizes(body_value, wire_attachments)
 
         payload: dict = {
             "to": recipients,
@@ -230,13 +340,13 @@ class EsetMailProvider(EmailDeliveryProvider):
             # text otherwise, under `body` — never plain text under `html`. The
             # worker picks the MIME type by sniffing the string
             # (providers.ts: isHtml), and the HTML document starts with "<".
-            **({"html": self._encodable(message.html)} if message.html
-               else {"body": self._encodable(message.body)}),
-            # Carried for cross-referencing this platform's record with the
-            # worker's log. The worker does not deduplicate on it — see the
-            # duplicate-on-timeout note in send().
-            "email_id": message.email_id,
+            **({"html": body_value} if message.html else {"body": body_value}),
+            # Signed (it is in the body the HMAC covers) and identical on every
+            # retry of this email. See idempotency_key_for().
+            "idempotency_key": self.idempotency_key_for(message),
         }
+        if wire_attachments:
+            payload["attachments"] = wire_attachments
 
         # Sender routing. `from_name` always travels in the body: the worker
         # reads it from the body in both routing modes (there is no sender-name
@@ -256,13 +366,24 @@ class EsetMailProvider(EmailDeliveryProvider):
 
         return payload
 
-    def build_request(self, payload: dict) -> tuple[bytes, dict[str, str]]:
+    @staticmethod
+    def serialise(payload: dict) -> bytes:
+        # Compact separators: whitespace would change the hash the worker recomputes.
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    def build_request(
+        self, payload: dict, body_bytes: bytes | None = None,
+    ) -> tuple[bytes, dict[str, str]]:
         """
         Returns the exact body bytes to transmit and their matching headers.
         Split out from send() so the signing scheme is directly testable.
+
+        Called once PER ATTEMPT: the body (and so the idempotency key) is the same
+        every time, but the timestamp, nonce and signature are generated afresh —
+        a nonce is single-use on the worker and the timestamp must be current.
         """
-        # Compact separators: whitespace would change the hash the worker recomputes.
-        body_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if body_bytes is None:
+            body_bytes = self.serialise(payload)
 
         headers = {
             "X-API-Key": self.api_key,
@@ -291,6 +412,11 @@ class EsetMailProvider(EmailDeliveryProvider):
 
     # ------------------------------------------------------------------ send
 
+    def _retry_delay(self, retry_number: int) -> float:
+        """Exponential backoff with +-20% jitter; retry_number starts at 1."""
+        base = self.retry_backoff_seconds * (2 ** (retry_number - 1))
+        return base * random.uniform(0.8, 1.2)
+
     async def send(self, message: EmailMessage) -> DeliveryResult:
         ready, reason = self.is_configured()
         if not ready:
@@ -308,7 +434,22 @@ class EsetMailProvider(EmailDeliveryProvider):
                 return DeliveryResult.fail(
                     "No valid recipient addresses on the message", retryable=False
                 )
-            body_bytes, headers = self.build_request(payload)
+            body_bytes = self.serialise(payload)
+            limits.check_sizes(
+                payload.get("html") or payload.get("body") or "",
+                payload.get("attachments") or [], request_bytes=len(body_bytes),
+            )
+        except limits.MailLimitError as e:
+            # Documented worker limits: it would answer 400/413, which is permanent.
+            logger.error(
+                "email_rejected_by_client_limits",
+                email_id=message.email_id, code=CODE_CLIENT_LIMIT, reason=str(e),
+                attachment_count=len(message.attachments),
+            )
+            return DeliveryResult.fail(
+                f"Message exceeds the mail service's limits: {e}",
+                retryable=False, code=CODE_CLIENT_LIMIT, reason=str(e),
+            )
         except Exception as e:
             logger.error(
                 "email_payload_unserialisable",
@@ -318,26 +459,60 @@ class EsetMailProvider(EmailDeliveryProvider):
                 f"Could not serialise message for handoff: {e}", retryable=False
             )
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                # content= (not json=) so the transmitted bytes are the signed bytes
-                response = await client.post(self.url, content=body_bytes, headers=headers)
-        except httpx.TimeoutException as e:
-            # The outcome is genuinely ambiguous: the worker may already have
-            # queued this email. It does not deduplicate on `email_id`, so the
-            # retry the dispatcher schedules can produce a second copy. That is
-            # the deliberate trade — a duplicate notification is preferable to a
-            # silently dropped one. EMAIL_TIMEOUT_SECONDS is set generously to
-            # keep this window rare.
-            logger.warning(
-                "email_handoff_timeout_ambiguous",
-                email_id=message.email_id, timeout_seconds=self.timeout,
-            )
-            return DeliveryResult.fail(f"Timeout contacting mail service: {e}")
-        except Exception as e:
-            return DeliveryResult.fail(f"Transport error: {e}")
+        idem_key = payload["idempotency_key"]
+        started = time.monotonic()
+        result: DeliveryResult | None = None
+        attempt = 0
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            while True:
+                attempt += 1
+                try:
+                    # Fresh timestamp + nonce + signature every attempt; same body.
+                    _, headers = self.build_request(payload, body_bytes)
+                    # content= (not json=) so the transmitted bytes are the signed bytes
+                    response = await client.post(self.url, content=body_bytes, headers=headers)
+                except httpx.HTTPError as e:
+                    # Network error / timeout. The worker may or may not have
+                    # queued the email; the idempotency key is what makes the
+                    # retry safe (a repeat returns the original instead of a copy).
+                    timed_out = isinstance(e, httpx.TimeoutException)
+                    if timed_out:
+                        logger.warning(
+                            "email_handoff_timeout_ambiguous",
+                            email_id=message.email_id, timeout_seconds=self.timeout,
+                            idempotency_key=idem_key, attempt=attempt,
+                        )
+                    label = "Timeout contacting mail service" if timed_out else "Transport error"
+                    result = DeliveryResult.fail(f"{label}: {e!r}" if not str(e) else f"{label}: {e}")
+                    in_call_retry = True
+                except Exception as e:
+                    # Not a network failure (programming/signing error): not worth
+                    # hammering, but still left for a later sweep.
+                    return DeliveryResult.fail(f"Transport error: {e}")
+                else:
+                    result = self._interpret(response, message)
+                    # Documented policy: retry 5xx, never other 4xx.
+                    in_call_retry = (not result.success) and response.status_code >= 500
 
-        return self._interpret(response, message)
+                result.request_attempts = attempt
+                if not in_call_retry or attempt >= self.send_attempts:
+                    return result
+
+                delay = self._retry_delay(attempt)
+                if time.monotonic() - started + delay > self.retry_budget_seconds:
+                    logger.warning(
+                        "email_handoff_retry_budget_exhausted",
+                        email_id=message.email_id, attempts=attempt,
+                        budget_seconds=self.retry_budget_seconds,
+                    )
+                    return result
+                logger.warning(
+                    "email_handoff_retrying",
+                    email_id=message.email_id, idempotency_key=idem_key,
+                    attempt=attempt, next_delay_seconds=round(delay, 2),
+                    status_code=result.status_code, code=result.code, error=result.error,
+                )
+                await asyncio.sleep(delay)
 
     @staticmethod
     def _is_permanent_rejection(detail: str) -> bool:
@@ -401,48 +576,79 @@ class EsetMailProvider(EmailDeliveryProvider):
             or "server misconfiguration" in lowered  # service's own API_SECRET unset
         )
 
+    @staticmethod
+    def _classify(status_code: int, code: str | None, classify_text: str) -> bool:
+        """
+        Whether a failed handoff is worth retrying on a later sweep.
+
+        With a `code` (every error from the current worker has one): 5xx is
+        retryable; 4xx is permanent unless the code is in SWEEP_RETRYABLE_CODES.
+        Without one (a worker that predates 1.1.0, or a non-JSON edge/proxy page)
+        the status and the legacy message heuristics decide.
+        """
+        if status_code >= 500:
+            return True
+        if code:
+            return code in SWEEP_RETRYABLE_CODES
+        if status_code == 400:
+            return not EsetMailProvider._is_permanent_rejection(classify_text)
+        if status_code == 401:
+            return EsetMailProvider._is_retryable_auth_failure(classify_text)
+        if 400 <= status_code < 500:
+            return status_code == 429
+        return True  # unexpected 1xx/3xx: leave it queued
+
     def _interpret(self, response: httpx.Response, message: EmailMessage) -> DeliveryResult:
         try:
             data = response.json()
         except Exception:
             data = {}
+        if not isinstance(data, dict):
+            data = {}
 
         if response.status_code in (200, 202) and data.get("success"):
             # 202 means the worker has persisted it in its own queue; delivery
             # (and any retrying/failover across its providers) is its
-            # responsibility from this point on.
+            # responsibility from this point on. 200 + idempotent_replay means
+            # this idempotency key was already accepted: same id, no second email.
             remote_id = str(data.get("id")) if data.get("id") is not None else None
+            replay = bool(data.get("idempotent_replay")) or (
+                response.headers.get("Idempotent-Replayed", "").lower() == "true"
+            )
             logger.info(
                 "email_handoff_accepted",
                 email_id=message.email_id, remote_id=remote_id,
                 status_code=response.status_code,
                 target_provider=data.get("targetProvider"),
+                idempotency_key=data.get("idempotency_key"),
+                idempotent_replay=replay,
             )
-            return DeliveryResult.ok(remote_id, response.status_code)
+            return DeliveryResult.ok(remote_id, response.status_code, idempotent_replay=replay)
 
-        detail = data.get("reason") or data.get("error") or data.get("message") or response.text[:300]
+        # Error shape: { error, code, reason? } — branch on `code`, log `reason`.
+        error_text = str(data["error"]) if data.get("error") else ""
+        reason_text = str(data["reason"]) if data.get("reason") else ""
+        code = str(data["code"]) if data.get("code") else None
+        fallback = str(data.get("message") or "") or response.text[:300]
+        detail = reason_text or error_text or fallback
+        full_detail = ": ".join(t for t in (error_text, reason_text) if t) or fallback
 
-        # 401/400 mean the request itself is wrong — retrying identical input
-        # will fail identically, so don't burn attempts on it.
-        # The service splits its rejection across `error` (the category) and
-        # `reason` (the specifics); classify on both rather than on whichever
-        # one happened to win the `detail` fallback above.
-        classify_on = " ".join(
-            str(data.get(field, "")) for field in ("error", "reason", "message")
-        ) or str(detail)
+        classify_on = " ".join(t for t in (error_text, reason_text, str(data.get("message", ""))) if t) \
+            or str(detail)
+        retryable = self._classify(response.status_code, code, classify_on)
 
-        retryable = True
-        if response.status_code == 400:
-            retryable = not self._is_permanent_rejection(classify_on)
-        elif response.status_code == 401:
-            retryable = self._is_retryable_auth_failure(classify_on)
-
-        logger.error(
+        (logger.warning if retryable else logger.error)(
             "email_handoff_rejected",
             email_id=message.email_id, status_code=response.status_code,
+            code=code, error=error_text or None, reason=reason_text or None,
             detail=str(detail)[:300], retryable=retryable,
         )
-        return DeliveryResult.fail(str(detail), response.status_code, retryable)
+        # `error` is what the dashboard shows and what the delivery record stores.
+        message_text = f"[{code}] {full_detail}" if code else str(detail)
+        return DeliveryResult.fail(
+            message_text[:500] if code else str(detail), response.status_code, retryable,
+            code=code, reason=reason_text or None,
+        )
 
     # ------------------------------------------------------------------ status
 

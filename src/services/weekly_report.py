@@ -37,6 +37,7 @@ from typing import Any, NamedTuple
 import structlog
 from src.config import reports_dir
 from src.models.email_message import EmailAttachment, EmailMessage
+from src.services.email_delivery import limits as mail_limits
 from src.services import alert_catalog, client_workbook, email_outbox
 from src.services.alert_catalog import BundleQuery
 from src.services.client_fields import WEEKLY_FIELDS
@@ -430,11 +431,26 @@ async def _queue_email(content: ReportContent, email_id: str) -> tuple[str, dict
                 )
             else:
                 too_large = True
+    portal_url = await runtime_settings.get("client_portal_url")
     message = compose_email(
         content, email_id=email_id, recipients=recipients,
-        portal_url=await runtime_settings.get("client_portal_url"),
-        attachment=attachment, attachment_too_large=too_large,
+        portal_url=portal_url, attachment=attachment, attachment_too_large=too_large,
     )
+    if attachment is not None:
+        # The mail service rejects (413) anything over ~1.4 MB of raw attachment
+        # once base64/JSON overhead and the HTML body are counted, whatever
+        # email_attachment_max_bytes says. Checking the real composed message
+        # here means the report still goes out — pointing at the portal — instead
+        # of being dead-lettered at handoff.
+        violation = mail_limits.message_violation(message)
+        if violation:
+            logger.warning("weekly_report_attachment_exceeds_mail_limits",
+                           email_id=email_id, size_bytes=attachment.size_bytes, reason=violation)
+            attachment, too_large = None, True
+            message = compose_email(
+                content, email_id=email_id, recipients=recipients,
+                portal_url=portal_url, attachment=None, attachment_too_large=True,
+            )
     # The claim already makes this single-flight; this guards the narrow window of a
     # crash between queueing and recording the status (the stale claim is re-run).
     if await delivery_store.get_delivery(email_id) is None:

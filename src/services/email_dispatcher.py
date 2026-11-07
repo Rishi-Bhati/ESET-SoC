@@ -135,8 +135,19 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
     await events.emit("email_sending", {"email_id": message.email_id})
 
     result = await provider.send(message)
+    # getattr: tolerate a provider whose result predates the structured fields.
+    code = getattr(result, "code", None)
+    reason = getattr(result, "reason", None)
 
     if result.success:
+        if getattr(result, "idempotent_replay", False):
+            # The mail service had already accepted this logical email (an earlier
+            # attempt whose response was lost, or a re-queued copy). It returned
+            # the original id and queued nothing new — exactly the point of the key.
+            logger.info(
+                "email_handoff_idempotent_replay",
+                email_id=message.email_id, remote_id=result.remote_id,
+            )
         await email_outbox.remove_email(message.email_id)
         await delivery_store.record_attempt(
             message.email_id, delivery_store.ACCEPTED, remote_id=result.remote_id
@@ -153,6 +164,22 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
             message, "ok", f"{message.notification_type} accepted (#{result.remote_id})",
         )
         return "accepted"
+
+    if code == "idempotency_key_conflict":
+        # The key was already used for a *different* message, i.e. a copy of this
+        # logical email was accepted earlier and this one differs from it (e.g.
+        # the alert was re-processed and the AI text changed). Re-sending would
+        # not help, and if the earlier one was ACCEPTED it must not be flipped
+        # to FAILED: drop the duplicate and keep that record.
+        existing = await delivery_store.get_delivery(message.email_id)
+        if existing and existing["status"] == delivery_store.ACCEPTED:
+            await email_outbox.remove_email(message.email_id)
+            logger.warning(
+                "email_duplicate_suppressed",
+                email_id=message.email_id, remote_id=existing.get("remote_id"),
+                code=code, reason=reason,
+            )
+            return "duplicate"
 
     attempts = await delivery_store.get_attempts(message.email_id) + 1
     exhausted = attempts >= settings.email_max_attempts
@@ -172,12 +199,15 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
             "error": result.error,
             "attempts": attempts,
             "permanent": permanent,
+            "code": code,
+            "reason": reason,
         })
         await _emit_send_stage(message, "failed", (result.error or "handoff failed")[:120])
         logger.error(
             "email_handoff_gave_up",
             email_id=message.email_id, attempts=attempts,
             permanent=permanent, error=result.error,
+            code=code, reason=reason, status_code=getattr(result, "status_code", None),
         )
         return "failed"
 
@@ -188,6 +218,7 @@ async def _hand_off(provider: Any, message: EmailMessage) -> str:
     logger.warning(
         "email_handoff_will_retry",
         email_id=message.email_id, attempts=attempts, error=result.error,
+        code=code, status_code=getattr(result, "status_code", None),
     )
     return "retry"
 

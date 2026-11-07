@@ -342,6 +342,26 @@ async def test_attachment_gated_by_runtime_settings_and_size(max_bytes, attached
     assert (await store.get(KEY))["attachment_included"] is attached
 
 
+async def test_attachment_over_the_mail_service_limits_falls_back_to_the_portal(monkeypatch):
+    """
+    email_attachment_max_bytes is operator-set (up to 25 MB) but the mail service
+    rejects a stored email over ~1.9 MB. The report must still go out, without
+    the file, instead of being dead-lettered at handoff.
+    """
+    from src.services.email_delivery import limits
+    monkeypatch.setattr(limits, "MAX_STORED_EMAIL_BYTES", 5_000)   # smaller than any workbook
+    await enable(email=True)
+    await settings_store.update_recipients({"weekly_report_emails": "w@example.jp"})
+    await runtime_settings.set("email_attachments_enabled", True)
+    await runtime_settings.set("email_attachment_max_bytes", 25_000_000)
+    await add_alert("low1", "LOW", IN_PERIOD)
+    await wr.generate_report(KEY)
+    [mail] = await email_outbox.list_emails()
+    msg = EmailMessage(**mail)
+    assert msg.attachments == [] and "ファイルサイズが大きいため" in msg.body
+    assert (await store.get(KEY))["attachment_included"] is False
+
+
 async def test_no_recipients_marks_the_run_and_queues_nothing():
     await enable(email=True)
     await settings_store.update_recipients({"weekly_report_emails": "", "client_notification_emails": ""})

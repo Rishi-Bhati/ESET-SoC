@@ -34,3 +34,8 @@ class EmailMessage(BaseModel):
     # Files to attach (e.g. the weekly report workbook). Absent in outbox files
     # written before attachments existed, which still load with an empty list.
     attachments: list[EmailAttachment] = Field(default_factory=list)
+    # Overrides the idempotency key sent to the mail service. Normally unset: the
+    # provider derives a stable key from email_id + recipients (see
+    # EsetMailProvider.idempotency_key_for), which is the same on every retry of
+    # the same logical email.
+    idempotency_key: str | None = None

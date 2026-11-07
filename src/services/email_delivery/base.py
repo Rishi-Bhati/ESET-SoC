@@ -18,14 +18,31 @@ class DeliveryResult:
     error: str | None = None
     status_code: int | None = None
     retryable: bool = True           # False for permanent errors (bad auth, bad payload)
+    # The mail service's stable machine-readable error code (e.g. "validation_error",
+    # "idempotency_key_conflict") and its human detail, when it supplied them.
+    code: str | None = None
+    reason: str | None = None
+    # True when the service recognised the idempotency key and returned the
+    # original email instead of queueing a second one.
+    idempotent_replay: bool = False
+    # HTTP requests actually made for this result (> 1 when retried in-call).
+    request_attempts: int = 1
 
     @classmethod
-    def ok(cls, remote_id: str | None, status_code: int | None = None) -> "DeliveryResult":
-        return cls(success=True, remote_id=remote_id, status_code=status_code)
+    def ok(
+        cls, remote_id: str | None, status_code: int | None = None,
+        idempotent_replay: bool = False,
+    ) -> "DeliveryResult":
+        return cls(success=True, remote_id=remote_id, status_code=status_code,
+                   idempotent_replay=idempotent_replay)
 
     @classmethod
-    def fail(cls, error: str, status_code: int | None = None, retryable: bool = True) -> "DeliveryResult":
-        return cls(success=False, error=error, status_code=status_code, retryable=retryable)
+    def fail(
+        cls, error: str, status_code: int | None = None, retryable: bool = True,
+        code: str | None = None, reason: str | None = None,
+    ) -> "DeliveryResult":
+        return cls(success=False, error=error, status_code=status_code,
+                   retryable=retryable, code=code, reason=reason)
 
 
 class EmailDeliveryProvider(ABC):
