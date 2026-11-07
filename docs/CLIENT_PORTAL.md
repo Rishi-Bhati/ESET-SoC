@@ -50,28 +50,30 @@ Manage accounts in the **Client accounts** panel on the dashboard's Client Porta
 
 - **Portal address and switch (At a glance panel):** the client portal URL with a **Copy** button, and the portal state with an **Enable portal** or **Disable portal** button. If the switch cannot be turned on, the reason is shown next to it (for example, a dashboard key that is too short). If the portal is on but the server is refusing sign-ins, the state reads **On, but refusing sign-ins**.
 - **Add an account:** press **Add account**, then enter a username and, optionally, a display name and a password. Leave the password blank to generate a strong one.
-- **Accounts table:** account (username and display name), status (**Active**, **Disabled** or **Locked**), last sign-in in JST (with the number of active sessions when there are any), and actions.
+- **Accounts table:** account (username and display name), status (**Active**, **Disabled** or **Locked**; under **Locked** it says how many addresses are locked out and whether the whole account is slowed down, see [Sign-in protection](#sign-in-protection)), last sign-in in JST (with the number of active sessions when there are any), and actions.
 - **Actions per account:** **Reset password**, **Enable** (shown when the account is disabled) and **Unlock** (shown when it is locked) are always visible; **Disable**, **Sign out everywhere** and **Delete** are under **More**. Reset password opens a field: type a new password, or leave it blank to generate one. Delete asks you to confirm in the same row.
 - **Generated and reset passwords** are shown once, in a box above the table, with a **Copy** button. Passwords are not stored, so the box cannot show one again after it is dismissed, or after you leave the Client Portal tab. If a password is lost, reset it.
 
 The same actions as API calls, as an alternative for scripts:
 
 ```bash
-# List accounts (id, username, disabled, locked, locked_until, active_sessions)
+# List accounts (id, username, disabled, locked, locked_until, locked_addresses, throttled,
+# throttled_until, failed_attempts, active_sessions)
 curl -s "${H[@]}" "$BASE/dashboard/api/portal/users"
 
 # Create an account. Omit "password" to have one generated.
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users" \
   -d '{"username":"tanaka.a","display_name":"田中様（A社）"}'        # 201; "generated_password" is returned once
 
-# Reset a password (omit the body to generate one). Also clears any lockout and ends all sessions.
+# Reset a password (omit the body to generate one). Also clears every lock-out, forgets the
+# account's known addresses and ends all sessions.
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/password" -d '{}'
 
 # Disable or enable an account (disabling also ends its sessions)
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/disable"
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/enable"
 
-# Clear a lockout
+# Clear every lock-out of the account: all locked-out addresses and the account-wide slow-down
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/unlock"
 
 # End all sessions without changing anything else
@@ -86,7 +88,20 @@ Rules:
 - **Username:** 3 to 64 characters, letters, digits, `.` `_` `@` `-`. Unique, ignoring case.
 - **Password:** 12 to 256 characters, and not the same as the username. Passwords are stored only as scrypt hashes.
 - **Generated passwords** are 24 characters and are returned only in the response that creates or resets the account. Pass them to the client through a channel you trust, and do not paste them into tickets or chat logs.
-- **Audit log** (structlog): `client_user_created`, `client_user_password_reset`, `client_user_disabled`, `client_user_enabled`, `client_user_unlocked`, `client_user_sessions_revoked`, `client_user_deleted`. Passwords and tokens are never logged.
+- **Audit log** (structlog): `client_user_created`, `client_user_password_reset`, `client_user_disabled`, `client_user_enabled`, `client_user_unlocked`, `client_user_sessions_revoked`, `client_user_deleted`, each with `user_id` and `account` (the stored username). Passwords and tokens are never logged.
+
+## Sign-in protection
+
+Wrong passwords are counted per **account and client address** together. Behind Caddy the address is the one the trusted proxy reports (`FORWARDED_ALLOW_IPS`); IPv6 addresses are grouped by `/64`.
+
+- **Per address:** after `client_login_max_failures` (default 10) wrong passwords in a row from one address, **that address** is locked out of **that account** for `client_login_lockout_minutes` (default 15). The same account still signs in normally from any other address. So someone who only knows a client's username cannot lock the client out.
+- **Account-wide backstop:** if the account collects `client_login_account_max_failures` (default 100) wrong passwords from all addresses together within `client_login_account_window_minutes` (default 60), attempts on it are **slowed down**, not locked: after each further wrong password, attempts are refused for 1 s, then 2 s, 4 s and so on, up to `client_login_account_max_delay_seconds` (default 60). The count restarts when the window ends. An address that signed in to the account successfully in the last 30 days is never slowed down (it can still be locked out by its own wrong passwords).
+- A refused attempt (locked-out address, slowed-down account, disabled account, unknown username, wrong password) always gets the same `401 Invalid username or password`, and takes the same time.
+- **Unlock** (dashboard or `POST .../unlock`) clears all of the account's locked-out addresses and the slow-down. **Reset password** does the same and also forgets the account's known addresses.
+- Every address is also limited by the shared `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS` limit (429 for that address).
+- Old per-address records are removed automatically: after 24 hours without a failure, or 30 days after the last sign-in from that address.
+
+Log events, for alerting: `client_account_locked` (an address was locked out of an account; fields `user_id`, `client_ip`, `scope="address"`, `lockout_minutes`), `client_account_throttled` (the account-wide backstop engaged; `user_id`, `client_ip`, `account_failures`, `window_minutes`), and `client_login_rejected` with `reason` = `bad_password`, `address_locked`, `throttled`, `disabled` or `unknown_user`. **What was typed into the username box is never logged** (a password pasted there by mistake would otherwise end up in the log): events name an existing account by `user_id`, and an unknown name only by `attempt`, a 12-character keyed hash that cannot be reversed (its key changes when the app restarts). `client_login_failed` carries only `client_ip`.
 
 ## Sessions
 
@@ -201,7 +216,7 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
 | Sign-in page says the portal is unavailable. API returns **404** `client portal disabled` | `client_portal_enabled` is off, or the dashboard key is blank or shorter than 16 characters (the server logs `client_portal_refused_unsafe_config` with the reason) | Check the setting in Portal settings. Fix the key in the secret and restart if it is wrong |
 | Turning the portal on returns **409** | The dashboard key is blank or too short. The message says which | Fix the key, restart the container, then turn the portal on again |
 | The app refuses to start in production: `client portal is enabled but ...` | The portal was enabled, and the key was then blanked or shortened | Restore a key of 16+ characters. If that is not possible right now, delete the `rt.client_portal_enabled` row in the `app_settings` table (the env default `CLIENT_PORTAL_ENABLED=false` then applies) and restart |
-| A correct password gets **401** `Invalid username or password` | The account is locked (`client_login_max_failures` wrong passwords in a row, locked for `client_login_lockout_minutes`), or it is disabled. The API deliberately returns the same message for all of these | `GET` the user list. Unlock or enable the account, or wait out the lockout |
+| A correct password gets **401** `Invalid username or password` | The client's address is locked out of the account (`client_login_max_failures` wrong passwords in a row from it, for `client_login_lockout_minutes`), the account is slowed down after very many wrong passwords and the client is on a new address, or the account is disabled. The API deliberately returns the same message for all of these. `client_login_rejected` in the log has the `reason` | `GET` the user list (`locked_addresses`, `throttled`). Unlock or enable the account, or wait |
 | **429** `Too many failed attempts` | More than `AUTH_MAX_FAILURES` (default 20) failed credential checks from one address within `AUTH_FAILURE_WINDOW_SECONDS` (default 600). This blocks authenticated routes from that address, not only the login | Wait for `Retry-After`. If many clients share one address, the portal is probably behind a proxy: set `FORWARDED_ALLOW_IPS` so each client has its own address |
 | A client is signed out after a while | Idle timeout (60 min by default), absolute limit (12 h), a revoked session, or a disabled account | Expected. Sign in again. Adjust the settings if the timeouts are too short |
 | A week shows "no file" | No LOW or MEDIUM alerts in that period, so no workbook was written | Expected. The counts are still shown. The download endpoints return 404 |
@@ -213,7 +228,7 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
 | The **Portal settings** panel shows a load error | The browser may be using a cached copy of the dashboard's static files | Hard-refresh the page (Ctrl+Shift+R, or Cmd+Shift+R on macOS) |
 | Run now / regenerate returns **400** for a week | A manual run of a week that has not ended yet is refused, because it would archive a partial report and stop the scheduler from producing the real one | Wait until the week has ended. Preview still works for the current week |
 | A client API request returns **413** | Requests to `/client/api/*` are limited to 64 KB (this protects the unauthenticated login from memory exhaustion) | Expected for oversized bodies; normal use is far below the limit |
-| Many clients behind one proxy share the login throttle, or a client can dodge the per-address limit | `FORWARDED_ALLOW_IPS=*` makes the app trust the leftmost `X-Forwarded-For` entry. That is only safe when your edge **replaces** the header (the AWS Caddy setup does). If your platform appends to a client-supplied header, set `FORWARDED_ALLOW_IPS` to the proxy's address instead. The per-account lockout applies either way | Review `FORWARDED_ALLOW_IPS` for your platform |
+| Many clients behind one proxy share the login throttle, or a client can dodge the per-address limit | `FORWARDED_ALLOW_IPS=*` makes the app trust the leftmost `X-Forwarded-For` entry. That is only safe when your edge **replaces** the header (the AWS Caddy setup does). If your platform appends to a client-supplied header, set `FORWARDED_ALLOW_IPS` to the proxy's address instead. The per-account backstop applies either way | Review `FORWARDED_ALLOW_IPS` for your platform |
 
 ## Deployment
 

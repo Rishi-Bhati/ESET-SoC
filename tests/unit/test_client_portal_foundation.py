@@ -161,7 +161,8 @@ def test_runtime_registry_covers_required_keys():
     assert set(runtime_settings.REGISTRY) == {
         "client_portal_enabled", "client_portal_url", "client_session_idle_minutes",
         "client_session_max_hours", "client_login_max_failures", "client_login_lockout_minutes",
-        "client_export_max_alerts", "weekly_report_enabled", "weekly_report_weekday",
+        "client_login_account_max_failures", "client_login_account_window_minutes",
+        "client_login_account_max_delay_seconds", "client_export_max_alerts", "weekly_report_enabled", "weekly_report_weekday",
         "weekly_report_time", "weekly_report_check_interval_seconds",
         "weekly_report_max_findings_listed", "weekly_report_email_enabled",
         "email_attachments_enabled", "email_attachment_max_bytes", "client_immediate_min_risk",

@@ -27,6 +27,22 @@ async def db_session() -> AsyncGenerator[aiosqlite.Connection, None]:
     finally:
         await conn.close()
 
+async def _add_missing_columns(conn: aiosqlite.Connection, table: str,
+                               columns: dict[str, str]) -> list[str]:
+    """Idempotent migration for a table created by an older release: adds each
+    column of `columns` ({name: SQL type}) that the table lacks. CREATE TABLE IF
+    NOT EXISTS never changes an existing table, so new columns go through here.
+    Returns the names of the columns it added (empty when already up to date)."""
+    async with conn.execute(f"PRAGMA table_info({table})") as cur:
+        existing = {row[1] for row in await cur.fetchall()}
+    added = []
+    for name, sql_type in columns.items():
+        if name not in existing:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+            added.append(name)
+    return added
+
+
 async def init_db() -> None:
     """
     Initializes database schemas for jobs and deduplication tracking.
@@ -144,7 +160,8 @@ async def init_db() -> None:
                 locked_until REAL,
                 created_at REAL NOT NULL,
                 password_changed_at REAL,
-                last_login_at REAL
+                last_login_at REAL,
+                failure_window_start REAL
             )
         """)
         # token_hash is a hash of the opaque cookie token; the token itself is
@@ -163,6 +180,34 @@ async def init_db() -> None:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_client_sessions_user ON client_sessions(user_id)"
         )
+        # Sign-in lock-out model (see storage/user_store.py, verify_credentials):
+        #  - client_login_failures: one row per (account, client address). Wrong
+        #    passwords lock only that pair; the same account still signs in from
+        #    other addresses. last_success_at marks a "known" address for the
+        #    account. Rows are pruned (user_store.purge_login_failures).
+        #  - client_users.failed_attempts / locked_until / failure_window_start:
+        #    the account-wide BACKSTOP only — failures from every address in the
+        #    current window, and the end of the current slow-down. It never
+        #    applies to an address that signed in successfully recently.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_login_failures (
+                user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE CASCADE,
+                client_ip TEXT NOT NULL,       -- address key (IPv6 grouped by /64)
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                last_failed_at REAL,
+                locked_until REAL,
+                last_success_at REAL,
+                PRIMARY KEY (user_id, client_ip)
+            )
+        """)
+        if await _add_missing_columns(conn, "client_users", {"failure_window_start": "REAL"}):
+            # Upgrading from the account-wide hard lock: failed_attempts and
+            # locked_until now mean the backstop window, so an old 15-minute
+            # account lock must not carry over as a backstop slow-down.
+            await conn.execute(
+                "UPDATE client_users SET failed_attempts = 0, locked_until = NULL")
+            logger.info("database_migrated", table="client_users",
+                        change="per-address login lock-out")
 
         # Query index over alerts (storage/alert_index_store.py): one row per
         # correlation_id so the portal can filter/page without reading every

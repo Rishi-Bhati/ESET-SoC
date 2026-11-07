@@ -109,32 +109,47 @@ async def test_unknown_user_still_runs_the_hash(monkeypatch):
     assert len(calls) == 2 and all(c.startswith("scrypt$") for c in calls)
 
 
+async def _pair(user_id: str, ip: str):
+    """(failed_attempts, locked_until, last_success_at) of one (account, address) row."""
+    async with aiosqlite.connect(settings.sqlite_db_path) as conn:
+        async with conn.execute(
+            "SELECT failed_attempts, locked_until, last_success_at FROM client_login_failures "
+            "WHERE user_id = ? AND client_ip = ?", (user_id, ip)) as cur:
+            return await cur.fetchone()
+
+
 async def test_lockout_after_max_failures_and_expiry():
+    """The lock is per (account, address): it refuses the correct password from
+    the locked address only, and runs out after client_login_lockout_minutes."""
     await runtime_settings.set("client_login_max_failures", 3)
     await runtime_settings.set("client_login_lockout_minutes", 5)
     u = await user_store.create_user("carol", PASSWORD)
     for _ in range(2):
         assert await user_store.verify_credentials("carol", "wrong-password!", "ip") is None
-    assert (await user_store.get_by_id(u["id"]))["failed_attempts"] == 2
+    assert (await _pair(u["id"], "ip"))[0] == 2
+    assert not (await user_store.get_by_id(u["id"]))["locked"]
     assert await user_store.verify_credentials("carol", "wrong-password!", "ip") is None
     locked = await user_store.get_by_id(u["id"])
-    assert locked["locked"] and locked["locked_until"] > time.time() + 200
-    # correct password is refused while locked, indistinguishably
+    assert locked["locked"] and locked["locked_addresses"] == 1 and not locked["throttled"]
+    assert locked["locked_until"] > time.time() + 200
+    # correct password is refused from the locked address, indistinguishably
     assert await user_store.verify_credentials("carol", PASSWORD, "ip") is None
     # lock runs out -> fresh start
-    await _exec("UPDATE client_users SET locked_until = ? WHERE id = ?", (time.time() - 1, u["id"]))
+    await _exec("UPDATE client_login_failures SET locked_until = ? WHERE user_id = ?", (time.time() - 1, u["id"]))
     ok = await user_store.verify_credentials("carol", PASSWORD, "ip")
-    assert ok and ok["failed_attempts"] == 0 and ok["locked_until"] is None
+    assert ok and ok["locked"] is False and ok["locked_until"] is None
+    failed, lock, last_success = await _pair(u["id"], "ip")
+    assert failed == 0 and lock is None and last_success > time.time() - 5
 
 
 async def test_expired_lock_restarts_the_failure_count():
     await runtime_settings.set("client_login_max_failures", 3)
     u = await user_store.create_user("dora", PASSWORD)
-    await _exec("UPDATE client_users SET failed_attempts = 3, locked_until = ? WHERE id = ?",
-                (time.time() - 1, u["id"]))
+    await _exec("INSERT INTO client_login_failures (user_id, client_ip, failed_attempts, last_failed_at, "
+                "locked_until) VALUES (?, 'ip', 3, ?, ?)", (u["id"], time.time() - 400, time.time() - 1))
     assert await user_store.verify_credentials("dora", "wrong-password!", "ip") is None
-    after = await user_store.get_by_id(u["id"])
-    assert after["failed_attempts"] == 1 and not after["locked"]
+    assert (await _pair(u["id"], "ip"))[:2] == (1, None)
+    assert not (await user_store.get_by_id(u["id"]))["locked"]
 
 
 async def test_concurrent_wrong_passwords_all_count_towards_the_lockout():
@@ -148,11 +163,21 @@ async def test_concurrent_wrong_passwords_all_count_towards_the_lockout():
         user_store.verify_credentials("burst", f"wrong-password-{i:02d}", "ip") for i in range(12)))
     assert results == [None] * 12
     after = await user_store.get_by_id(u["id"])
-    assert after["locked"] is True and after["failed_attempts"] == 5
+    assert after["locked"] is True and after["locked_addresses"] == 1
+    assert (await _pair(u["id"], "ip"))[0] == 5
+    # attempts refused by the lock are not counted against the account either
+    assert after["failed_attempts"] == 5
     assert await user_store.verify_credentials("burst", PASSWORD, "ip") is None
 
 
-async def test_correct_password_refused_if_the_account_locked_during_the_hash(monkeypatch):
+@pytest.mark.parametrize("lock_sql", [
+    # the address got locked out while this request was hashing
+    "INSERT INTO client_login_failures (user_id, client_ip, failed_attempts, last_failed_at, locked_until) "
+    "VALUES (:id, 'ip', 10, :now, :later)",
+    # the account-wide slow-down started while this request was hashing
+    "UPDATE client_users SET locked_until = :later WHERE id = :id",
+])
+async def test_correct_password_refused_if_the_account_locked_during_the_hash(monkeypatch, lock_sql):
     """Regression: the lock state was taken from the row read before hashing, so
     a correct guess racing a burst that locked the account still logged in."""
     import sqlite3
@@ -161,7 +186,7 @@ async def test_correct_password_refused_if_the_account_locked_during_the_hash(mo
 
     def lock_then_check(password, stored):
         conn = sqlite3.connect(settings.sqlite_db_path)
-        conn.execute("UPDATE client_users SET locked_until = ? WHERE id = ?", (time.time() + 600, u["id"]))
+        conn.execute(lock_sql, {"id": u["id"], "now": time.time(), "later": time.time() + 600})
         conn.commit()
         conn.close()
         return real(password, stored)
@@ -231,7 +256,11 @@ async def test_unlock_and_set_password_clear_lockout():
     await user_store.unlock_user(u["id"])
     assert await user_store.verify_credentials("erin", PASSWORD, "ip")
     await user_store.verify_credentials("erin", "wrong-password!", "ip")
+    assert (await user_store.get_by_id(u["id"]))["locked"]
     await user_store.set_password(u["id"], "a brand new passphrase")
+    assert not (await user_store.get_by_id(u["id"]))["locked"]
+    # a password reset also forgets the account's known addresses
+    assert await _scalar("SELECT COUNT(*) FROM client_login_failures WHERE user_id = ?", (u["id"],)) == 0
     assert await user_store.verify_credentials("erin", "a brand new passphrase", "ip")
     assert await user_store.verify_credentials("erin", PASSWORD, "ip") is None
 
@@ -457,10 +486,16 @@ def test_audit_events_contain_no_secrets(client: TestClient, monkeypatch):
     for expected in ("client_user_created", "client_user_password_reset", "client_login_failed",
                      "client_login_succeeded", "client_logout"):
         assert expected in events, events
-    assert rec.find("client_login_succeeded")[0]["username"] == "sam"
-    assert rec.find("client_login_failed")[0]["username"] == "sam"
-    assert rec.find("client_login_failed")[1]["username"] is None
+    # successful sign-ins name the account by its stored name; failed ones never
+    # carry what was typed into the username box (not even a valid-looking name)
+    assert rec.find("client_login_succeeded")[0]["account"] == "sam"
+    assert rec.find("client_user_created")[0]["account"] == "sam"
+    failed = rec.find("client_login_failed")
+    assert len(failed) == 2 and all(set(f) == {"client_ip"} for f in failed)
+    assert all("username" not in fields for _, _, fields in rec.records + store_rec.records)
     assert "bad_password" in store_rec.dump()
+    unknown = [f for f in store_rec.find("client_login_rejected") if f["reason"] == "unknown_user"]
+    assert len(unknown) == 1 and len(unknown[0]["attempt"]) == 12
     everything = rec.dump() + store_rec.dump()
     for secret in (generated, new_pw, token, "typo-password-1", "MySecretPass#1", ENGINEER_KEY):
         assert secret not in everything

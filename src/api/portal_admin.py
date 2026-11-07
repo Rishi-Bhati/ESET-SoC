@@ -83,7 +83,7 @@ async def create_user(body: CreateUserRequest, request: Request) -> dict[str, An
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _audit("client_user_created", request, user_id=user["id"], username=user["username"],
+    _audit("client_user_created", request, user_id=user["id"], account=user["username"],
            password_generated=generated)
     out: dict[str, Any] = {"user": user}
     if generated:
@@ -103,7 +103,7 @@ async def reset_password(user_id: str, request: Request,
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     user = await _user_or_404(user_id)
-    _audit("client_user_password_reset", request, user_id=user_id, username=user["username"],
+    _audit("client_user_password_reset", request, user_id=user_id, account=user["username"],
            password_generated=generated)
     out: dict[str, Any] = {"user": user}
     if generated:
@@ -118,7 +118,7 @@ async def _set_disabled(user_id: str, disabled: bool, request: Request) -> dict[
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     user = await _user_or_404(user_id)
     _audit("client_user_disabled" if disabled else "client_user_enabled", request,
-           user_id=user_id, username=user["username"])
+           user_id=user_id, account=user["username"])
     return {"user": user}
 
 
@@ -139,7 +139,7 @@ async def unlock_user(user_id: str, request: Request) -> dict[str, Any]:
     except LookupError:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     user = await _user_or_404(user_id)
-    _audit("client_user_unlocked", request, user_id=user_id, username=user["username"])
+    _audit("client_user_unlocked", request, user_id=user_id, account=user["username"])
     return {"user": user}
 
 
@@ -147,7 +147,7 @@ async def unlock_user(user_id: str, request: Request) -> dict[str, Any]:
 async def revoke_sessions(user_id: str, request: Request) -> dict[str, Any]:
     user = await _user_or_404(user_id)
     revoked = await user_store.revoke_sessions(user_id)
-    _audit("client_user_sessions_revoked", request, user_id=user_id, username=user["username"],
+    _audit("client_user_sessions_revoked", request, user_id=user_id, account=user["username"],
            revoked=revoked)
     return {"user": await _user_or_404(user_id), "revoked": revoked}
 
@@ -157,5 +157,5 @@ async def delete_user(user_id: str, request: Request) -> dict[str, Any]:
     user = await _user_or_404(user_id)
     if not await user_store.delete_user(user_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
-    _audit("client_user_deleted", request, user_id=user_id, username=user["username"])
+    _audit("client_user_deleted", request, user_id=user_id, account=user["username"])
     return {"deleted": True}

@@ -309,7 +309,7 @@ async def export_alerts(request: Request, user: dict[str, Any] = Depends(require
     finally:
         _release(user_id)
 
-    logger.info("client_export", username=user.get("username"), fields=list(body.fields),
+    logger.info("client_export", account=user.get("username"), fields=list(body.fields),
                 filter={"risk": risks, "from": body.from_, "to": body.to, "sort": order, "limit": limit},
                 header_lang=body.header_lang, count=len(bundles))
     filename = f"soc-lite-client-alerts-{now.strftime('%Y%m%d-%H%M%S')}.xlsx"

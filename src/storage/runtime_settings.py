@@ -85,9 +85,21 @@ REGISTRY: dict[str, SettingSpec] = {s.key: s for s in [
     _spec("client_session_max_hours", "int", fallback=12, min=1, max=168, group="portal",
           description="A client session expires this many hours after login, however active."),
     _spec("client_login_max_failures", "int", fallback=10, min=1, max=1000, group="portal",
-          description="Consecutive wrong passwords before the account is temporarily locked."),
+          description="Wrong passwords in a row from one address before that address is "
+                      "locked out of the account (other addresses can still sign in)."),
     _spec("client_login_lockout_minutes", "int", fallback=15, min=1, max=1440, group="portal",
-          description="How long a locked account stays locked."),
+          description="How long a locked-out address stays locked out of the account."),
+    _spec("client_login_account_max_failures", "int", fallback=100, min=10, max=100000,
+          group="portal",
+          description="Wrong passwords for one account from all addresses within the window "
+                      "before sign-in attempts on it are slowed down."),
+    _spec("client_login_account_window_minutes", "int", fallback=60, min=1, max=1440,
+          group="portal",
+          description="Length of the window in which the account-wide wrong passwords are counted."),
+    _spec("client_login_account_max_delay_seconds", "int", fallback=60, min=1, max=3600,
+          group="portal",
+          description="Longest wait between sign-in attempts on a slowed-down account "
+                      "(the wait doubles with each further wrong password up to this)."),
     _spec("client_export_max_alerts", "int", fallback=5000, min=1, max=100000, group="portal",
           description="Most alerts one client spreadsheet export may contain."),
     _spec("client_immediate_min_risk", "enum", fallback="LOW", choices=RISK_LEVELS, group="portal",

@@ -8,21 +8,39 @@ the portal in the X-Client-Session header) is an opaque random value of which
 only a SHA-256 hash is stored.
 
 A "user" is a plain dict WITHOUT the password hash:
-    id, username, display_name, role ("client"), disabled (bool), failed_attempts,
-    locked_until (float|None), locked (bool), created_at, password_changed_at,
-    last_login_at
+    id, username, display_name, role ("client"), disabled (bool),
+    failed_attempts (account-wide wrong passwords in the current backstop window),
+    throttled_until (float|None), throttled (bool), locked_addresses (int),
+    locked_until (float|None: latest end of any lock or slow-down),
+    locked (bool: any address locked out, or the account slowed down),
+    created_at, password_changed_at, last_login_at
 list_users() adds `active_sessions`; resolve_session() adds `session_expires_at`
 (the moment the session ends if it stays idle, capped by its absolute expiry).
 
-Lockout / session lifetimes come from runtime_settings (client_login_max_failures,
-client_login_lockout_minutes, client_session_idle_minutes, client_session_max_hours),
-read at call time so dashboard changes apply live — including to sessions that
-already exist (a shortened idle/max lifetime ends them on their next use).
+Sign-in lock-out (verify_credentials). Wrong passwords are counted per
+(account, client address):
+  - client_login_max_failures wrong passwords in a row from one address lock
+    THAT address out of THAT account for client_login_lockout_minutes. The real
+    user signing in from anywhere else is not affected, so a stranger who knows
+    a username cannot lock the client out.
+  - Account-wide backstop: once client_login_account_max_failures wrong
+    passwords from all addresses together fall inside
+    client_login_account_window_minutes, the account is slowed down: after each
+    further wrong password, attempts are refused for 1 s, then 2, 4, ... up to
+    client_login_account_max_delay_seconds. The slow-down never applies to an
+    address that signed in to the account in the last KNOWN_ADDRESS_DAYS days.
+Refused attempts get the same answer as a wrong password; the reason is logged
+server-side only (by user id, never the typed username).
+
+Lock-out / session lifetimes come from runtime_settings, read at call time so
+dashboard changes apply live — including to sessions that already exist (a
+shortened idle/max lifetime ends them on their next use).
 """
 import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import re
 import secrets
 import time
@@ -57,6 +75,21 @@ _HASH_SCHEME = "scrypt"
 # A session's last_seen_at is rewritten at most this often (seconds), so a busy
 # portal page does not turn every API call into a DB write.
 LAST_SEEN_WRITE_INTERVAL = 30.0
+
+# --- sign-in lock-out ---
+# An address that signed in to an account within this many days is "known" to
+# it and exempt from the account-wide slow-down (not from its own address lock).
+KNOWN_ADDRESS_DAYS = 30
+# A per-address failure count whose last failure is older than this starts again.
+ADDRESS_FAILURE_MEMORY_SECONDS = 24 * 3600
+# client_login_failures housekeeping: at most one prune per interval, and a hard
+# cap on rows (oldest activity dropped first) against a spray from many addresses.
+LOGIN_FAILURE_PRUNE_INTERVAL = 300.0
+LOGIN_FAILURE_MAX_ROWS = 50_000
+_last_login_failure_prune = 0.0
+
+# Key for attempt_fingerprint(): random per process, never stored or logged.
+_ATTEMPT_KEY = secrets.token_bytes(32)
 
 _USER_COLUMNS = (
     "id, username, display_name, role, disabled, failed_attempts, locked_until, "
@@ -167,9 +200,35 @@ def generate_password() -> str:
     return secrets.token_urlsafe(18)
 
 
+def address_key(client_ip: Any) -> str:
+    """The address a sign-in failure is counted against. IPv6 clients are grouped
+    by /64 (one subscriber usually holds a whole /64, so per-address counting
+    would otherwise be trivially dodged); IPv4 and anything unparsable as is."""
+    text = str(client_ip or "unknown")[:64]
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return text
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
+def attempt_fingerprint(username: Any) -> str:
+    """A short keyed hash of a typed username, so the log can tell repeated
+    attempts at the same unknown name apart WITHOUT recording what was typed (a
+    password pasted into the username box must never reach the log). The key is
+    random per process, so the value cannot be reversed or checked offline."""
+    text = username.strip().lower()[:256] if isinstance(username, str) else ""
+    return hmac.new(_ATTEMPT_KEY, text.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:12]
+
+
 def _row_to_user(row: Any, now: float | None = None) -> User:
     now = time.time() if now is None else now
-    locked_until = row[6]
+    throttled_until = row[6]
+    throttled = bool(throttled_until and throttled_until > now)
     return {
         "id": row[0],
         "username": row[1],
@@ -177,12 +236,34 @@ def _row_to_user(row: Any, now: float | None = None) -> User:
         "role": row[3],
         "disabled": bool(row[4]),
         "failed_attempts": int(row[5] or 0),
-        "locked_until": locked_until,
-        "locked": bool(locked_until and locked_until > now),
+        "throttled_until": throttled_until if throttled else None,
+        "throttled": throttled,
+        # completed by _attach_lock_info() where the dashboard needs it
+        "locked_addresses": 0,
+        "locked_until": throttled_until if throttled else None,
+        "locked": throttled,
         "created_at": row[7],
         "password_changed_at": row[8],
         "last_login_at": row[9],
     }
+
+
+async def _attach_lock_info(conn: aiosqlite.Connection, users: list[User], now: float) -> None:
+    """Adds the per-address locks to each user: locked_addresses, and locked /
+    locked_until covering them as well as the account-wide slow-down."""
+    if not users:
+        return
+    async with conn.execute(
+        "SELECT user_id, COUNT(*), MAX(locked_until) FROM client_login_failures "
+        "WHERE locked_until > ? GROUP BY user_id", (now,),
+    ) as cur:
+        locks = {row[0]: (int(row[1]), row[2]) for row in await cur.fetchall()}
+    for user in users:
+        count, until = locks.get(user["id"], (0, None))
+        user["locked_addresses"] = count
+        if count:
+            user["locked"] = True
+            user["locked_until"] = max(until, user["locked_until"] or 0)
 
 
 async def _lifetimes() -> tuple[float, float]:
@@ -235,10 +316,13 @@ async def create_user(username: str, password: str, display_name: str | None = N
     return user
 
 
+_CLEAR_BACKSTOP_SQL = "failed_attempts = 0, locked_until = NULL, failure_window_start = NULL"
+
+
 async def set_password(user_id: str, password: str) -> None:
-    """Resets the password (policy-checked), clears the lockout and failed-attempt
-    counter, and revokes all the user's sessions. Raises ValueError (policy) or
-    LookupError (unknown user)."""
+    """Resets the password (policy-checked), clears every lock-out (per address
+    and account-wide), forgets the account's known addresses, and revokes all
+    the user's sessions. Raises ValueError (policy) or LookupError (unknown user)."""
     user = await get_by_id(user_id)
     if user is None:
         raise LookupError("Unknown user")
@@ -247,12 +331,13 @@ async def set_password(user_id: str, password: str) -> None:
     async with db_session() as conn:
         cur = await conn.execute(
             "UPDATE client_users SET password_hash = ?, password_changed_at = ?, "
-            "failed_attempts = 0, locked_until = NULL WHERE id = ?",
+            f"{_CLEAR_BACKSTOP_SQL} WHERE id = ?",
             (password_hash, time.time(), user_id),
         )
         if cur.rowcount == 0:
             raise LookupError("Unknown user")
         await conn.execute("DELETE FROM client_sessions WHERE user_id = ?", (user_id,))
+        await conn.execute("DELETE FROM client_login_failures WHERE user_id = ?", (user_id,))
         await conn.commit()
 
 
@@ -270,12 +355,20 @@ async def set_disabled(user_id: str, disabled: bool) -> None:
 
 
 async def unlock_user(user_id: str) -> None:
-    """Clears a lockout and the failed-attempt counter. Raises LookupError."""
+    """Clears every lock-out of the account: all its per-address locks and
+    failure counts, and the account-wide slow-down and its counter. Known
+    addresses are kept. Raises LookupError."""
     async with db_session() as conn:
         cur = await conn.execute(
-            "UPDATE client_users SET failed_attempts = 0, locked_until = NULL WHERE id = ?", (user_id,))
+            f"UPDATE client_users SET {_CLEAR_BACKSTOP_SQL} WHERE id = ?", (user_id,))
         if cur.rowcount == 0:
             raise LookupError("Unknown user")
+        await conn.execute(
+            "DELETE FROM client_login_failures WHERE user_id = ? AND last_success_at IS NULL",
+            (user_id,))
+        await conn.execute(
+            "UPDATE client_login_failures SET failed_attempts = 0, last_failed_at = NULL, "
+            "locked_until = NULL WHERE user_id = ?", (user_id,))
         await conn.commit()
 
 
@@ -284,6 +377,7 @@ async def delete_user(user_id: str) -> bool:
     async with db_session() as conn:
         # Explicit as well as by cascade, so it holds even without foreign_keys.
         await conn.execute("DELETE FROM client_sessions WHERE user_id = ?", (user_id,))
+        await conn.execute("DELETE FROM client_login_failures WHERE user_id = ?", (user_id,))
         cur = await conn.execute("DELETE FROM client_users WHERE id = ?", (user_id,))
         await conn.commit()
         return cur.rowcount > 0
@@ -301,48 +395,98 @@ async def list_users() -> list[User]:
             _alive_params(now, idle_s, max_s),
         ) as cur:
             rows = await cur.fetchall()
-    users = []
-    for row in rows:
-        user = _row_to_user(row, now)
-        user["active_sessions"] = int(row[10] or 0)
-        users.append(user)
+        users = []
+        for row in rows:
+            user = _row_to_user(row, now)
+            user["active_sessions"] = int(row[10] or 0)
+            users.append(user)
+        await _attach_lock_info(conn, users, now)
     return users
+
+
+async def _get_one(where: str, param: str) -> User | None:
+    now = time.time()
+    async with db_session() as conn:
+        async with conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM client_users WHERE {where}", (param,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        user = _row_to_user(row, now)
+        await _attach_lock_info(conn, [user], now)
+    return user
 
 
 async def get_by_id(user_id: str) -> User | None:
     """One user by id, or None."""
     if not isinstance(user_id, str) or not user_id:
         return None
-    async with db_session() as conn:
-        async with conn.execute(
-            f"SELECT {_USER_COLUMNS} FROM client_users WHERE id = ?", (user_id,)) as cur:
-            row = await cur.fetchone()
-    return _row_to_user(row) if row else None
+    return await _get_one("id = ?", user_id)
 
 
 async def get_by_username(username: str) -> User | None:
     """One user by username (case-insensitive), or None."""
     if not isinstance(username, str) or not username.strip():
         return None
-    async with db_session() as conn:
-        async with conn.execute(
-            f"SELECT {_USER_COLUMNS} FROM client_users WHERE username = ? COLLATE NOCASE",
-            (username.strip(),),
-        ) as cur:
-            row = await cur.fetchone()
-    return _row_to_user(row) if row else None
+    return await _get_one("username = ? COLLATE NOCASE", username.strip())
 
 
 # ------------------------------ login ------------------------------
 
+_POLICY_KEYS = (
+    "client_login_max_failures", "client_login_lockout_minutes",
+    "client_login_account_max_failures", "client_login_account_window_minutes",
+    "client_login_account_max_delay_seconds",
+)
+
+_PRUNE_SQL = (
+    "DELETE FROM client_login_failures WHERE (locked_until IS NULL OR locked_until <= ?) "
+    "AND COALESCE(last_failed_at, 0) <= ? AND COALESCE(last_success_at, 0) <= ?"
+)
+
+
+async def _prune_login_failures(conn: aiosqlite.Connection, now: float) -> int:
+    """Drops (account, address) rows that no longer matter: not locked, no
+    failure within ADDRESS_FAILURE_MEMORY_SECONDS and no sign-in within
+    KNOWN_ADDRESS_DAYS. Then enforces LOGIN_FAILURE_MAX_ROWS, oldest activity
+    first. Does not commit."""
+    cur = await conn.execute(_PRUNE_SQL, (
+        now, now - ADDRESS_FAILURE_MEMORY_SECONDS, now - KNOWN_ADDRESS_DAYS * 86400))
+    removed = max(cur.rowcount, 0)
+    async with conn.execute("SELECT COUNT(*) FROM client_login_failures") as c:
+        excess = int((await c.fetchone())[0]) - LOGIN_FAILURE_MAX_ROWS
+    if excess > 0:
+        cur = await conn.execute(
+            "DELETE FROM client_login_failures WHERE rowid IN ("
+            "SELECT rowid FROM client_login_failures ORDER BY MAX(COALESCE(last_failed_at, 0), "
+            "COALESCE(last_success_at, 0), COALESCE(locked_until, 0)) LIMIT ?)", (excess,))
+        removed += max(cur.rowcount, 0)
+    return removed
+
+
+async def purge_login_failures() -> int:
+    """Housekeeping for client_login_failures (see _prune_login_failures).
+    Returns how many rows were removed."""
+    global _last_login_failure_prune
+    now = time.time()
+    _last_login_failure_prune = now
+    async with db_session() as conn:
+        removed = await _prune_login_failures(conn, now)
+        await conn.commit()
+    return removed
+
+
 async def verify_credentials(username: str, password: str, client_ip: str) -> User | None:
     """
     Checks a login. Returns the user on success, None on ANY failure (unknown
-    user, wrong password, disabled, locked) so the API can answer identically and
-    not reveal which accounts exist. Takes the same time for unknown users (dummy
-    hash). Counts failures and locks the account after client_login_max_failures
-    for client_login_lockout_minutes; success resets the counter and sets last_login_at.
-    The reason for a failure is logged server-side only.
+    user, wrong password, disabled, address locked out, account slowed down) so
+    the API can answer identically and not reveal which accounts exist. Takes the
+    same time for unknown users (dummy hash) and always runs the hash before
+    looking at lock state. Counts a wrong password against (account, address)
+    and against the account-wide backstop — see the module docstring. Success
+    resets that address's count, marks it known and sets last_login_at.
+    The reason for a failure is logged server-side only, by user id; the typed
+    username is never logged (only attempt_fingerprint() for unknown accounts).
     """
     password = password if isinstance(password, str) else ""
     # An over-long password never matches (policy max) — don't spend scrypt on it
@@ -357,74 +501,127 @@ async def verify_credentials(username: str, password: str, client_ip: str) -> Us
     if name is not None:
         async with db_session() as conn:
             async with conn.execute(
-                f"SELECT {_USER_COLUMNS}, password_hash FROM client_users "
-                "WHERE username = ? COLLATE NOCASE", (name,),
+                "SELECT id, password_hash FROM client_users WHERE username = ? COLLATE NOCASE",
+                (name,),
             ) as cur:
                 row = await cur.fetchone()
 
     if row is None:
         await asyncio.to_thread(check_password, candidate, _get_dummy_hash())
-        logger.info("client_login_rejected", reason="unknown_user", client_ip=client_ip)
+        logger.info("client_login_rejected", reason="unknown_user",
+                    attempt=attempt_fingerprint(username), client_ip=client_ip)
         return None
 
-    now = time.time()
-    user = _row_to_user(row, now)
-    stored_hash = row[10]
+    user_id, stored_hash = row
     ok = await asyncio.to_thread(check_password, candidate, stored_hash)
     ok = ok and len(password) <= PASSWORD_MAX_LENGTH
+    policy = {key: int(await runtime_settings.get(key)) for key in _POLICY_KEYS}
+    return await _settle_attempt(user_id, ok, client_ip, policy)
 
-    if user["locked"]:
-        logger.warning("client_login_rejected", reason="locked", user_id=user["id"], client_ip=client_ip)
-        return None
-    if user["disabled"]:
-        logger.warning("client_login_rejected", reason="disabled", user_id=user["id"], client_ip=client_ip)
-        return None
 
-    if not ok:
-        max_failures = int(await runtime_settings.get("client_login_max_failures"))
-        lockout_minutes = int(await runtime_settings.get("client_login_lockout_minutes"))
-        # Counted in ONE statement against the current row, not the row read
-        # before the (slow) hash check: concurrent wrong guesses must each count,
-        # or a burst of parallel logins would never reach the lockout.
-        # A lockout that has run out starts a fresh count; a lock set meanwhile
-        # by a concurrent request is kept as is.
-        next_attempts = "(CASE WHEN locked_until IS NULL THEN failed_attempts + 1 ELSE 1 END)"
-        async with db_session() as conn:
+async def _settle_attempt(user_id: str, ok: bool, client_ip: str,
+                          policy: dict[str, int]) -> User | None:
+    """Applies the lock-out rules to one checked attempt, in ONE write
+    transaction: the lock state is read after the (slow) hash, and concurrent
+    attempts are serialised, so a burst of parallel guesses all count and a
+    correct guess racing a lock-out is still refused."""
+    global _last_login_failure_prune
+    addr = address_key(client_ip)
+    now = time.time()
+    who = {"user_id": user_id, "client_ip": client_ip}
+    async with db_session() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        async with conn.execute(
+            "SELECT disabled, failed_attempts, locked_until, failure_window_start "
+            "FROM client_users WHERE id = ?", (user_id,),
+        ) as cur:
+            acct = await cur.fetchone()
+        if acct is None:  # deleted while the password was being checked
+            await conn.rollback()
+            logger.info("client_login_rejected", reason="unknown_user", **who)
+            return None
+        disabled, acct_failures, throttled_until, window_start = acct
+        async with conn.execute(
+            "SELECT failed_attempts, last_failed_at, locked_until, last_success_at "
+            "FROM client_login_failures WHERE user_id = ? AND client_ip = ?", (user_id, addr),
+        ) as cur:
+            pair = await cur.fetchone()
+        pair_failures, pair_last_failed, pair_locked_until, last_success = pair or (0, None, None, None)
+        known = bool(last_success and last_success > now - KNOWN_ADDRESS_DAYS * 86400)
+
+        reason = None
+        if pair_locked_until and pair_locked_until > now:
+            reason = "address_locked"
+        elif disabled:
+            reason = "disabled"
+        elif throttled_until and throttled_until > now and not known:
+            reason = "throttled"
+        if reason:
+            # Not counted: the answer did not depend on the password.
+            await conn.rollback()
+            logger.warning("client_login_rejected", reason=reason, **who)
+            return None
+
+        if ok:
+            await conn.execute("UPDATE client_users SET last_login_at = ? WHERE id = ?", (now, user_id))
             await conn.execute(
-                "UPDATE client_users SET "
-                "failed_attempts = CASE WHEN locked_until > ? THEN failed_attempts "
-                f"ELSE {next_attempts} END, "
-                "locked_until = CASE WHEN locked_until > ? THEN locked_until "
-                f"WHEN {next_attempts} >= ? THEN ? ELSE NULL END "
-                "WHERE id = ?",
-                (now, now, max_failures, now + lockout_minutes * 60, user["id"]),
+                "INSERT INTO client_login_failures (user_id, client_ip, failed_attempts, "
+                "last_failed_at, locked_until, last_success_at) VALUES (?, ?, 0, NULL, NULL, ?) "
+                "ON CONFLICT(user_id, client_ip) DO UPDATE SET failed_attempts = 0, "
+                "last_failed_at = NULL, locked_until = NULL, last_success_at = excluded.last_success_at",
+                (user_id, addr, now),
             )
             await conn.commit()
-            async with conn.execute(
-                "SELECT failed_attempts, locked_until FROM client_users WHERE id = ?", (user["id"],),
-            ) as cur:
-                row = await cur.fetchone()
-        attempts, locked_until = (row[0], row[1]) if row else (None, None)
-        logger.warning("client_login_rejected", reason="bad_password", user_id=user["id"],
-                       failed_attempts=attempts, client_ip=client_ip)
-        if locked_until is not None and attempts == max_failures:
-            logger.warning("client_account_locked", user_id=user["id"],
-                           lockout_minutes=lockout_minutes, client_ip=client_ip)
-        return None
+            return await get_by_id(user_id)
 
-    async with db_session() as conn:
-        # Only if the account is (still) unlocked and enabled NOW: a concurrent
-        # burst may have locked it while this request was hashing.
-        cur = await conn.execute(
-            "UPDATE client_users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? "
-            "WHERE id = ? AND disabled = 0 AND (locked_until IS NULL OR locked_until <= ?)",
-            (now, user["id"], now),
+        # --- wrong password: this address's count ---
+        max_failures = policy["client_login_max_failures"]
+        lockout_minutes = policy["client_login_lockout_minutes"]
+        # An expired lock, or a last failure long ago, starts a fresh count.
+        fresh = (pair_locked_until is not None or not pair_last_failed
+                 or pair_last_failed <= now - ADDRESS_FAILURE_MEMORY_SECONDS)
+        pair_failures = 1 if fresh else int(pair_failures or 0) + 1
+        pair_lock = now + lockout_minutes * 60 if pair_failures >= max_failures else None
+        await conn.execute(
+            "INSERT INTO client_login_failures (user_id, client_ip, failed_attempts, "
+            "last_failed_at, locked_until, last_success_at) VALUES (?, ?, ?, ?, ?, NULL) "
+            "ON CONFLICT(user_id, client_ip) DO UPDATE SET failed_attempts = excluded.failed_attempts, "
+            "last_failed_at = excluded.last_failed_at, locked_until = excluded.locked_until",
+            (user_id, addr, pair_failures, now, pair_lock),
         )
+
+        # --- wrong password: the account-wide backstop ---
+        acct_max = policy["client_login_account_max_failures"]
+        window_s = policy["client_login_account_window_minutes"] * 60
+        if not window_start or window_start <= now - window_s:
+            window_start, acct_failures = now, 1
+        else:
+            acct_failures = int(acct_failures or 0) + 1
+        throttle = None
+        if acct_failures >= acct_max:
+            # 1 s at the threshold, doubling with each further wrong password.
+            delay = min(float(policy["client_login_account_max_delay_seconds"]),
+                        2.0 ** min(acct_failures - acct_max, 30))
+            throttle = now + delay
+        await conn.execute(
+            "UPDATE client_users SET failed_attempts = ?, failure_window_start = ?, "
+            "locked_until = ? WHERE id = ?",
+            (acct_failures, window_start, throttle, user_id),
+        )
+        if now - _last_login_failure_prune >= LOGIN_FAILURE_PRUNE_INTERVAL:
+            _last_login_failure_prune = now
+            await _prune_login_failures(conn, now)
         await conn.commit()
-    if cur.rowcount != 1:
-        logger.warning("client_login_rejected", reason="locked", user_id=user["id"], client_ip=client_ip)
-        return None
-    return await get_by_id(user["id"])
+
+    logger.warning("client_login_rejected", reason="bad_password", failed_attempts=pair_failures,
+                   account_failures=acct_failures, **who)
+    if pair_failures == max_failures:
+        logger.warning("client_account_locked", scope="address", lockout_minutes=lockout_minutes,
+                       failed_attempts=pair_failures, **who)
+    if acct_failures == acct_max:
+        logger.warning("client_account_throttled", account_failures=acct_failures,
+                       window_minutes=policy["client_login_account_window_minutes"], **who)
+    return None
 
 
 # ------------------------------ sessions ------------------------------

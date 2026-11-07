@@ -67,6 +67,7 @@ async def clean_database() -> AsyncGenerator[None, None]:
         # client_sessions rows go with their users (ON DELETE CASCADE), but are
         # wiped explicitly in case a connection runs without foreign_keys on.
         await conn.execute("DELETE FROM client_sessions")
+        await conn.execute("DELETE FROM client_login_failures")
         await conn.execute("DELETE FROM client_users")
         await conn.execute("DELETE FROM alert_index")
         await conn.execute("DELETE FROM alert_recommendations")

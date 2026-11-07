@@ -2169,7 +2169,9 @@ const PSET_SECTIONS = [
     keys: ["weekly_report_enabled", "weekly_report_weekday", "weekly_report_time"] },
   { id: "signin", title: "pps_signin", sub: "pps_signin_sub",
     keys: ["client_session_idle_minutes", "client_session_max_hours",
-      "client_login_max_failures", "client_login_lockout_minutes"] },
+      "client_login_max_failures", "client_login_lockout_minutes",
+      "client_login_account_max_failures", "client_login_account_window_minutes",
+      "client_login_account_max_delay_seconds"] },
   { id: "access", title: "pps_access", sub: "pps_access_sub",
     keys: ["client_portal_url", "client_export_max_alerts"] },
   { id: "email", title: "pps_email", sub: "pps_email_sub",
@@ -2820,6 +2822,17 @@ function puRowActions(u) {
   return html;
 }
 
+// What "Locked" means for this account: some addresses locked out after wrong
+// passwords (other addresses can still sign in), and/or the whole account
+// slowed down after very many wrong passwords. Unlock clears both.
+function puLockDetail(u) {
+  const parts = [];
+  const n = Number(u.locked_addresses) || 0;
+  if (n) parts.push(t("pp_locked_addresses", n));
+  if (u.throttled) parts.push(t("pp_account_slowed"));
+  return parts.length ? `<span class="pp-cell-sub">${esc(parts.join(" · "))}</span>` : "";
+}
+
 function renderPortalUsers() {
   const root = ensurePortalUsersShell();
   if (!root) return;
@@ -2849,7 +2862,7 @@ function renderPortalUsers() {
     const sessions = Number(u.active_sessions) || 0;
     return `<tr>
       <td class="pp-who" data-label="${L("pu_th_username")}"><strong>${esc(u.username)}</strong>${u.display_name ? `<span class="dim">${esc(u.display_name)}</span>` : ""}</td>
-      <td data-label="${L("pu_th_status")}">${badges}</td>
+      <td data-label="${L("pu_th_status")}">${badges}${puLockDetail(u)}</td>
       <td data-label="${L("pu_th_last_login")}">${last ? esc(last) : `<span class="dim">${esc(t("pu_never"))}</span>`}${sessions ? `<span class="pp-cell-sub">${esc(t("pp_signed_in_now", sessions))}</span>` : ""}</td>
       <td data-label="${L("pu_th_actions")}">${puRowActions(u)}</td>
     </tr>`;

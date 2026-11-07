@@ -202,6 +202,12 @@ class Settings(BaseSettings):
     client_session_max_hours: int = Field(12, validation_alias="CLIENT_SESSION_MAX_HOURS")
     client_login_max_failures: int = Field(10, validation_alias="CLIENT_LOGIN_MAX_FAILURES")
     client_login_lockout_minutes: int = Field(15, validation_alias="CLIENT_LOGIN_LOCKOUT_MINUTES")
+    # Account-wide backstop (all addresses together): past this many wrong
+    # passwords in the window, attempts on the account are slowed down — never a
+    # hard lock, and never for an address that signed in to it recently.
+    client_login_account_max_failures: int = Field(100, validation_alias="CLIENT_LOGIN_ACCOUNT_MAX_FAILURES")
+    client_login_account_window_minutes: int = Field(60, validation_alias="CLIENT_LOGIN_ACCOUNT_WINDOW_MINUTES")
+    client_login_account_max_delay_seconds: int = Field(60, validation_alias="CLIENT_LOGIN_ACCOUNT_MAX_DELAY_SECONDS")
     client_export_max_alerts: int = Field(5000, validation_alias="CLIENT_EXPORT_MAX_ALERTS")
     # Recipients (comma-separated). Blank = fall back to CLIENT_NOTIFICATION_EMAILS.
     recommendation_notification_emails: str = Field("", validation_alias="RECOMMENDATION_NOTIFICATION_EMAILS")

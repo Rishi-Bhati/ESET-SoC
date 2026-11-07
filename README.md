@@ -523,8 +523,11 @@ environment variable of the same name (upper case) sets the default, except
 | `client_portal_url` | Public base URL, used for links in emails (blank = no link) | blank | blank, or an `http(s)://` URL; max 500 characters |
 | `client_session_idle_minutes` | A session ends after this much inactivity | 60 | 1–1440 |
 | `client_session_max_hours` | A session ends this long after sign-in | 12 | 1–168 |
-| `client_login_max_failures` | Wrong passwords in a row before the account is locked | 10 | 1–1000 |
-| `client_login_lockout_minutes` | How long a locked account stays locked | 15 | 1–1440 |
+| `client_login_max_failures` | Wrong passwords in a row from one address before that address is locked out of the account (other addresses still sign in) | 10 | 1–1000 |
+| `client_login_lockout_minutes` | How long a locked-out address stays locked out | 15 | 1–1440 |
+| `client_login_account_max_failures` | Wrong passwords for one account from all addresses within the window before attempts on it are slowed down (never a hard lock; addresses that signed in within 30 days are exempt) | 100 | 10–100000 |
+| `client_login_account_window_minutes` | Window for the account-wide count | 60 | 1–1440 |
+| `client_login_account_max_delay_seconds` | Longest slow-down; the wait doubles from 1 s with each further wrong password | 60 | 1–3600 |
 | `client_export_max_alerts` | Most alerts in one client export | 5000 | 1–100000 |
 | `client_immediate_min_risk` | Minimum risk for an immediate client notification | `LOW` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. Stored, but no code reads it yet, so it has no effect |
 | `weekly_report_enabled` | Run the weekly report schedule | `false` | on/off |
@@ -551,9 +554,9 @@ The dashboard's Client Portal tab calls these engineer routes. They can also be 
 | `DELETE /dashboard/api/portal-settings/{key}` | Remove the saved value, so the env default applies again |
 | `GET /dashboard/api/portal/users` | List client accounts |
 | `POST /dashboard/api/portal/users` | Create an account. Omit `password` to generate one (returned once) |
-| `POST /dashboard/api/portal/users/{id}/password` | Reset a password. Clears any lockout and ends sessions |
+| `POST /dashboard/api/portal/users/{id}/password` | Reset a password. Clears every lock-out, forgets known addresses and ends sessions |
 | `POST /dashboard/api/portal/users/{id}/disable` / `enable` | Turn an account off or on. Disabling ends its sessions |
-| `POST /dashboard/api/portal/users/{id}/unlock` | Clear a lockout |
+| `POST /dashboard/api/portal/users/{id}/unlock` | Clear the account's locked-out addresses and its slow-down |
 | `POST /dashboard/api/portal/users/{id}/revoke-sessions` | End all of an account's sessions |
 | `DELETE /dashboard/api/portal/users/{id}` | Delete an account |
 | `GET /dashboard/api/alerts/{id}/recommendations` | All recommendations for an alert, including retracted ones |
@@ -589,11 +592,17 @@ Client routes, using the `X-Client-Session` header (except sign-in):
 - **Passwords** are hashed with scrypt (N=2^14, r=8, p=1, 16-byte salt). The
   policy is 12 to 256 characters, not equal to the username. Usernames are
   unique, ignoring case.
-- **Sign-in is throttled twice.** An account locks after
-  `client_login_max_failures` wrong passwords. Failed checks are also counted per
-  address against the shared `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS`
-  limit. An unknown user, a wrong password, a disabled account and a locked
-  account all get the same `401`.
+- **Sign-in is limited per account and address.** After
+  `client_login_max_failures` wrong passwords from one address, only that
+  address is locked out of that account, so knowing a username is not enough to
+  lock a client out. An account-wide backstop
+  (`client_login_account_max_failures` per `client_login_account_window_minutes`)
+  slows attempts down instead of locking, and never for an address that signed
+  in recently. Failed checks are also counted per address against the shared
+  `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS` limit. An unknown user, a
+  wrong password, a disabled account and a locked-out or slowed-down attempt all
+  get the same `401`. The username typed into a failed sign-in is never logged.
+  See [docs/CLIENT_PORTAL.md](docs/CLIENT_PORTAL.md#sign-in-protection).
 - **Sessions** use a 256-bit random token, and only its hash is stored. They
   expire after the idle and absolute limits. The token travels in the
   `X-Client-Session` header. There are no cookies, and the browser keeps the

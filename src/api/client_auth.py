@@ -14,7 +14,12 @@ src/middleware/auth.py: require_client). Only a hash of the token is stored.
     GET  /client/api/auth/me      (X-Client-Session)  200 {user: {...}, expires_at}
 
 Audit events (structlog): client_login_succeeded, client_login_failed,
-client_logout. Passwords and tokens are never logged.
+client_logout. Passwords and tokens are never logged, and neither is the
+username TYPED into a failed login (a client who pastes their password into the
+username box would otherwise leave it in the log): user_store logs the account's
+user_id for an existing account and only a keyed hash fingerprint otherwise.
+Successful-login and logout events name the account by its stored username
+(field `account`), which is the validated name the engineer created.
 """
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -43,15 +48,6 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
     return {"username": user["username"], "display_name": user.get("display_name")}
 
 
-def _loggable_username(username: str) -> str | None:
-    """The attempted username for the audit log, only when it has the shape of a
-    username (a password typed into the username box must not reach the log)."""
-    try:
-        return user_store.normalize_username(username)
-    except ValueError:
-        return None
-
-
 @router.post("/login", dependencies=[Depends(require_portal_enabled)])
 async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
     client_ip = client_key(request)
@@ -68,8 +64,8 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
     auth_limiter.record_failure(client_ip)
     user = await user_store.verify_credentials(body.username, body.password, client_ip)
     if user is None:
-        logger.warning("client_login_failed", username=_loggable_username(body.username),
-                       client_ip=client_ip)
+        # No username here, not even a valid-looking one: see the module docstring.
+        logger.warning("client_login_failed", client_ip=client_ip)
         raise HTTPException(status_code=401, detail=LOGIN_FAILED_DETAIL)
     auth_limiter.forgive(client_ip)
 
@@ -83,7 +79,7 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
         logger.warning("client_sessions_purge_failed", error=str(e))
 
     idle_minutes = await runtime_settings.get("client_session_idle_minutes")
-    logger.info("client_login_succeeded", user_id=user["id"], username=user["username"],
+    logger.info("client_login_succeeded", user_id=user["id"], account=user["username"],
                 client_ip=client_ip)
     return {
         "token": token,
@@ -96,7 +92,7 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
 @router.post("/logout")
 async def logout(request: Request, user: dict[str, Any] = Depends(require_client)) -> dict[str, Any]:
     await user_store.delete_session(request.headers.get(CLIENT_SESSION_HEADER) or "")
-    logger.info("client_logout", user_id=user["id"], username=user["username"],
+    logger.info("client_logout", user_id=user["id"], account=user["username"],
                 client_ip=client_key(request))
     return {"ok": True}
 

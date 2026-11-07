@@ -350,7 +350,7 @@ async def test_export_audit_log_has_metadata_but_no_data(client, auth, monkeypat
     await seed("audit-1", DAY + 10)
     export(client, auth, fields=["alert_id", "detection_name"], risk=["HIGH"])
     (entry,) = log.find("client_export")
-    assert entry["username"] == "probe.user" and entry["count"] == 1
+    assert entry["account"] == "probe.user" and entry["count"] == 1
     assert entry["fields"] == ["alert_id", "detection_name"] and entry["filter"]["risk"] == ["HIGH"]
     assert "Det-audit-1" not in log.dump()
 

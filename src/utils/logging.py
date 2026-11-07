@@ -19,6 +19,13 @@ _SECRET_NAMES = {
     "accesskey", "auth", "authorization", "dashboardaccesskey", "geminiapikey",
     "emailapikey", "emailapisecret", "esetwebhookauthtoken", "xdashboardkey",
     "openaiapikey", "azureopenaiapikey", "apikeyvalue", "secretstring",
+    # Whatever someone typed into a sign-in form. A username box is where a
+    # password gets pasted by mistake, so a typed username is treated like a
+    # secret: no code should log one, and this catches it if a change does.
+    # (Code that names an account by its stored, validated name logs it as
+    # `account`, not `username`.) Matching ignores "_" and "-", so user_name /
+    # user-name are covered too, including in logged request bodies.
+    "username", "loginname", "login", "passphrase", "credential", "credentials",
 }
 # Credential-shaped values, redacted wherever they appear in a log string: an
 # SDK error message or a stray repr can carry a key regardless of its field name.
