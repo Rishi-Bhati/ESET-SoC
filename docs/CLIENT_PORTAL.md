@@ -227,6 +227,54 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
   Body is up to 4000 characters, author up to 100, reason up to 500. The create response always carries `"notification": {"queued": false, "reason": "email_notifications_deferred"}`.
 - **No email is sent for recommendations in this release.** The recipient setting is kept for when that is switched on.
 
+## Portal interface and charts
+
+The client page is in `static/client/` (`index.html`, `client.js`, `client.css`, `client-i18n.js`). It calls only `/client/api/*`, and it loads one script of its own, the chart library, after sign-in. The client-facing description is in [CLIENT_PORTAL_GUIDE_JA.md](CLIENT_PORTAL_GUIDE_JA.md), section 3.
+
+### Layout and theme
+
+- The sticky header holds the brand, the 日本語 / EN switch, the theme toggle, sign-out and the tab bar: **Home** (`#/overview`), **All alerts** (`#/alerts`) and **Weekly reports** (`#/reports`).
+- Dark is the default. The page is light when the device prefers light and the visitor has not chosen a theme. The toggle stores an explicit choice in `localStorage` (`client_theme`). The surface and accent colours and the theme rules match the engineering dashboard (`static/dashboard.html`).
+- The language defaults from the browser (Japanese if it prefers Japanese, otherwise English) and is stored as `client_lang`. The Home period is stored as `client_home_days` (default 30).
+- The favicon is the indigo shield-and-check mark, the same SVG as the engineering dashboard (`static/dashboard.html`).
+- **Alert rows:** a severity badge (colour dot and word), the detection name, the AI summary excerpt, the device, an "Engineer advice (n)" tag when the alert has active recommendations, and the received time on the right.
+- **Weekly reports:** one row per week with a thin severity-mix bar and the counts, and the Excel download. A week without a workbook shows "No Excel file" (with a note when the week had only High or Critical alerts).
+
+### Home
+
+- **Period.** 7, 30 or 90 days ending today (JST). It applies to the status line, figures, charts, severity mix, rankings and recent alerts, which come from `GET /client/api/stats?days=N` and `GET /client/api/alerts`. The weekly report card does not depend on the period.
+- **Figures.** Total alerts; High or critical (`CRITICAL` plus `HIGH`); devices with alerts (named devices only); alerts with at least one active engineer recommendation (`with_advice`). Each change chip compares with the previous period of the same length (`previous` in the stats response): amber for an increase, green for a decrease, `±0` for no change. The first two figures have sparklines.
+- **Alerts per day, or per week above 31 days.** A stacked, smoothed area chart with CRITICAL at the bottom. Up to 31 days uses one bucket per day. Longer periods use 7-day buckets counted back from today, so 90 days gives twelve full weeks and one 6-day bucket (`src/services/client_stats.py`).
+- **Interaction** (`bindChartCanvas`, `bindChart` and `setChartActive` in `client.js`). Hover shows a crosshair, dots and a tooltip with each visible severity and the total. A click on a bucket opens All alerts for its dates; an empty bucket does nothing. On touch, the first tap shows the tooltip and a second tap opens the list. The legend buttons toggle severities. The chart is focusable: Left and Right move, Home and End jump to the ends, Enter or Space opens, Escape hides the tooltip. Switching a severity off hides its layer and tooltip row, but the tooltip total still counts all four severities.
+- **Table.** The "Show as a table" disclosure lists the same numbers, newest first.
+- **Severity mix.** A donut with the period total in the centre. Hovering a row or a segment shows that severity's count and share in the centre. Clicking one opens All alerts for that severity over the Home period. Rows with zero alerts are disabled.
+- **Devices and threats.** The top 5 by count (`TOP_N`), with the rest summarised. Horizontal bars in one neutral colour; each label shows the count and its share of all alerts, and hover shows the full name. These bars are not clickable. Missing names show as "not reported".
+
+### Severity colours
+
+Four hues, always shown with the severity word (chips, alert badges, legend, donut rows, tooltips). The values are the `--sev-fill-*` tokens in `static/client/client.css`:
+
+| Severity | Token | Dark (`:root`) | Light (OS light and `[data-theme="light"]`) |
+|---|---|---|---|
+| Low (低) | `--sev-fill-LOW` | `#5f8bbf` | `#5b8ac4` |
+| Medium (中) | `--sev-fill-MEDIUM` | `#f5cf5b` | `#f0b429` |
+| High (高) | `--sev-fill-HIGH` | `#ff8a34` | `#f06418` |
+| Critical (緊急) | `--sev-fill-CRITICAL` | `#ef3f5e` | `#c51f35` |
+
+The charts read these tokens when they draw (`chartTokens()` in `client.js`), so change a colour in the CSS only.
+
+### Chart library
+
+- `static/client/echarts.min.js` is a byte-identical copy of `static/echarts.min.js` (ECharts 5.6.1, about 470 KB). It is served at `/client/assets/echarts.min.js` by the app's existing `/client/assets` mount (`src/main.py`), so it is same-origin and reaches clients through the existing Caddy `/client/*` route. It is not loaded from `/static` (the production proxy restricts that to engineers) and not from a CDN. When ECharts is upgraded, replace both copies; nothing keeps them in sync.
+- `showApp()` calls `loadEcharts()`, so the script is added only after sign-in (or on page load with a saved session). The login page does not load it.
+- The vendored file is a reduced build: it has only the canvas renderer, and no tooltip, legend or axis-pointer components (the `showTip` and `legendToggleSelect` actions are absent). The page uses line, bar and pie series only. Do not try to enable ECharts tooltip, legend or crosshair options. The crosshair, tooltip, legend and donut centre are the page's own DOM, filled with `textContent`, because device and threat names come from alerts. `tests/integration/test_client_portal_page.py` enforces that no ECharts `tooltip` option is set.
+- If the file fails to load, the chart area shows "The charts could not be loaded." and the table opens. The figures, severity rows, rankings, alert list and reports still work. The loader tries again on the next sign-in or page load.
+- The charts redraw on a theme change, an OS colour-scheme change or a language change, and resize with their panel (`ResizeObserver`). Their instances are disposed when you leave Home and redrawn when you return.
+
+### What it does not change
+
+The charts add no new server endpoint, database field, setting or environment variable, and need no Caddy or deployment change, because `/client/assets/*` is already routed to the app (see [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md), section 5).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
@@ -246,6 +294,7 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
 | The **Portal settings** panel shows a load error | The browser may be using a cached copy of the dashboard's static files | Hard-refresh the page (Ctrl+Shift+R, or Cmd+Shift+R on macOS) |
 | Run now / regenerate returns **400** for a week | A manual run of a week that has not ended yet is refused, because it would archive a partial report and stop the scheduler from producing the real one | Wait until the week has ended. Preview still works for the current week |
 | A client API request returns **413** | Requests to `/client/api/*` are limited to 64 KB (this protects the unauthenticated login from memory exhaustion) | Expected for oversized bodies; normal use is far below the limit |
+| The Home chart area says "The charts could not be loaded." and the table opens | `/client/assets/echarts.min.js` did not load: missing from the deployed image, blocked, or not forwarded to the app | `curl -I "$BASE/client/assets/echarts.min.js"` should return 200 with a JavaScript content type. Fix the route or the image, then sign in again or reload. The figures and lists still work meanwhile |
 | Many clients behind one proxy share the login throttle, or a client can dodge the per-address limit | `FORWARDED_ALLOW_IPS=*` makes the app trust the leftmost `X-Forwarded-For` entry. That is only safe when your edge **replaces** the header (the AWS Caddy setup does). If your platform appends to a client-supplied header, set `FORWARDED_ALLOW_IPS` to the proxy's address instead. In the Docker Compose setup the proxy reaches the container from Docker's bridge gateway, so `docker-compose.yml` trusts Docker's private networks. If the log shows `untrusted_proxy_headers`, the proxy is not trusted and every client shares its address | Review `FORWARDED_ALLOW_IPS` for your platform |
 
 ## Deployment

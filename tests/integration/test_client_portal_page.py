@@ -213,15 +213,19 @@ def test_home_period_picker_offers_7_30_90_days_and_drives_the_stats_call():
 
 def test_charts_are_built_with_dom_apis_not_markup():
     """Device and threat names come from alerts (attacker-influenced): the chart, legend,
-    tooltip, table and ranked lists never go through innerHTML."""
+    tooltip, table and ranked lists never go through innerHTML. ECharts draws the marks
+    to a canvas; every text layer around them (tooltips, legend, the donut's centre
+    figure) is this page's own DOM, filled with textContent."""
     js = _js()
     for name in ("renderFigures", "renderLegend", "renderChart", "setChartActive", "renderStatsTable",
-                 "renderRanked", "renderStatsSkeleton"):
+                 "renderRanked", "drawRanked", "renderSeverity", "renderStatsSkeleton", "tipRow", "placeTip"):
         body = _fn(js, name)
         assert "innerHTML" not in body and "insertAdjacentHTML" not in body, name
-    assert "createElementNS(SVG_NS" in js and "document.createTextNode(" in js
+    assert "document.createTextNode(" in js
     builder = _fn(js, "el")
     assert "setAttribute(k, String(v))" in builder
+    # ECharts' own HTML tooltip (which takes an HTML string) is never configured.
+    assert "tooltip:" not in js and "formatter: (params)" not in js
 
 
 def test_client_files_load_nothing_from_other_origins():
@@ -229,7 +233,21 @@ def test_client_files_load_nothing_from_other_origins():
         text = (CLIENT_DIR / name).read_text(encoding="utf-8")
         urls = set(re.findall(r"https?://[^\s\"')]+", text))
         assert urls <= {"http://www.w3.org/2000/svg"}, (name, urls)
-    assert "echarts" not in _js()
+    # The only script the page adds itself is the chart library vendored beside it
+    # (same origin, under /client/assets: never /static, never a CDN), and only once
+    # signed in: the login page does not load it.
+    js = _js()
+    assert set(re.findall(r'"(/[^"\s]*\.js)"', js)) == {"/client/assets/echarts.min.js"}
+    assert (CLIENT_DIR / "echarts.min.js").is_file()
+    assert "echarts" not in _html()
+    assert "loadEcharts()" in _fn(js, "showApp") and "loadEcharts" not in _fn(js, "init")
+
+
+def test_vendored_chart_library_is_served_from_the_client_assets(web):
+    res = web.get("/client/assets/echarts.min.js")
+    assert res.status_code == 200
+    assert res.headers["cache-control"] == "no-cache"
+    assert res.headers["content-type"].startswith(("text/javascript", "application/javascript"))
 
 
 def test_every_chart_has_a_text_equivalent():
@@ -248,6 +266,13 @@ def test_severity_fills_are_reserved_for_severity():
     css = (CLIENT_DIR / "client.css").read_text(encoding="utf-8")
     for lvl in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
         assert css.count(f"--sev-fill-{lvl}:") == 3, lvl          # dark base, OS light, explicit light
-    # The ranked device/threat bars use a neutral ink, never a severity colour.
-    rank = re.search(r"\.rank-fill\{([^}]*)\}", css).group(1)
-    assert "var(--rank-fill)" in rank and "sev-" not in rank
+    # The ranked device/threat bars use a neutral ink, never a severity colour: the
+    # --rank-fill token is defined per theme without a severity value, and the bar
+    # chart reads that token and no severity token.
+    assert css.count("--rank-fill:") == 3
+    for value in re.findall(r"--rank-fill:([^;]+);", css):
+        assert "sev-" not in value
+    js = _js()
+    assert 'v("--rank-fill"' in _fn(js, "chartTokens")
+    draw = _fn(js, "drawRanked")
+    assert "k.rank" in draw and "k.sev" not in draw

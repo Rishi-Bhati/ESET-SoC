@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>SOC Lite Client Portal</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23165e83'/%3E%3Cpath d='M16 5.5 25 9.2v6.6c0 5.4-3.6 9.6-9 11.2-5.4-1.6-9-5.8-9-11.2V9.2Z' fill='%23ffffff'/%3E%3Cpath d='m11.8 15.6 3 3 5.4-5.6' stroke='%23165e83' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c8cff'/%3E%3Cpath d='M16 5.5 25 9.2v6.6c0 5.4-3.6 9.6-9 11.2-5.4-1.6-9-5.8-9-11.2V9.2Z' fill='%230a0c18'/%3E%3Cpath d='m11.8 15.6 3 3 5.4-5.6' stroke='%237c8cff' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/client/assets/client.css">
 <script src="/client/assets/client-i18n.js" defer></script>
 <script src="/client/assets/client.js" defer></script>
@@ -16,7 +16,9 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <span class="logo" aria-hidden="true">SL</span>
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" focusable="false"><path d="M16 4.5 26 8.6v6.9c0 5.8-3.9 10.3-10 12-6.1-1.7-10-6.2-10-12V8.6Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="m11.6 15.5 3 3 5.8-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
       <span class="brand-text"><strong>ESET SOC Lite</strong><span class="brand-sub" data-i18n="portal_name">Client Portal</span></span>
     </div>
     <div class="topbar-actions">
@@ -25,9 +27,18 @@
         <button type="button" id="langJa" class="seg-btn" lang="ja">日本語</button>
         <button type="button" id="langEn" class="seg-btn" lang="en">EN</button>
       </div>
-      <button type="button" id="themeBtn" class="btn btn-ghost btn-icon" data-i18n-aria="theme_toggle" data-i18n-title="theme_toggle" aria-label="Toggle theme"><span aria-hidden="true">◐</span></button>
-      <button type="button" id="logoutBtn" class="btn btn-ghost" data-i18n="btn_logout" hidden>Sign out</button>
+      <button type="button" id="themeBtn" class="btn btn-ghost btn-icon" data-i18n-aria="theme_toggle" data-i18n-title="theme_toggle" aria-label="Toggle theme">
+        <svg class="theme-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor"/></svg>
+      </button>
+      <button type="button" id="logoutBtn" class="btn btn-ghost btn-signout" data-i18n="btn_logout" hidden>Sign out</button>
     </div>
+  </div>
+  <div id="appNav" class="subnav" hidden>
+    <nav class="tabs" role="tablist" data-i18n-aria="tabs_label" aria-label="Sections">
+      <button type="button" role="tab" id="tabOverview" class="tab" aria-controls="panelOverview" aria-selected="true" data-tab="overview" data-i18n="tab_overview">Overview</button>
+      <button type="button" role="tab" id="tabAlerts" class="tab" aria-controls="panelAlerts" aria-selected="false" tabindex="-1" data-tab="alerts" data-i18n="tab_alerts">All alerts</button>
+      <button type="button" role="tab" id="tabReports" class="tab" aria-controls="panelReports" aria-selected="false" tabindex="-1" data-tab="reports" data-i18n="tab_reports">Weekly reports</button>
+    </nav>
   </div>
 </header>
 
@@ -37,7 +48,7 @@
   <section id="loginView" class="login-wrap" hidden>
     <form id="loginForm" class="card login-card" novalidate>
       <h1 data-i18n="login_title">Sign in</h1>
-      <p class="muted" data-i18n="login_intro">Sign in to see your security status, alerts and weekly reports.</p>
+      <p class="muted login-intro" data-i18n="login_intro">Sign in to see your security status, alerts and weekly reports.</p>
       <div id="loginNotice" class="notice" role="status" hidden></div>
       <div id="loginError" class="notice notice-error" role="alert" hidden></div>
       <label class="field" for="loginUser"><span data-i18n="login_username">Username</span>
@@ -46,35 +57,34 @@
       <label class="field" for="loginPass"><span data-i18n="login_password">Password</span>
         <input id="loginPass" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
       </label>
-      <button type="submit" id="loginSubmit" class="btn btn-primary btn-block" data-i18n="login_submit">Sign in</button>
-      <p class="muted small" data-i18n="login_help">Forgot your password? Please contact your engineer.</p>
+      <button type="submit" id="loginSubmit" class="btn btn-primary btn-block btn-lg" data-i18n="login_submit">Sign in</button>
+      <p class="muted small login-help" data-i18n="login_help">Forgot your password? Please contact your engineer.</p>
     </form>
   </section>
 
   <!-- Application -->
   <div id="appView" hidden>
-    <nav class="tabs" role="tablist" data-i18n-aria="tabs_label" aria-label="Sections">
-      <button type="button" role="tab" id="tabOverview" class="tab" aria-controls="panelOverview" aria-selected="true" data-tab="overview" data-i18n="tab_overview">Overview</button>
-      <button type="button" role="tab" id="tabAlerts" class="tab" aria-controls="panelAlerts" aria-selected="false" tabindex="-1" data-tab="alerts" data-i18n="tab_alerts">All alerts</button>
-      <button type="button" role="tab" id="tabReports" class="tab" aria-controls="panelReports" aria-selected="false" tabindex="-1" data-tab="reports" data-i18n="tab_reports">Weekly reports</button>
-    </nav>
-
     <!-- Overview: are we OK, is it getting better or worse, and what happened.
          One period picker scopes everything below it. -->
     <section id="panelOverview" role="tabpanel" aria-labelledby="tabOverview">
-      <div class="period-row">
-        <span id="homePeriodLabel" class="period-label" data-i18n="home_period_label">Last</span>
-        <div id="homePeriod" class="seg period-seg" role="group" data-i18n-aria="home_period_aria" aria-label="Period shown on this page">
-          <button type="button" class="seg-btn" data-days="7"></button>
-          <button type="button" class="seg-btn" data-days="30"></button>
-          <button type="button" class="seg-btn" data-days="90"></button>
+      <div class="page-head">
+        <div class="page-heading">
+          <h1 data-i18n="ov_page_title">Security overview</h1>
+        </div>
+        <div class="period-row">
+          <span id="homePeriodLabel" class="period-label" data-i18n="home_period_label">Last</span>
+          <div id="homePeriod" class="seg period-seg" role="group" data-i18n-aria="home_period_aria" aria-label="Period shown on this page">
+            <button type="button" class="seg-btn" data-days="7"></button>
+            <button type="button" class="seg-btn" data-days="30"></button>
+            <button type="button" class="seg-btn" data-days="90"></button>
+          </div>
         </div>
       </div>
 
       <div id="ovStatus" class="status-card" data-tone="loading" role="status" aria-live="polite">
         <span class="status-icon" aria-hidden="true"></span>
         <div class="status-text">
-          <h1 id="ovHeadline" class="status-headline"></h1>
+          <h2 id="ovHeadline" class="status-headline"></h2>
           <p id="ovSub" class="status-sub"></p>
         </div>
         <button type="button" id="ovAction" class="btn btn-primary" hidden></button>
@@ -84,51 +94,78 @@
         <dl id="ovFigures" class="figures"></dl>
         <p id="ovCompare" class="compare-note muted small"></p>
 
-        <section class="panel trend" aria-labelledby="ovTrendTitle">
-          <div class="panel-head">
-            <h2 id="ovTrendTitle"></h2>
-            <p id="ovTrendSub" class="muted small"></p>
-          </div>
-          <div id="ovLegend" class="legend" role="group" data-i18n-aria="legend_label" aria-label="Alerts by severity"></div>
-          <div id="ovChart" class="chart"></div>
-          <div id="ovChartLive" class="sr-only" aria-live="polite"></div>
-          <details id="ovTableWrap" class="table-view">
-            <summary data-i18n="table_show">Show as a table</summary>
-            <div id="ovTable" class="table-scroll"></div>
-          </details>
-        </section>
+        <!-- The trend is the page's main chart; its legend switches severities on and
+             off. The severity mix beside it holds the totals and opens the list. -->
+        <div class="ov-main">
+          <section class="panel trend" aria-labelledby="ovTrendTitle">
+            <div class="panel-head trend-head">
+              <div class="panel-titles">
+                <h2 id="ovTrendTitle"></h2>
+                <p id="ovTrendSub" class="panel-sub"></p>
+              </div>
+              <div id="ovLegend" class="legend" role="group" data-i18n-aria="legend_label" aria-label="Severities shown in the chart"></div>
+            </div>
+            <div id="ovChart" class="chart"></div>
+            <div id="ovChartLive" class="sr-only" aria-live="polite"></div>
+            <details id="ovTableWrap" class="table-view">
+              <summary data-i18n="table_show">Show as a table</summary>
+              <div id="ovTable" class="table-scroll"></div>
+            </details>
+          </section>
+
+          <section class="panel mix-panel" aria-labelledby="ovSeverityTitle">
+            <div class="panel-head">
+              <h2 id="ovSeverityTitle" data-i18n="severity_title">Severity mix</h2>
+              <p class="panel-sub" data-i18n="severity_sub">Share of the alerts in this period.</p>
+            </div>
+            <div id="ovSeverity" class="severity" role="group"></div>
+          </section>
+        </div>
 
         <div class="ov-grid ov-ranks">
           <section class="panel" aria-labelledby="ovDevicesTitle">
-            <h2 id="ovDevicesTitle" data-i18n="devices_title">Devices with the most alerts</h2>
+            <div class="panel-head">
+              <h2 id="ovDevicesTitle" data-i18n="devices_title">Devices with the most alerts</h2>
+            </div>
             <div id="ovDevices" class="ranked"></div>
           </section>
           <section class="panel" aria-labelledby="ovThreatsTitle">
-            <h2 id="ovThreatsTitle" data-i18n="threats_title">Most common threats</h2>
+            <div class="panel-head">
+              <h2 id="ovThreatsTitle" data-i18n="threats_title">Most common threats</h2>
+            </div>
             <div id="ovThreats" class="ranked"></div>
-            <p class="muted small ranked-note" data-i18n="threats_note">Threat names are shown as ESET reports them.</p>
+            <p class="ranked-note" data-i18n="threats_note">Threat names are shown as ESET reports them.</p>
           </section>
         </div>
       </div>
 
-      <div class="ov-grid">
-        <section class="card" aria-labelledby="ovListTitle">
-          <h2 id="ovListTitle" data-i18n="ov_list_title">Recent high-priority alerts</h2>
+      <div class="ov-grid ov-bottom">
+        <section class="panel list-panel" aria-labelledby="ovListTitle">
+          <div class="panel-head panel-head-row">
+            <h2 id="ovListTitle" data-i18n="ov_list_title">Recent high-priority alerts</h2>
+            <button type="button" id="ovAllAlerts" class="btn btn-link" data-i18n="ov_see_all">See all alerts</button>
+          </div>
           <div id="ovListState" class="state" role="status" hidden></div>
           <ul id="ovList" class="alert-list compact"></ul>
-          <button type="button" id="ovAllAlerts" class="btn btn-link" data-i18n="ov_see_all">See all alerts</button>
         </section>
-        <section class="card" aria-labelledby="ovReportTitle">
-          <h2 id="ovReportTitle" data-i18n="ov_report_title">Latest weekly report</h2>
+        <section class="panel report-card" aria-labelledby="ovReportTitle">
+          <div class="panel-head panel-head-row">
+            <h2 id="ovReportTitle" data-i18n="ov_report_title">Latest weekly report</h2>
+            <button type="button" id="ovAllReports" class="btn btn-link" data-i18n="ov_see_reports">All weekly reports</button>
+          </div>
           <div id="ovReport"></div>
-          <button type="button" id="ovAllReports" class="btn btn-link" data-i18n="ov_see_reports">All weekly reports</button>
         </section>
       </div>
-      <p class="help muted" data-i18n="ov_help">Questions about an alert? Please contact your engineer.</p>
     </section>
 
     <!-- All alerts -->
     <section id="panelAlerts" role="tabpanel" aria-labelledby="tabAlerts" hidden>
+      <div class="page-head">
+        <div class="page-heading">
+          <h1 data-i18n="alerts_page_title">All alerts</h1>
+        </div>
+      </div>
+
       <div class="toolbar">
         <div id="countChips" class="chips" role="group" data-i18n-aria="counts_label" aria-label="Filter by severity"></div>
         <div class="toolbar-right">
@@ -141,7 +178,7 @@
               <option value="custom" data-i18n="period_custom">Choose dates…</option>
             </select>
           </label>
-          <button type="button" id="exportBtn" class="btn" data-i18n="btn_export">Download as Excel</button>
+          <button type="button" id="exportBtn" class="btn btn-primary" data-i18n="btn_export">Download as Excel</button>
         </div>
       </div>
 
@@ -193,13 +230,20 @@
 
     <!-- Weekly reports -->
     <section id="panelReports" role="tabpanel" aria-labelledby="tabReports" hidden>
-      <h1 class="page-title" data-i18n="reports_title">Weekly reports</h1>
-      <p class="muted lead" data-i18n="reports_intro">Each week we prepare an Excel file listing that week's low and medium alerts. High and critical alerts are counted here and can be seen under All alerts.</p>
+      <div class="page-head">
+        <div class="page-heading">
+          <h1 data-i18n="reports_title">Weekly reports</h1>
+          <p class="page-sub" data-i18n="reports_intro">Each week we prepare an Excel file listing that week's low and medium alerts. High and critical alerts are counted here and can be seen under All alerts.</p>
+        </div>
+      </div>
       <div id="reportsState" class="state card" role="status" aria-live="polite" hidden></div>
       <ul id="reportRows" class="report-list"></ul>
     </section>
 
-    <p class="footnote muted" data-i18n="footer_tz">All times are Japan time (JST).</p>
+    <footer class="footnote">
+      <p data-i18n="ov_help">Questions about an alert? Please contact your engineer.</p>
+      <p data-i18n="footer_tz">All times are Japan time (JST).</p>
+    </footer>
   </div>
 </main>
 

@@ -448,6 +448,7 @@ Clients can:
 
 - view and filter alerts by severity and JST date range, and open an alert to
   see the AI's initial findings and the engineer recommendations;
+- see the Home charts for the last 7, 30 or 90 days (alerts per day or per week by severity, the severity mix, the top devices and threats). See [Portal interface and charts](docs/CLIENT_PORTAL.md#portal-interface-and-charts);
 - export the filtered alerts to a customized `.xlsx` (columns and their order,
   number of alerts, Japanese or English headers, optional info sheet);
 - download the weekly reports.
