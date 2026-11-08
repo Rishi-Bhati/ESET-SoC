@@ -1000,7 +1000,7 @@ function setChartActive(i, announce) {
   }
   box.querySelector(".chart-dots").replaceChildren(...dots);
 
-  const total = bucketTotal(b);
+  const total = sumCounts(b.counts, visible);   // follows the legend toggles, like the rows above it
   const days = bucketDays(b);
   const tip = $("ovTip");
   tip.replaceChildren(
@@ -1008,11 +1008,11 @@ function setChartActive(i, announce) {
     ...SEVERITIES.filter((lvl) => visible.includes(lvl)).map((lvl) =>
       tipRow(lvl, t("sev_" + lvl), fmtNum(b.counts[lvl]), !Number(b.counts[lvl]))),
     el("div", { class: "tip-total" }, [el("span", { class: "tip-label" }, t("table_total")), el("span", { class: "tip-n" }, fmtNum(total))]),
-    total ? el("div", { class: "tip-hint" }, t("tip_open")) : null);
+    bucketTotal(b) ? el("div", { class: "tip-hint" }, t("tip_open")) : null);
   placeTip(tip, box, x, yTop + 70);
   if (announce) {
     $("ovChartLive").textContent = [bucketLabel(b), t("tip_total", fmtNum(total)),
-      ...SEVERITIES.filter((lvl) => Number(b.counts[lvl]) > 0).map((lvl) => t("sev_" + lvl) + " " + fmtNum(b.counts[lvl]))].join(t("list_sep"));
+      ...SEVERITIES.filter((lvl) => visible.includes(lvl) && Number(b.counts[lvl]) > 0).map((lvl) => t("sev_" + lvl) + " " + fmtNum(b.counts[lvl]))].join(t("list_sep"));
   }
 }
 
