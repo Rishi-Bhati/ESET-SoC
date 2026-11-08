@@ -161,7 +161,8 @@ async def init_db() -> None:
                 created_at REAL NOT NULL,
                 password_changed_at REAL,
                 last_login_at REAL,
-                failure_window_start REAL
+                login_score REAL,
+                login_score_at REAL
             )
         """)
         # token_hash is a hash of the opaque cookie token; the token itself is
@@ -180,19 +181,22 @@ async def init_db() -> None:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_client_sessions_user ON client_sessions(user_id)"
         )
-        # Sign-in lock-out model (see storage/user_store.py, verify_credentials):
-        #  - client_login_failures: one row per (account, client address). Wrong
-        #    passwords lock only that pair; the same account still signs in from
-        #    other addresses. last_success_at marks a "known" address for the
-        #    account. Rows are pruned (user_store.purge_login_failures).
-        #  - client_users.failed_attempts / locked_until / failure_window_start:
-        #    the account-wide BACKSTOP only — failures from every address in the
-        #    current window, and the end of the current slow-down. It never
-        #    applies to an address that signed in successfully recently.
+        # Sign-in lock-out (see storage/user_store.py, verify_credentials):
+        #  - client_login_failures: one row per (account, address) and, in
+        #    backstop mode, per (account, network) with client_ip "net:<cidr>".
+        #    Wrong passwords lock out only that address / network. last_success_at
+        #    marks an address the account signed in from ("known"). Pruned by
+        #    user_store.purge_login_failures.
+        #  - client_users.login_score / login_score_at: the account-wide score
+        #    that switches on backstop mode. It never refuses anyone by itself.
+        #    (failed_attempts / locked_until are from the old account-wide lock
+        #    and are no longer used.)
+        #  - client_login_pad: written only so every sign-in attempt executes the
+        #    same statements (an unknown username must not answer faster).
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS client_login_failures (
                 user_id TEXT NOT NULL REFERENCES client_users(id) ON DELETE CASCADE,
-                client_ip TEXT NOT NULL,       -- address key (IPv6 grouped by /64)
+                client_ip TEXT NOT NULL,       -- address key, or "net:" + network
                 failed_attempts INTEGER NOT NULL DEFAULT 0,
                 last_failed_at REAL,
                 locked_until REAL,
@@ -200,14 +204,21 @@ async def init_db() -> None:
                 PRIMARY KEY (user_id, client_ip)
             )
         """)
-        if await _add_missing_columns(conn, "client_users", {"failure_window_start": "REAL"}):
-            # Upgrading from the account-wide hard lock: failed_attempts and
-            # locked_until now mean the backstop window, so an old 15-minute
-            # account lock must not carry over as a backstop slow-down.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_login_pad (
+                slot INTEGER PRIMARY KEY,
+                at REAL
+            )
+        """)
+        if await _add_missing_columns(conn, "client_users",
+                                      {"login_score": "REAL", "login_score_at": "REAL"}):
+            # Upgrading from an account-wide lock (the old 10-failures/15-minutes
+            # lock, or the account-wide slow-down of an interim build): that state
+            # must not carry over, so it is cleared once.
             await conn.execute(
                 "UPDATE client_users SET failed_attempts = 0, locked_until = NULL")
             logger.info("database_migrated", table="client_users",
-                        change="per-address login lock-out")
+                        change="per-address login lock-out with network backstop")
 
         # Query index over alerts (storage/alert_index_store.py): one row per
         # correlation_id so the portal can filter/page without reading every

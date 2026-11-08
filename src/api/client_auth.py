@@ -17,7 +17,7 @@ Audit events (structlog): client_login_succeeded, client_login_failed,
 client_logout. Passwords and tokens are never logged, and neither is the
 username TYPED into a failed login (a client who pastes their password into the
 username box would otherwise leave it in the log): user_store logs the account's
-user_id for an existing account and only a keyed hash fingerprint otherwise.
+user_id for an existing account and only reason=unknown_user otherwise.
 Successful-login and logout events name the account by its stored username
 (field `account`), which is the validated name the engineer created.
 """
@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 import structlog
 from src.middleware.auth import CLIENT_SESSION_HEADER, require_client, require_portal_enabled
-from src.middleware.security import auth_limiter, client_key
+from src.middleware.security import auth_limiter, client_key, warn_if_untrusted_proxy
 from src.storage import runtime_settings, user_store
 
 router = APIRouter(prefix="/client/api/auth", tags=["Client Portal Auth"])
@@ -51,6 +51,7 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
 @router.post("/login", dependencies=[Depends(require_portal_enabled)])
 async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
     client_ip = client_key(request)
+    warn_if_untrusted_proxy(request)
     wait = auth_limiter.retry_after(client_ip)
     if wait:
         logger.warning("client_login_throttled", client_ip=client_ip)

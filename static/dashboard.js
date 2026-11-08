@@ -2170,8 +2170,8 @@ const PSET_SECTIONS = [
   { id: "signin", title: "pps_signin", sub: "pps_signin_sub",
     keys: ["client_session_idle_minutes", "client_session_max_hours",
       "client_login_max_failures", "client_login_lockout_minutes",
-      "client_login_account_max_failures", "client_login_account_window_minutes",
-      "client_login_account_max_delay_seconds"] },
+      "client_login_account_max_failures", "client_login_account_decay_hours",
+      "client_login_backstop_max_failures", "client_login_backstop_max_lock_hours"] },
   { id: "access", title: "pps_access", sub: "pps_access_sub",
     keys: ["client_portal_url", "client_export_max_alerts"] },
   { id: "email", title: "pps_email", sub: "pps_email_sub",
@@ -2515,6 +2515,7 @@ function portalCounts() {
     active: users.filter((u) => !u.disabled && !u.locked).length,
     disabled: users.filter((u) => u.disabled).length,
     locked: users.filter((u) => u.locked).length,
+    attacked: users.filter((u) => u.throttled).length,
   };
 }
 
@@ -2633,6 +2634,7 @@ function ppNextSteps() {
     steps.push({ tone: "warn", text: t("pp_step_add"), why: t("pp_step_add_why"),
       act: `<button class="small" data-pp-go="add">${esc(t("pu_add"))}</button>` });
   }
+  if (c.attacked) steps.push({ tone: "warn", text: t("pp_step_attacked", c.attacked), why: t("pp_step_attacked_why") });
   if (c.locked) steps.push({ tone: "info", text: t("pp_step_locked", c.locked), why: t("pp_step_locked_why") });
   if (d && !d.enabled) {
     steps.push({ tone: "warn", text: t("pp_step_weekly"), why: t("pp_step_weekly_why"),
@@ -2795,7 +2797,7 @@ function puRowActions(u) {
     `<button class="small${cls ? " " + cls : ""}" data-pu-act="${act}" data-uid="${id}">${esc(t(key))}</button>`;
   // The likely next action stays visible; the rest sit under "More".
   let html = `<div class="pp-actions">
-    ${u.locked ? btn("unlock", "pu_act_unlock", "primary") : ""}
+    ${u.locked || u.throttled ? btn("unlock", "pu_act_unlock", "primary") : ""}
     ${u.disabled ? btn("enable", "pu_act_enable") : ""}
     ${btn("reset", "pu_act_reset")}
     <details class="pp-more"><summary>${esc(t("pp_more_actions"))}</summary><div class="menu">
@@ -2822,14 +2824,17 @@ function puRowActions(u) {
   return html;
 }
 
-// What "Locked" means for this account: some addresses locked out after wrong
-// passwords (other addresses can still sign in), and/or the whole account
-// slowed down after very many wrong passwords. Unlock clears both.
+// What "Locked" means for this account: some addresses (or, in backstop mode,
+// networks) locked out after wrong passwords — the account still signs in from
+// anywhere else. "Under attack" = backstop mode: very many wrong passwords from
+// many addresses, so new networks get stricter limits. Unlock clears all of it.
 function puLockDetail(u) {
   const parts = [];
   const n = Number(u.locked_addresses) || 0;
+  const nets = Number(u.locked_networks) || 0;
   if (n) parts.push(t("pp_locked_addresses", n));
-  if (u.throttled) parts.push(t("pp_account_slowed"));
+  if (nets) parts.push(t("pp_locked_networks", nets));
+  if (u.throttled) parts.push(t("pp_account_backstop"));
   return parts.length ? `<span class="pp-cell-sub">${esc(parts.join(" · "))}</span>` : "";
 }
 
@@ -2857,6 +2862,7 @@ function renderPortalUsers() {
   const rows = users.map((u) => {
     const badges = (u.disabled ? portalPill("PENDING", t("pu_status_disabled")) : "")
       + (u.locked ? portalPill("BLOCKED", t("pu_status_locked")) : "")
+      + (u.throttled ? portalPill("BLOCKED", t("pu_status_under_attack")) : "")
       + (!u.disabled && !u.locked ? portalPill("SUCCESS", t("pu_status_active")) : "");
     const last = fmtJst(u.last_login_at);
     const sessions = Number(u.active_sessions) || 0;

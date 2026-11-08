@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
 import time
@@ -139,6 +140,48 @@ def client_key(scope_or_request: Any) -> str:
     if not client:
         return "unknown"
     return client[0] if isinstance(client, (tuple, list)) else getattr(client, "host", "unknown")
+
+
+# Peers already warned about by warn_if_untrusted_proxy(), with when.
+_untrusted_proxy_warned: dict[str, float] = {}
+UNTRUSTED_PROXY_WARN_INTERVAL = 3600.0
+
+
+def warn_if_untrusted_proxy(request: Any) -> bool:
+    """
+    Logs `untrusted_proxy_headers` (at most hourly per peer) when a request
+    arrives from a private/loopback peer WITH an X-Forwarded-For header that
+    uvicorn did not apply — i.e. a reverse proxy sits in front of the app but is
+    not in FORWARDED_ALLOW_IPS. Every client then appears to come from the
+    proxy's address, so per-address limits (the client sign-in lock-out, the 429
+    throttle) treat all clients as one. Typical cause: a proxy on the Docker host
+    reaching the container through the bridge gateway. Returns True if it warned.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if not forwarded:
+        return False
+    peer = client_key(request)
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    if not (peer_ip.is_private or peer_ip.is_loopback):
+        return False  # a public client sending its own header: nothing to fix
+    hops = {h.strip().strip("[]") for h in forwarded.split(",")}
+    if peer in hops:
+        return False  # applied: the client address was taken from the header
+    now = time.monotonic()
+    last = _untrusted_proxy_warned.get(peer)
+    if last is not None and now - last < UNTRUSTED_PROXY_WARN_INTERVAL:
+        return False
+    if len(_untrusted_proxy_warned) >= 1000:
+        _untrusted_proxy_warned.clear()
+    _untrusted_proxy_warned[peer] = now
+    logger.warning("untrusted_proxy_headers", peer=peer,
+                   forwarded_allow_ips=settings.forwarded_allow_ips,
+                   hint="add this proxy's address (or network) to FORWARDED_ALLOW_IPS, "
+                        "or every client shares one address for sign-in limits")
+    return True
 
 
 def _header(scope: dict, name: bytes) -> str | None:

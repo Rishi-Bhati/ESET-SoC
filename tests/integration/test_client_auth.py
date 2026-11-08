@@ -81,8 +81,8 @@ async def test_password_policy(password):
 
 
 async def test_password_policy_boundaries():
-    await user_store.create_user("edge1", "x" * 12)
-    await user_store.create_user("edge2", "y" * 256)
+    await user_store.create_user("edge1", "Kq7vRz2mWp4x")                    # exactly 12
+    await user_store.create_user("edge2", ("Kq7vRz2mWp4x" * 22)[:256])      # exactly 256
 
 
 async def test_verify_credentials_success_and_failures():
@@ -174,8 +174,9 @@ async def test_concurrent_wrong_passwords_all_count_towards_the_lockout():
     # the address got locked out while this request was hashing
     "INSERT INTO client_login_failures (user_id, client_ip, failed_attempts, last_failed_at, locked_until) "
     "VALUES (:id, 'ip', 10, :now, :later)",
-    # the account-wide slow-down started while this request was hashing
-    "UPDATE client_users SET locked_until = :later WHERE id = :id",
+    # the address's network got locked out (backstop mode) while this request was hashing
+    "INSERT INTO client_login_failures (user_id, client_ip, failed_attempts, last_failed_at, locked_until) "
+    "VALUES (:id, 'net:ip', 3, :now, :later)",
 ])
 async def test_correct_password_refused_if_the_account_locked_during_the_hash(monkeypatch, lock_sql):
     """Regression: the lock state was taken from the row read before hashing, so
@@ -494,8 +495,9 @@ def test_audit_events_contain_no_secrets(client: TestClient, monkeypatch):
     assert len(failed) == 2 and all(set(f) == {"client_ip"} for f in failed)
     assert all("username" not in fields for _, _, fields in rec.records + store_rec.records)
     assert "bad_password" in store_rec.dump()
+    # an unknown name is logged with no identifier at all (not even a hash of it)
     unknown = [f for f in store_rec.find("client_login_rejected") if f["reason"] == "unknown_user"]
-    assert len(unknown) == 1 and len(unknown[0]["attempt"]) == 12
+    assert unknown == [{"reason": "unknown_user", "client_ip": "testclient"}]
     everything = rec.dump() + store_rec.dump()
     for secret in (generated, new_pw, token, "typo-password-1", "MySecretPass#1", ENGINEER_KEY):
         assert secret not in everything

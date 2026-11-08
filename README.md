@@ -525,9 +525,10 @@ environment variable of the same name (upper case) sets the default, except
 | `client_session_max_hours` | A session ends this long after sign-in | 12 | 1–168 |
 | `client_login_max_failures` | Wrong passwords in a row from one address before that address is locked out of the account (other addresses still sign in) | 10 | 1–1000 |
 | `client_login_lockout_minutes` | How long a locked-out address stays locked out | 15 | 1–1440 |
-| `client_login_account_max_failures` | Wrong passwords for one account from all addresses within the window before attempts on it are slowed down (never a hard lock; addresses that signed in within 30 days are exempt) | 100 | 10–100000 |
-| `client_login_account_window_minutes` | Window for the account-wide count | 60 | 1–1440 |
-| `client_login_account_max_delay_seconds` | Longest slow-down; the wait doubles from 1 s with each further wrong password | 60 | 1–3600 |
+| `client_login_account_max_failures` | Account-wide wrong-password score (all addresses) at which backstop mode starts: networks the account has not signed in from get stricter limits. Never refuses a correct password from another network | 100 | 10–100000 |
+| `client_login_account_decay_hours` | The score drains by the limit above over this many hours (gradually, no reset) | 24 | 1–720 |
+| `client_login_backstop_max_failures` | In backstop mode, wrong passwords allowed per network (IPv4 /24, IPv6 /48) before it is locked out of the account | 3 | 1–10 |
+| `client_login_backstop_max_lock_hours` | A network lock starts at `client_login_lockout_minutes` and doubles per further wrong password, up to this | 24 | 1–168 |
 | `client_export_max_alerts` | Most alerts in one client export | 5000 | 1–100000 |
 | `client_immediate_min_risk` | Minimum risk for an immediate client notification | `LOW` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. Stored, but no code reads it yet, so it has no effect |
 | `weekly_report_enabled` | Run the weekly report schedule | `false` | on/off |
@@ -556,7 +557,7 @@ The dashboard's Client Portal tab calls these engineer routes. They can also be 
 | `POST /dashboard/api/portal/users` | Create an account. Omit `password` to generate one (returned once) |
 | `POST /dashboard/api/portal/users/{id}/password` | Reset a password. Clears every lock-out, forgets known addresses and ends sessions |
 | `POST /dashboard/api/portal/users/{id}/disable` / `enable` | Turn an account off or on. Disabling ends its sessions |
-| `POST /dashboard/api/portal/users/{id}/unlock` | Clear the account's locked-out addresses and its slow-down |
+| `POST /dashboard/api/portal/users/{id}/unlock` | Clear the account's locked-out addresses and networks and its score |
 | `POST /dashboard/api/portal/users/{id}/revoke-sessions` | End all of an account's sessions |
 | `DELETE /dashboard/api/portal/users/{id}` | Delete an account |
 | `GET /dashboard/api/alerts/{id}/recommendations` | All recommendations for an alert, including retracted ones |
@@ -595,13 +596,15 @@ Client routes, using the `X-Client-Session` header (except sign-in):
 - **Sign-in is limited per account and address.** After
   `client_login_max_failures` wrong passwords from one address, only that
   address is locked out of that account, so knowing a username is not enough to
-  lock a client out. An account-wide backstop
-  (`client_login_account_max_failures` per `client_login_account_window_minutes`)
-  slows attempts down instead of locking, and never for an address that signed
-  in recently. Failed checks are also counted per address against the shared
-  `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS` limit. An unknown user, a
-  wrong password, a disabled account and a locked-out or slowed-down attempt all
-  get the same `401`. The username typed into a failed sign-in is never logged.
+  lock a client out. Past an account-wide score (`client_login_account_max_failures`,
+  draining over `client_login_account_decay_hours`) the account is in backstop
+  mode: networks it has not signed in from are locked out after a few wrong
+  passwords, with a doubling lock. Nothing refuses a correct password from an
+  unrelated network. Common passwords (`Welcome2026!!`, keyboard walks, the
+  username) are refused when set. Failed checks are also counted per address
+  against the shared `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS` limit.
+  Every refusal gets the same `401` after the same work. The username typed
+  into a failed sign-in is never logged.
   See [docs/CLIENT_PORTAL.md](docs/CLIENT_PORTAL.md#sign-in-protection).
 - **Sessions** use a 256-bit random token, and only its hash is stored. They
   expire after the idle and absolute limits. The token travels in the
@@ -648,6 +651,10 @@ CloudWatch Logs, SSM instead of SSH. Step by step in
 `.env`, runs the container read-only with all capabilities dropped, publishes
 the dashboard on `127.0.0.1:8000` only (put Caddy/nginx/a Cloudflare tunnel in
 front for TLS) and maps host syslog ports 514/601 to the container's 5514/5601.
+It also sets `FORWARDED_ALLOW_IPS` to Docker's private networks, because a proxy
+on the host reaches the container from the bridge gateway; without that every
+visitor would share one address for the sign-in limits (see
+[docs/CLIENT_PORTAL.md](docs/CLIENT_PORTAL.md#deployment)).
 
 **Railway** — `railway.toml` builds the Dockerfile and health-checks `/health`.
 In the service settings: add a volume mounted at `/data`, set the variables

@@ -202,12 +202,16 @@ class Settings(BaseSettings):
     client_session_max_hours: int = Field(12, validation_alias="CLIENT_SESSION_MAX_HOURS")
     client_login_max_failures: int = Field(10, validation_alias="CLIENT_LOGIN_MAX_FAILURES")
     client_login_lockout_minutes: int = Field(15, validation_alias="CLIENT_LOGIN_LOCKOUT_MINUTES")
-    # Account-wide backstop (all addresses together): past this many wrong
-    # passwords in the window, attempts on the account are slowed down — never a
-    # hard lock, and never for an address that signed in to it recently.
+    # Account-wide backstop: a score of wrong passwords from all addresses that
+    # drains by ACCOUNT_MAX_FAILURES every ACCOUNT_DECAY_HOURS. At or above it,
+    # wrong passwords from addresses the account has not signed in from are also
+    # counted per network (IPv4 /24, IPv6 /48): BACKSTOP_MAX_FAILURES of them
+    # lock that network out of the account, the lock doubling up to
+    # BACKSTOP_MAX_LOCK_HOURS. Never refuses a correct password from elsewhere.
     client_login_account_max_failures: int = Field(100, validation_alias="CLIENT_LOGIN_ACCOUNT_MAX_FAILURES")
-    client_login_account_window_minutes: int = Field(60, validation_alias="CLIENT_LOGIN_ACCOUNT_WINDOW_MINUTES")
-    client_login_account_max_delay_seconds: int = Field(60, validation_alias="CLIENT_LOGIN_ACCOUNT_MAX_DELAY_SECONDS")
+    client_login_account_decay_hours: int = Field(24, validation_alias="CLIENT_LOGIN_ACCOUNT_DECAY_HOURS")
+    client_login_backstop_max_failures: int = Field(3, validation_alias="CLIENT_LOGIN_BACKSTOP_MAX_FAILURES")
+    client_login_backstop_max_lock_hours: int = Field(24, validation_alias="CLIENT_LOGIN_BACKSTOP_MAX_LOCK_HOURS")
     client_export_max_alerts: int = Field(5000, validation_alias="CLIENT_EXPORT_MAX_ALERTS")
     # Recipients (comma-separated). Blank = fall back to CLIENT_NOTIFICATION_EMAILS.
     recommendation_notification_emails: str = Field("", validation_alias="RECOMMENDATION_NOTIFICATION_EMAILS")

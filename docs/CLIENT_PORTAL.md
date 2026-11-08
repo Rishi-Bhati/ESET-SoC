@@ -50,15 +50,15 @@ Manage accounts in the **Client accounts** panel on the dashboard's Client Porta
 
 - **Portal address and switch (At a glance panel):** the client portal URL with a **Copy** button, and the portal state with an **Enable portal** or **Disable portal** button. If the switch cannot be turned on, the reason is shown next to it (for example, a dashboard key that is too short). If the portal is on but the server is refusing sign-ins, the state reads **On, but refusing sign-ins**.
 - **Add an account:** press **Add account**, then enter a username and, optionally, a display name and a password. Leave the password blank to generate a strong one.
-- **Accounts table:** account (username and display name), status (**Active**, **Disabled** or **Locked**; under **Locked** it says how many addresses are locked out and whether the whole account is slowed down, see [Sign-in protection](#sign-in-protection)), last sign-in in JST (with the number of active sessions when there are any), and actions.
+- **Accounts table:** account (username and display name), status (**Active**, **Disabled**, **Locked** and/or **Under attack**; underneath it says how many addresses or networks are locked out and whether the account is in backstop mode, see [Sign-in protection](#sign-in-protection)). The At a glance steps also list accounts that are under attack, last sign-in in JST (with the number of active sessions when there are any), and actions.
 - **Actions per account:** **Reset password**, **Enable** (shown when the account is disabled) and **Unlock** (shown when it is locked) are always visible; **Disable**, **Sign out everywhere** and **Delete** are under **More**. Reset password opens a field: type a new password, or leave it blank to generate one. Delete asks you to confirm in the same row.
 - **Generated and reset passwords** are shown once, in a box above the table, with a **Copy** button. Passwords are not stored, so the box cannot show one again after it is dismissed, or after you leave the Client Portal tab. If a password is lost, reset it.
 
 The same actions as API calls, as an alternative for scripts:
 
 ```bash
-# List accounts (id, username, disabled, locked, locked_until, locked_addresses, throttled,
-# throttled_until, failed_attempts, active_sessions)
+# List accounts (id, username, disabled, locked, locked_until, locked_addresses,
+# locked_networks, throttled (= backstop mode), failed_attempts (= account score), active_sessions)
 curl -s "${H[@]}" "$BASE/dashboard/api/portal/users"
 
 # Create an account. Omit "password" to have one generated.
@@ -73,7 +73,7 @@ curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/password" -d '{
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/disable"
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/enable"
 
-# Clear every lock-out of the account: all locked-out addresses and the account-wide slow-down
+# Clear every lock-out of the account: locked-out addresses and networks, and the account score
 curl -s -X POST "${H[@]}" "$BASE/dashboard/api/portal/users/<id>/unlock"
 
 # End all sessions without changing anything else
@@ -92,16 +92,34 @@ Rules:
 
 ## Sign-in protection
 
-Wrong passwords are counted per **account and client address** together. Behind Caddy the address is the one the trusted proxy reports (`FORWARDED_ALLOW_IPS`); IPv6 addresses are grouped by `/64`.
+The rule the design is built around: **nothing an attacker does from other networks can make a correct password fail from yours.** There is no account-wide refusal. Behind Caddy the client address is the one the trusted proxy reports (`FORWARDED_ALLOW_IPS`, see [Deployment](#deployment)).
 
-- **Per address:** after `client_login_max_failures` (default 10) wrong passwords in a row from one address, **that address** is locked out of **that account** for `client_login_lockout_minutes` (default 15). The same account still signs in normally from any other address. So someone who only knows a client's username cannot lock the client out.
-- **Account-wide backstop:** if the account collects `client_login_account_max_failures` (default 100) wrong passwords from all addresses together within `client_login_account_window_minutes` (default 60), attempts on it are **slowed down**, not locked: after each further wrong password, attempts are refused for 1 s, then 2 s, 4 s and so on, up to `client_login_account_max_delay_seconds` (default 60). The count restarts when the window ends. An address that signed in to the account successfully in the last 30 days is never slowed down (it can still be locked out by its own wrong passwords).
-- A refused attempt (locked-out address, slowed-down account, disabled account, unknown username, wrong password) always gets the same `401 Invalid username or password`, and takes the same time.
-- **Unlock** (dashboard or `POST .../unlock`) clears all of the account's locked-out addresses and the slow-down. **Reset password** does the same and also forgets the account's known addresses.
+- **Per address** (an IPv4 address, an IPv6 `/64`): after `client_login_max_failures` (default 10) wrong passwords in a row, **that address** is locked out of **that account** for `client_login_lockout_minutes` (default 15). The account still signs in normally from anywhere else.
+- **Account score:** every wrong password for the account, from any address, adds 1 to a score. The score drains continuously by `client_login_account_max_failures` (default 100) every `client_login_account_decay_hours` (default 24), so roughly 4 per hour. It never resets at a boundary.
+- **Backstop mode** (score at or above `client_login_account_max_failures`): a wrong password from an address that has **not** signed in to the account in the last 30 days is also counted against its **network** (IPv4 `/24`, IPv6 `/48`). After `client_login_backstop_max_failures` (default 3) such failures, that network is locked out of the account for `client_login_lockout_minutes`. Each further wrong password from it doubles the lock (15 min, 30 min, 1 h, ...), up to `client_login_backstop_max_lock_hours` (default 24). A network's count is kept for 7 days after its last wrong password, so the lock does not start over when it ends. A real user on a network the attacker is not using is never affected, even on a new device or a new network, and can still mistype twice. An address that signed in recently is not network-locked either.
+- **Same answer, same work:** every refusal (unknown username, wrong password, locked-out address or network, disabled account) gets the same `401 Invalid username or password`. Every attempt does the same work whatever the outcome: it reads the policy, looks the name up once, runs the password hash (against a dummy hash for an unknown name), then runs the same database statements in one transaction. So the response does not reveal whether an account exists. This is a same-work guarantee, not a measured constant time.
+- **Passwords** must be 12 to 256 characters and not the username, and they must not be built only from a short list of common words and names (plus digits, symbols, keyboard walks such as `qwerty` or `1qaz2wsx`, or the username). That rejects `Welcome2026!!`, `P@ssw0rd2026`, `Tokyo2026Summer!` and `qwertyuiop12`. Generated passwords and passphrases such as `correct horse battery` pass. The rule applies when a password is set; existing passwords are not re-checked.
+- **Unlock** (dashboard or `POST .../unlock`) clears the account's locked-out addresses and networks and its score. **Reset password** does the same and also forgets the account's known addresses.
 - Every address is also limited by the shared `AUTH_MAX_FAILURES` / `AUTH_FAILURE_WINDOW_SECONDS` limit (429 for that address).
-- Old per-address records are removed automatically: after 24 hours without a failure, or 30 days after the last sign-in from that address.
+- Old records are removed automatically: an address after 24 hours without a failure (or 30 days after its last sign-in), and a network after 7 days without a failure. The table is capped at 50,000 rows that do not mark a known address. Address rows go first, then network rows, and a known address is never evicted.
 
-Log events, for alerting: `client_account_locked` (an address was locked out of an account; fields `user_id`, `client_ip`, `scope="address"`, `lockout_minutes`), `client_account_throttled` (the account-wide backstop engaged; `user_id`, `client_ip`, `account_failures`, `window_minutes`), and `client_login_rejected` with `reason` = `bad_password`, `address_locked`, `throttled`, `disabled` or `unknown_user`. **What was typed into the username box is never logged** (a password pasted there by mistake would otherwise end up in the log): events name an existing account by `user_id`, and an unknown name only by `attempt`, a 12-character keyed hash that cannot be reversed (its key changes when the app restarts). `client_login_failed` carries only `client_ip`.
+**How many guesses an attacker gets (defaults).** Take an attacker who knows the username, has unlimited addresses spread over *k* networks (IPv4 `/24` or IPv6 `/48`), and never knows the password.
+
+- *Outside backstop mode* each checked guess raises the score by 1, and the score only falls by 100 a day. So all such guesses together are at most 99 + 100 per day, whatever the number of addresses.
+- *In backstop mode* each network gets 3 guesses, then locks of 15 min, 30 min, 1 h, 2 h, 4 h, 8 h and 16 h. That is at most 9 guesses on the first day (3 + 6 more inside 24 h), then about 1 a day (the lock is capped at 24 h).
+- *Total:* at most about **199 + 9k on the first day and 100 + k per day after.** For one network (for example ten IPv4 addresses in one `/24`, or an IPv6 `/60`), that is about 208, then about 101 a day. For 10 networks it is about 289, then about 110 a day.
+- The test suite simulates this attacker over two days: 1 network got 166 and 66 checked guesses, and 4 networks got 169 and 66.
+- *Earlier designs:* the original account-wide lock allowed 960 a day (10 per 15 minutes) but let anyone lock the client out. The interim account-wide slow-down allowed about 3,960 a day.
+- Only an attacker with very many separate networks (a botnet) gets more: about *k* a day, plus 9 per new network. Against that, the password rule above and the `client_account_throttled` alert are the defence.
+
+Log events, for alerting:
+
+- `client_account_throttled`: the account entered backstop mode. Fields: `user_id`, `client_ip`, `account_failures`. This is the "account under attack" signal; the dashboard also shows **Under attack** on the account.
+- `client_account_locked`: an address or network was locked out of an account. Fields: `user_id`, `client_ip`, `scope` (`address` or `network`), `lockout_minutes`, `failed_attempts`.
+- `client_login_rejected`, with `reason` = `bad_password`, `address_locked`, `network_locked`, `disabled` or `unknown_user`.
+- `untrusted_proxy_headers`: a private-network peer sent `X-Forwarded-For` that was not applied. See [Deployment](#deployment).
+
+**What was typed into the username box is never logged** (a password pasted there by mistake would otherwise end up in the log). Events name an existing account only by `user_id`. An unknown name is logged as `reason=unknown_user` and `client_ip`, with no identifier or hash of the name. `client_login_failed` carries only `client_ip`.
 
 ## Sessions
 
@@ -216,7 +234,7 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
 | Sign-in page says the portal is unavailable. API returns **404** `client portal disabled` | `client_portal_enabled` is off, or the dashboard key is blank or shorter than 16 characters (the server logs `client_portal_refused_unsafe_config` with the reason) | Check the setting in Portal settings. Fix the key in the secret and restart if it is wrong |
 | Turning the portal on returns **409** | The dashboard key is blank or too short. The message says which | Fix the key, restart the container, then turn the portal on again |
 | The app refuses to start in production: `client portal is enabled but ...` | The portal was enabled, and the key was then blanked or shortened | Restore a key of 16+ characters. If that is not possible right now, delete the `rt.client_portal_enabled` row in the `app_settings` table (the env default `CLIENT_PORTAL_ENABLED=false` then applies) and restart |
-| A correct password gets **401** `Invalid username or password` | The client's address is locked out of the account (`client_login_max_failures` wrong passwords in a row from it, for `client_login_lockout_minutes`), the account is slowed down after very many wrong passwords and the client is on a new address, or the account is disabled. The API deliberately returns the same message for all of these. `client_login_rejected` in the log has the `reason` | `GET` the user list (`locked_addresses`, `throttled`). Unlock or enable the account, or wait |
+| A correct password gets **401** `Invalid username or password` | The client's own address is locked out of the account (`client_login_max_failures` wrong passwords in a row from it), or, in backstop mode, its network is (wrong passwords from that network), or the account is disabled. Other people's wrong passwords from other networks never cause this. The API deliberately returns the same message for all of these. `client_login_rejected` in the log has the `reason` | `GET` the user list (`locked_addresses`, `locked_networks`, `throttled`). Unlock or enable the account, or wait |
 | **429** `Too many failed attempts` | More than `AUTH_MAX_FAILURES` (default 20) failed credential checks from one address within `AUTH_FAILURE_WINDOW_SECONDS` (default 600). This blocks authenticated routes from that address, not only the login | Wait for `Retry-After`. If many clients share one address, the portal is probably behind a proxy: set `FORWARDED_ALLOW_IPS` so each client has its own address |
 | A client is signed out after a while | Idle timeout (60 min by default), absolute limit (12 h), a revoked session, or a disabled account | Expected. Sign in again. Adjust the settings if the timeouts are too short |
 | A week shows "no file" | No LOW or MEDIUM alerts in that period, so no workbook was written | Expected. The counts are still shown. The download endpoints return 404 |
@@ -228,8 +246,14 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
 | The **Portal settings** panel shows a load error | The browser may be using a cached copy of the dashboard's static files | Hard-refresh the page (Ctrl+Shift+R, or Cmd+Shift+R on macOS) |
 | Run now / regenerate returns **400** for a week | A manual run of a week that has not ended yet is refused, because it would archive a partial report and stop the scheduler from producing the real one | Wait until the week has ended. Preview still works for the current week |
 | A client API request returns **413** | Requests to `/client/api/*` are limited to 64 KB (this protects the unauthenticated login from memory exhaustion) | Expected for oversized bodies; normal use is far below the limit |
-| Many clients behind one proxy share the login throttle, or a client can dodge the per-address limit | `FORWARDED_ALLOW_IPS=*` makes the app trust the leftmost `X-Forwarded-For` entry. That is only safe when your edge **replaces** the header (the AWS Caddy setup does). If your platform appends to a client-supplied header, set `FORWARDED_ALLOW_IPS` to the proxy's address instead. The per-account backstop applies either way | Review `FORWARDED_ALLOW_IPS` for your platform |
+| Many clients behind one proxy share the login throttle, or a client can dodge the per-address limit | `FORWARDED_ALLOW_IPS=*` makes the app trust the leftmost `X-Forwarded-For` entry. That is only safe when your edge **replaces** the header (the AWS Caddy setup does). If your platform appends to a client-supplied header, set `FORWARDED_ALLOW_IPS` to the proxy's address instead. In the Docker Compose setup the proxy reaches the container from Docker's bridge gateway, so `docker-compose.yml` trusts Docker's private networks. If the log shows `untrusted_proxy_headers`, the proxy is not trusted and every client shares its address | Review `FORWARDED_ALLOW_IPS` for your platform |
 
 ## Deployment
+
+**Client addresses behind a proxy.** The sign-in lock-out and the 429 throttle work per client address, so the app must see each visitor's real address:
+
+- **AWS (Caddy):** `FORWARDED_ALLOW_IPS=*`, already set by the template.
+- **Docker Compose with a proxy on the host:** the proxy reaches the container from Docker's bridge gateway (an address in `172.16.0.0/12` or `192.168.0.0/16`), not from `127.0.0.1`. `docker-compose.yml` therefore sets `FORWARDED_ALLOW_IPS` to `127.0.0.1,172.16.0.0/12,192.168.0.0/16`, which overrides `.env`. With trusted networks (not `*`), uvicorn reads `X-Forwarded-For` from the right, so a header forged by a visitor is not believed. This is safe while the port stays published on `127.0.0.1` only. If you publish it on all interfaces, set the proxy's exact address instead.
+- **Misconfiguration:** when a request from a private-network peer carries `X-Forwarded-For` that was not applied, the app logs `untrusted_proxy_headers` with the peer address (at most hourly per peer). That means every client currently shares that address.
 
 Caddy routing (`/client`, `ClientCidr`), patching an existing instance with `deploy/aws/update_config.sh`, and rollout with `deploy/aws/release.sh` are all covered in [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md), section 5. Changing `DASHBOARD_ACCESS_KEY` or any other environment variable requires a container restart. Dashboard changes do not.

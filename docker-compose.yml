@@ -15,6 +15,17 @@ services:
       SYSLOG_UDP_PORT: "5514"
       SYSLOG_TCP_PORT: "5601"
       APP_PORT: "8000"
+      # A TLS proxy on this host reaches the container through Docker's bridge
+      # gateway (an address in 172.16.0.0/12 or 192.168.0.0/16), not 127.0.0.1.
+      # Trusting those networks lets the app take each visitor's real address
+      # from X-Forwarded-For; without it every visitor shares the gateway's
+      # address and the per-address sign-in lock-out and 429 throttle treat
+      # them all as one. uvicorn reads the header from the right, past these
+      # trusted hops, so a header a visitor forges is not believed. Safe only
+      # while port 8000 is published on 127.0.0.1 as below; if you publish it
+      # on all interfaces, set this to your proxy's exact address instead.
+      # (This overrides any FORWARDED_ALLOW_IPS in .env.)
+      FORWARDED_ALLOW_IPS: "127.0.0.1,172.16.0.0/12,192.168.0.0/16"
     ports:
       # Bound to localhost: put a TLS reverse proxy (Caddy, nginx, a Cloudflare
       # tunnel) in front rather than exposing plain HTTP. Change to "8000:8000"

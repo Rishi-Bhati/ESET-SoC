@@ -91,15 +91,21 @@ REGISTRY: dict[str, SettingSpec] = {s.key: s for s in [
           description="How long a locked-out address stays locked out of the account."),
     _spec("client_login_account_max_failures", "int", fallback=100, min=10, max=100000,
           group="portal",
-          description="Wrong passwords for one account from all addresses within the window "
-                      "before sign-in attempts on it are slowed down."),
-    _spec("client_login_account_window_minutes", "int", fallback=60, min=1, max=1440,
+          description="Account-wide wrong-password score (all addresses) at which the account "
+                      "enters backstop mode: stricter limits for networks it has not signed in "
+                      "from. It never refuses a correct password from another network."),
+    _spec("client_login_account_decay_hours", "int", fallback=24, min=1, max=720,
           group="portal",
-          description="Length of the window in which the account-wide wrong passwords are counted."),
-    _spec("client_login_account_max_delay_seconds", "int", fallback=60, min=1, max=3600,
+          description="The account-wide score drains by the limit above over this many hours "
+                      "(so about that many wrong passwords per period are tolerated)."),
+    _spec("client_login_backstop_max_failures", "int", fallback=3, min=1, max=10,
           group="portal",
-          description="Longest wait between sign-in attempts on a slowed-down account "
-                      "(the wait doubles with each further wrong password up to this)."),
+          description="In backstop mode: wrong passwords allowed from one network (IPv4 /24, "
+                      "IPv6 /48) the account has not signed in from before it is locked out."),
+    _spec("client_login_backstop_max_lock_hours", "int", fallback=24, min=1, max=168,
+          group="portal",
+          description="In backstop mode a network lock starts at the lockout duration and doubles "
+                      "with each further wrong password from it, up to this many hours."),
     _spec("client_export_max_alerts", "int", fallback=5000, min=1, max=100000, group="portal",
           description="Most alerts one client spreadsheet export may contain."),
     _spec("client_immediate_min_risk", "enum", fallback="LOW", choices=RISK_LEVELS, group="portal",
