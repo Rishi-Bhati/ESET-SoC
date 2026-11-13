@@ -569,3 +569,114 @@ async def test_client_lists_and_downloads_generated_reports(portal):
     assert len(read_xlsx(dl.content)) == 2
     for bad in ("2026-W44", "2026-W40", "2026-W45-r1x", "..%2F..%2Fetc", "2099-W01"):
         assert client.get(f"/client/api/reports/{bad}/download", headers=headers).status_code == 404
+
+
+# ------------------------------------------------------------------ client on-demand report
+
+def _sheets(content: bytes) -> dict[str, list[list[str]]]:
+    wb = load_workbook(io.BytesIO(content))
+    return {ws.title: [["" if v is None else str(v) for v in row] for row in ws.iter_rows(values_only=True)]
+            for ws in wb.worksheets}
+
+
+@pytest.fixture
+def frozen_client_clock(monkeypatch):
+    from src.api import client_reports
+    monkeypatch.setattr(client_reports, "_now", lambda: NOW)          # Mon 2026-11-09 09:30 JST (W46)
+
+
+async def test_client_on_demand_requires_a_session(portal, engineer):
+    client = TestClient(app)
+    assert client.get("/client/api/reports/on-demand").status_code == 401
+    assert client.post("/client/api/reports/on-demand", json={"period_key": KEY}).status_code == 401
+    assert client.post("/client/api/reports/on-demand", json={"period_key": KEY},
+                       headers=engineer).status_code == 401
+
+
+async def test_client_on_demand_lists_recent_weeks_with_counts(portal, frozen_client_clock):
+    client = TestClient(app)
+    headers = await _client_session()
+    await add_alert("low1", "LOW", IN_PERIOD)
+    await add_alert("hi1", "HIGH", IN_PERIOD)
+    body = client.get("/client/api/reports/on-demand", headers=headers).json()
+    weeks = body["weeks"]
+    assert len(weeks) == wr.ON_DEMAND_WEEKS_OFFERED
+    assert weeks[0]["period_key"] == "2026-W46" and weeks[0]["in_progress"] is True
+    assert weeks[1]["period_key"] == KEY and weeks[1]["in_progress"] is False
+    assert weeks[1]["counts"] == {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 0, "LOW": 1, "total": 2}
+    assert weeks[1]["period_start"] == "2026-11-02T00:00:00+09:00" and weeks[1]["last_day"] == "2026-11-08"
+
+
+async def test_client_on_demand_builds_a_report_without_storing_or_emailing(portal, frozen_client_clock):
+    client = TestClient(app)
+    headers = await _client_session()
+    await runtime_settings.set("weekly_report_email_enabled", True)
+    await add_alert("low1", "LOW", IN_PERIOD, summary="低リスクの概要")
+    await add_alert("med1", "MEDIUM", IN_PERIOD + timedelta(hours=1))
+    await add_alert("crit1", "CRITICAL", IN_PERIOD + timedelta(hours=2))
+
+    res = client.post("/client/api/reports/on-demand", json={"period_key": KEY}, headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.headers["content-disposition"] == f'attachment; filename="weekly_report_{KEY}_on-demand.xlsx"'
+    assert res.headers["x-alert-count"] == "2" and res.headers["cache-control"] == "no-store"
+    sheets = _sheets(res.content)
+    assert list(sheets) == ["概要", "アラート", "エクスポート情報"]
+    alerts = sheets["アラート"]
+    assert len(alerts) == 3 and {row[4] for row in alerts[1:]} == {"LOW", "MEDIUM"}
+    summary = {row[0]: row[1] for row in sheets["概要"][1:]}
+    assert summary["合計"] == "3 件" and "確定値" in summary["状態"]
+    assert "保存・メール送信はされません" in summary["作成方法"]
+
+    # nothing archived, recorded or queued
+    assert await store.count() == 0 and not os.path.exists(wr.report_path(KEY))
+    assert email_outbox._read_outbox() == []
+
+    # every severity, English headers
+    res = client.post("/client/api/reports/on-demand", headers=headers,
+                      json={"period_key": KEY, "include_high_risk": True, "header_lang": "en"})
+    sheets = _sheets(res.content)
+    assert list(sheets) == ["Summary", "Alerts", "Export info"]
+    assert {row[4] for row in sheets["Alerts"][1:]} == {"LOW", "MEDIUM", "CRITICAL"}
+    assert res.headers["x-alert-count"] == "3"
+
+
+async def test_client_on_demand_week_to_date_and_limits(portal, frozen_client_clock, monkeypatch):
+    client = TestClient(app)
+    headers = await _client_session()
+    await add_alert("now1", "LOW", NOW - timedelta(minutes=10))
+    res = client.post("/client/api/reports/on-demand", json={"period_key": "2026-W46"}, headers=headers)
+    assert res.status_code == 200
+    assert res.headers["content-disposition"].endswith('_to-date.xlsx"')
+    assert "途中経過" in {r[0]: r[1] for r in _sheets(res.content)["概要"][1:]}["状態"]
+
+    for bad, why in (("2026-W47", "not started"), ("2025-W40", "last 52 weeks"), ("nope", "2026-W45"),
+                     ("2026-W54", "not a valid")):
+        res = client.post("/client/api/reports/on-demand", json={"period_key": bad}, headers=headers)
+        assert res.status_code == 400 and why in res.json()["detail"], (bad, res.text)
+    res = client.post("/client/api/reports/on-demand", json={"period_key": KEY, "header_lang": "fr"}, headers=headers)
+    assert res.status_code == 400
+    res = client.post("/client/api/reports/on-demand", json={"period_key": KEY, "x": 1}, headers=headers)
+    assert res.status_code == 422
+
+    # capped at client_export_max_alerts, and the summary says so
+    for i in range(3):
+        await add_alert(f"cap{i}", "LOW", IN_PERIOD + timedelta(minutes=i))
+    await runtime_settings.set("client_export_max_alerts", 2)
+    res = client.post("/client/api/reports/on-demand", json={"period_key": KEY, "header_lang": "en"}, headers=headers)
+    sheets = _sheets(res.content)
+    assert res.headers["x-alert-count"] == "2" and len(sheets["Alerts"]) == 3
+    assert any("Only the first 2 of 3" in row[1] for row in sheets["Summary"])
+
+
+async def test_client_on_demand_shares_the_one_export_at_a_time_guard(portal, frozen_client_clock):
+    from src.api import client as client_api
+    from src.storage import user_store
+    client = TestClient(app)
+    headers = await _client_session()
+    user = await user_store.resolve_session(headers["X-Client-Session"])
+    client_api._active_exports.add(str(user["id"]))
+    try:
+        res = client.post("/client/api/reports/on-demand", json={"period_key": KEY}, headers=headers)
+        assert res.status_code == 429 and res.headers["retry-after"] == "5"
+    finally:
+        client_api._active_exports.discard(str(user["id"]))

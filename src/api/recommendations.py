@@ -9,6 +9,7 @@ from pydantic import BaseModel, field_validator
 
 from src.api.dashboard import _check_access
 from src.config import settings
+from src.services import recommendation_notifier
 from src.storage import job_store, recommendation_store
 from src.utils import events
 
@@ -114,8 +115,10 @@ async def create_alert_recommendation(
     request: Request, correlation_id: str, payload: RecommendationCreate
 ) -> dict[str, Any]:
     """
-    Adds a recommendation to an alert. Email notification is deliberately deferred
-    (src/services/recommendation_notifier.py is not called), so no message is queued.
+    Adds a recommendation to an alert, and — when recommendation_email_enabled is
+    on — queues the client email (src/services/recommendation_notifier.py). The
+    recommendation is saved whatever happens to the email; `notification` says
+    whether one was queued and, if not, why.
     """
     _check_access(request)
     _require_valid_id(correlation_id, "correlation id")
@@ -134,10 +137,11 @@ async def create_alert_recommendation(
         "correlation_id": correlation_id,
         "recommendation_id": recommendation["id"],
     })
-    return {
-        "recommendation": recommendation,
-        "notification": {"queued": False, "email_id": None, "reason": "email_notifications_deferred"},
-    }
+    notification = await recommendation_notifier.notify_recommendation_added(recommendation)
+    if notification["queued"]:
+        recommendation["notification_email_id"] = notification["email_id"]
+        recommendation_notifier.dispatch_soon()
+    return {"recommendation": recommendation, "notification": notification}
 
 
 @router.post("/recommendations/{recommendation_id}/retract")
@@ -147,7 +151,8 @@ async def retract_recommendation(
     """Withdraws a recommendation (the record stays). Retracting twice keeps the first reason."""
     _check_access(request)
     _require_valid_id(recommendation_id, "recommendation id")
-    if await recommendation_store.get(recommendation_id) is None:
+    before = await recommendation_store.get(recommendation_id)
+    if before is None:
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
     recommendation = await recommendation_store.retract(recommendation_id, payload.author, payload.reason)
@@ -160,7 +165,14 @@ async def retract_recommendation(
         correlation_id=recommendation["correlation_id"],
         author=payload.author,
     )
-    return {"recommendation": recommendation}
+    # Only a first retraction of a recommendation the client was emailed about
+    # sends the "withdrawn" email.
+    notification = {"queued": False, "email_id": None, "reason": "already_retracted"}
+    if before.get("retracted_at") is None:
+        notification = await recommendation_notifier.notify_recommendation_retracted(recommendation)
+        if notification["queued"]:
+            recommendation_notifier.dispatch_soon()
+    return {"recommendation": recommendation, "notification": notification}
 
 
 @router.get("/recommendations/counts")

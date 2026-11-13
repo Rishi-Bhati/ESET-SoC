@@ -74,6 +74,13 @@ async def update_portal_setting(request: Request, key: str, payload: SettingUpda
         if problem is not None:
             raise HTTPException(status_code=409, detail=problem)
 
+    # Turning email on without a usable mail service would only fill the outbox.
+    if spec.key == "email_delivery_enabled" and value:
+        from src.services.email_delivery import get_provider
+        ready, reason = get_provider().is_configured()
+        if not ready:
+            raise HTTPException(status_code=409, detail=f"Email cannot be switched on: {reason}")
+
     await runtime_settings.set(key, value)
     logger.info("portal_setting_updated", key=key, value=value, client_ip=_client_ip(request))
     return {"key": key, "value": value, "source": "db"}

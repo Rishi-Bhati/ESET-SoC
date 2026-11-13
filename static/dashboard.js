@@ -9,6 +9,7 @@ const API = "/dashboard/api";
 
 const state = {
   jobs: new Map(),      // correlation_id -> job row
+  recCounts: new Map(), // correlation_id -> active recommendation count (Alerts filter)
   emails: [],
   ai: [],
   runs: new Map(),      // correlation_id -> { stages: Map, started, source }
@@ -61,6 +62,7 @@ const BADGES = new Set([
   "LOW","MEDIUM","HIGH","CRITICAL","UNKNOWN",
   "CLEAN","SUSPICIOUS","MALICIOUS",
   "CLIENT_JA","CTHREE_JA","INTERNAL_JA","ENGINEER_EN",
+  "WEEKLY_REPORT_JA","RECOMMENDATION_JA","RECOMMENDATION_RETRACTED_JA",
   "WEBHOOK","SYSLOG",
   "ACCEPTED",
   "OK","STARTED","BLOCKED","ERROR",
@@ -234,7 +236,7 @@ function showView(name) {
   if (name === "ai-visibility") loadAiVisibility();
   if (name === "settings") loadSettings();
   if (name === "portal") loadPortalPanels();
-  if (name === "emails") loadDelivery();
+  if (name === "emails") { loadDelivery(); loadEmailSettings(); }
 }
 
 /** Called by i18n.js's setLang() after the language changes. Re-renders whatever
@@ -268,6 +270,7 @@ function refreshCurrentViewTranslations() {
   if (state.view === "settings") loadSettings();
   // Cached data only — no refetch, and the one-time password box is kept as is.
   if (state.view === "portal") renderPortalTab();
+  if (state.view === "emails" && psetState.settings) renderEmailSettings(psetState.settings);
   // Built once at boot and not on tab switch, so it has to follow the toggle
   // whichever tab is open (no network involved).
   renderApiDocs();
@@ -415,19 +418,123 @@ async function loadRiskLevels() {
   } catch (e) { /* non-fatal: the column falls back to "—" */ }
 }
 
-function renderAlerts() {
-  const fStatus = document.getElementById("fStatus").value;
-  const fRisk = document.getElementById("fRisk").value;
-  const q = document.getElementById("fSearch").value.trim().toLowerCase();
+/* ── Alerts filters ──
+ * The table filters the loaded window (newest 500 jobs) in the browser; the
+ * export dialog sends the same filters to the server, which applies them to the
+ * whole history (src/services/alert_export.py: apply_options). Keep the two in
+ * step: status, computed risk ("UNKNOWN" = not assessed), source, the severity
+ * ESET reported, received time (JST days), active-recommendation presence, search. */
+const alertFilters = { range: "", from: "", to: "" };
+const RISK_RANK = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+const elv = (id) => document.getElementById(id).value;
 
-  let rows = [...state.jobs.values()].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
-  if (fStatus) rows = rows.filter((j) => j.status === fStatus);
-  if (fRisk) rows = rows.filter((j) => (j.risk_level || "UNKNOWN") === fRisk);
-  if (q) {
-    rows = rows.filter((j) =>
-      [j.detection_name, j.endpoint_name, j.correlation_id, j.source, ...(j.indicators || [])]
-        .some((v) => v && String(v).toLowerCase().includes(q)));
+/** JST calendar day "YYYY-MM-DD" -> epoch seconds of its 00:00 JST. */
+function jstDayEpoch(day) { return Date.parse(`${day}T00:00:00+09:00`) / 1000; }
+
+function currentAlertFilters() {
+  const f = {
+    status: elv("fStatus"), risk: elv("fRisk"), source: elv("fSource"), severity: elv("fSeverity"),
+    recs: elv("fRecs"), q: elv("fSearch").trim(), sort: elv("fSort"),
+    sinceHours: null, from: "", to: "",
+  };
+  if (alertFilters.range === "custom") { f.from = alertFilters.from; f.to = alertFilters.to; }
+  else if (alertFilters.range) f.sinceHours = Number(alertFilters.range);
+  return f;
+}
+
+function activeAlertFilterCount(f) {
+  return ["status", "risk", "source", "severity", "recs", "q"].filter((k) => f[k]).length
+    + (f.sinceHours || f.from || f.to ? 1 : 0);
+}
+
+function filterAlertRows(rows, f) {
+  const q = f.q.toLowerCase();
+  let start = null, end = null;
+  if (f.sinceHours) start = Date.now() / 1000 - f.sinceHours * 3600;
+  if (f.from) start = jstDayEpoch(f.from);
+  if (f.to) end = jstDayEpoch(f.to) + 86400;
+  return rows.filter((j) => {
+    if (f.status && j.status !== f.status) return false;
+    if (f.risk && (j.risk_level || "UNKNOWN") !== f.risk) return false;
+    if (f.source && String(j.source || "").toUpperCase() !== f.source) return false;
+    if (f.severity && String(j.reported_severity || "").trim().toUpperCase() !== f.severity) return false;
+    if (start !== null && !((j.created_at || 0) >= start)) return false;
+    if (end !== null && !((j.created_at || 0) < end)) return false;
+    if (f.recs) {
+      const n = state.recCounts.get(j.correlation_id);
+      if (n === undefined) return false;                 // counts still loading
+      if ((f.recs === "with") !== (n > 0)) return false;
+    }
+    if (q && ![j.detection_name, j.endpoint_name, j.correlation_id, j.source, ...(j.indicators || [])]
+      .some((v) => v && String(v).toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function sortAlertRows(rows, sort) {
+  const recv = (j) => j.created_at || 0;
+  const cmp = {
+    received_desc: (a, b) => recv(b) - recv(a),
+    received_asc: (a, b) => recv(a) - recv(b),
+    risk_desc: (a, b) => (RISK_RANK[b.risk_level] || 0) - (RISK_RANK[a.risk_level] || 0) || recv(b) - recv(a),
+  }[sort] || ((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+  return rows.sort(cmp);
+}
+
+/** Source and reported-severity choices come from the loaded alerts (ESET's
+ * severity vocabulary is not fixed); the current choice is kept even if absent. */
+function refreshAlertFilterOptions() {
+  const fill = (id, values, allKey) => {
+    const sel = document.getElementById(id);
+    const keep = sel.value;
+    const wanted = [...new Set([...values, ...(keep ? [keep] : [])])].sort();
+    const have = [...sel.options].slice(1).map((o) => o.value);
+    if (have.join("|") === wanted.join("|")) return;
+    sel.innerHTML = `<option value="" data-i18n="${allKey}">${esc(t(allKey))}</option>`
+      + wanted.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    sel.value = keep;
+  };
+  const jobs = [...state.jobs.values()];
+  fill("fSource", jobs.map((j) => String(j.source || "").toUpperCase()).filter(Boolean), "opt_all_sources");
+  fill("fSeverity", jobs.map((j) => String(j.reported_severity || "").trim().toUpperCase())
+    .filter((v) => v && v !== "UNKNOWN" && !v.includes("${")), "opt_all_severities");
+}
+
+/** Active-recommendation counts for every loaded alert (the "Recommendations"
+ * filter needs them all, not just the visible page). 500 ids per request. */
+let recCountsLoading = null;
+let recCountsAttemptAt = 0;
+async function loadAllRecommendationCounts() {
+  if (recCountsLoading) return recCountsLoading;
+  recCountsAttemptAt = Date.now();
+  recCountsLoading = (async () => {
+    const ids = [...state.jobs.keys()];
+    for (let i = 0; i < ids.length; i += 500) {
+      const params = new URLSearchParams({ cids: ids.slice(i, i + 500).join(",") });
+      try {
+        const res = await api("/recommendations/counts?" + params.toString());
+        const counts = (res && res.counts) || {};
+        for (const id of ids.slice(i, i + 500)) state.recCounts.set(id, Number(counts[id]) || 0);
+      } catch (e) { /* non-fatal: the filter shows nothing until counts load */ }
+    }
+  })();
+  try { await recCountsLoading; } finally { recCountsLoading = null; }
+}
+
+function renderAlerts() {
+  refreshAlertFilterOptions();
+  const f = currentAlertFilters();
+  let rows = sortAlertRows(filterAlertRows([...state.jobs.values()], f), f.sort);
+  // Alerts that arrived since the counts were loaded (at most every 10 s, so a
+  // failing counts request cannot turn into a request loop).
+  if (f.recs && !recCountsLoading && Date.now() - recCountsAttemptAt > 10000
+      && [...state.jobs.keys()].some((id) => !state.recCounts.has(id))) {
+    loadAllRecommendationCounts().then(renderAlerts);
   }
+  const active = activeAlertFilterCount(f);
+  document.getElementById("alertsFilterNote").textContent =
+    active ? t("alerts_filter_note", fmtCount(rows.length), fmtCount(state.jobs.size)) : "";
+  document.getElementById("alertsClear").style.visibility = active ? "visible" : "hidden";
 
   document.getElementById("alertsEmpty").style.display = rows.length ? "none" : "block";
   if (!rows.length && state.jobs.size) document.getElementById("alertsEmpty").textContent = t("alerts_no_matches");
@@ -470,9 +577,42 @@ function renderAlerts() {
 }
 const alertsPaging = { page: 1, size: 25 };
 function refilterAlerts() { alertsPaging.page = 1; renderAlerts(); }
-document.getElementById("fStatus").onchange = refilterAlerts;
-document.getElementById("fRisk").onchange = refilterAlerts;
+for (const id of ["fStatus", "fRisk", "fSource", "fSeverity", "fSort"]) {
+  document.getElementById(id).onchange = refilterAlerts;
+}
+document.getElementById("fRecs").onchange = async () => {
+  refilterAlerts();
+  if (elv("fRecs")) { await loadAllRecommendationCounts(); renderAlerts(); }
+};
 document.getElementById("fSearch").oninput = refilterAlerts;
+document.getElementById("fRange").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-range]");
+  if (!b) return;
+  alertFilters.range = b.dataset.range;
+  setSegActive(document.getElementById("fRange"), "data-range", alertFilters.range);
+  document.getElementById("fCustomDates").style.display = alertFilters.range === "custom" ? "" : "none";
+  if (alertFilters.range === "custom") document.getElementById("fFrom").focus();
+  refilterAlerts();
+});
+for (const id of ["fFrom", "fTo"]) {
+  document.getElementById(id).onchange = () => {
+    alertFilters.from = elv("fFrom");
+    alertFilters.to = elv("fTo");
+    refilterAlerts();
+  };
+}
+document.getElementById("alertsClear").onclick = () => {
+  for (const id of ["fSearch", "fFrom", "fTo"]) document.getElementById(id).value = "";
+  // The custom dropdowns (ui-select.js) relabel on "change", not on a bare value write.
+  for (const id of ["fStatus", "fRisk", "fSource", "fSeverity", "fRecs"]) {
+    const sel = document.getElementById(id);
+    if (sel.value) { sel.value = ""; sel.dispatchEvent(new Event("change")); }
+  }
+  Object.assign(alertFilters, { range: "", from: "", to: "" });
+  setSegActive(document.getElementById("fRange"), "data-range", "");
+  document.getElementById("fCustomDates").style.display = "none";
+  refilterAlerts();
+};
 document.getElementById("alertsPrev").onclick = () => { alertsPaging.page--; renderAlerts(); };
 document.getElementById("alertsNext").onclick = () => { alertsPaging.page++; renderAlerts(); };
 document.getElementById("alertsPageSize").addEventListener("click", (e) => {
@@ -480,15 +620,158 @@ document.getElementById("alertsPageSize").addEventListener("click", (e) => {
   if (b) { alertsPaging.size = Number(b.dataset.size); alertsPaging.page = 1; renderAlerts(); }
 });
 
-/** Downloads EVERY recorded alert as one .xlsx — deliberately not the table's
- * loaded window, filters or page (src/services/alert_export.py). Fetched rather
- * than linked because the request needs the key header. */
-document.getElementById("alertsExport").onclick = async () => {
-  const btn = document.getElementById("alertsExport");
+/* ── Export dialog ──
+ * "Convert to Spreadsheet" opens a dialog: every recorded alert (the original
+ * behaviour) or only those matching the table's filters — applied by the server
+ * to the WHOLE history, not the 500 loaded rows — as .xlsx or .csv, with the
+ * Alerts-sheet column groups, extra sheets and order chosen. Fetched rather than
+ * linked because the request needs the key header. Choices are remembered. */
+const XP_PREFS_KEY = "soc_lite_alert_export";
+const XP_COLUMN_GROUPS = ["overview", "times", "alert", "risk", "threat_intel", "ai",
+  "notifications", "recommendations", "errors", "raw", "other"];
+const XP_SUMMARY_GROUPS = ["overview", "times", "risk", "recommendations"];
+const XP_SHEETS = ["risk_factors", "emails", "recommendations", "info"];
+const XP_SORTS = ["received_desc", "received_asc", "updated_desc", "risk_desc"];
+const XP_SORT_LABEL = { received_desc: "xp_sort_received_desc", received_asc: "xp_sort_received_asc",
+  updated_desc: "xp_sort_updated", risk_desc: "xp_sort_risk" };
+
+function xpPrefs() {
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(XP_PREFS_KEY) || "{}") || {}; } catch (e) { p = {}; }
+  const pick = (v, allowed) => (Array.isArray(v) ? v.filter((x) => allowed.includes(x)) : allowed.slice());
+  return {
+    scope: p.scope === "filtered" ? "filtered" : "all",
+    format: p.format === "csv" ? "csv" : "xlsx",
+    columns: pick(p.columns, XP_COLUMN_GROUPS),
+    sheets: pick(p.sheets, XP_SHEETS),
+    sort: XP_SORTS.includes(p.sort) ? p.sort : "received_desc",
+  };
+}
+
+/** The filters in force, as readable lines for the dialog. */
+function xpFilterLines(f) {
+  const optText = (id) => { const s = document.getElementById(id); return s.options[s.selectedIndex].textContent; };
+  const lines = [];
+  if (f.q) lines.push([t("xp_f_search"), f.q]);
+  if (f.sinceHours) lines.push([t("xp_f_received"), t("xp_last_hours", f.sinceHours)]);
+  if (f.from || f.to) lines.push([t("xp_f_received"), `${f.from || "…"} – ${f.to || "…"} (JST)`]);
+  if (f.status) lines.push([t("xp_f_status"), optText("fStatus")]);
+  if (f.risk) lines.push([t("xp_f_risk"), optText("fRisk")]);
+  if (f.source) lines.push([t("xp_f_source"), f.source]);
+  if (f.severity) lines.push([t("xp_f_severity"), f.severity]);
+  if (f.recs) lines.push([t("xp_f_recs"), optText("fRecs")]);
+  return lines;
+}
+
+function openAlertExport() {
+  const p = xpPrefs();
+  const f = currentAlertFilters();
+  const lines = xpFilterLines(f);
+  if (!lines.length) p.scope = "all";
+  if (XP_SORTS.includes(f.sort) && f.sort !== "updated_desc") p.sort = f.sort;
+  const radio = (name, value, label, checked, disabled) =>
+    `<label class="${disabled ? "disabled" : ""}"><input type="radio" name="${name}" value="${esc(value)}"${checked ? " checked" : ""}${disabled ? " disabled" : ""}> ${esc(label)}</label>`;
+  const box = (name, value, label, checked) =>
+    `<label><input type="checkbox" name="${name}" value="${esc(value)}"${checked ? " checked" : ""}> ${esc(label)}</label>`;
+  const filtersHtml = lines.length
+    ? lines.map(([k, v]) => `<div>${esc(k)}: <span class="mono">${esc(v)}</span></div>`).join("")
+    : esc(t("xp_no_filters"));
+  showModal(t("xp_title"), `
+    <form id="xpForm" novalidate>
+      <div class="xp-section"><h4>${esc(t("xp_scope"))} ${helpBtn("help_xp_scope")}</h4>
+        <div class="xp-choices" style="flex-direction:column;gap:6px">
+          ${radio("xpScope", "all", t("xp_scope_all"), p.scope === "all")}
+          ${radio("xpScope", "filtered", t("xp_scope_filtered"), p.scope === "filtered", !lines.length)}
+        </div>
+        <div class="xp-filters">${filtersHtml}</div>
+        <p class="xp-hint">${esc(t("xp_scope_hint"))}</p>
+      </div>
+      <div class="xp-section"><h4>${esc(t("xp_format"))} ${helpBtn("help_xp_format")}</h4>
+        <div class="xp-choices">
+          ${radio("xpFormat", "xlsx", t("xp_format_xlsx"), p.format === "xlsx")}
+          ${radio("xpFormat", "csv", t("xp_format_csv"), p.format === "csv")}
+        </div>
+      </div>
+      <div class="xp-section"><h4>${esc(t("xp_columns"))} ${helpBtn("help_xp_columns")}
+          <button type="button" class="small ghost" id="xpColsAll">${esc(t("xp_cols_all"))}</button>
+          <button type="button" class="small ghost" id="xpColsSummary">${esc(t("xp_cols_summary"))}</button></h4>
+        <div class="xp-choices">${XP_COLUMN_GROUPS.map((g) => box("xpCol", g, t("xp_col_" + g), p.columns.includes(g))).join("")}</div>
+        <p class="xp-hint">${esc(t("xp_cols_hint"))}</p>
+      </div>
+      <div class="xp-section" id="xpSheetsSection"><h4>${esc(t("xp_sheets"))} ${helpBtn("help_xp_sheets")}</h4>
+        <div class="xp-choices">${XP_SHEETS.map((g) => box("xpSheet", g, t("xp_sheet_" + g), p.sheets.includes(g))).join("")}</div>
+      </div>
+      <div class="xp-section"><h4>${esc(t("xp_sort"))}</h4>
+        <select id="xpSort" style="width:auto" aria-label="${esc(t("xp_sort"))}">
+          ${XP_SORTS.map((v) => `<option value="${v}"${v === p.sort ? " selected" : ""}>${esc(t(XP_SORT_LABEL[v]))}</option>`).join("")}
+        </select>
+      </div>
+      <p class="xp-hint" id="xpError" style="color:var(--text-danger)" hidden></p>
+      <div class="xp-actions">
+        <button type="button" class="small" id="xpCancel">${esc(t("xp_cancel"))}</button>
+        <button type="submit" class="small primary" id="xpGo">${esc(t("xp_download"))}</button>
+      </div>
+    </form>`);
+  if (typeof enhanceSelect === "function") enhanceSelect(document.getElementById("xpSort"));
+  const form = document.getElementById("xpForm");
+  const syncSheets = () => {
+    const csv = form.querySelector('input[name="xpFormat"]:checked').value === "csv";
+    form.querySelectorAll('input[name="xpSheet"]').forEach((i) => {
+      i.disabled = csv;
+      i.closest("label").classList.toggle("disabled", csv);
+    });
+  };
+  const setCols = (groups) => form.querySelectorAll('input[name="xpCol"]').forEach((i) => { i.checked = groups.includes(i.value); });
+  form.querySelectorAll('input[name="xpFormat"]').forEach((i) => { i.onchange = syncSheets; });
+  document.getElementById("xpColsAll").onclick = () => setCols(XP_COLUMN_GROUPS);
+  document.getElementById("xpColsSummary").onclick = () => setCols(XP_SUMMARY_GROUPS);
+  document.getElementById("xpCancel").onclick = closeModal;
+  syncSheets();
+  form.onsubmit = (e) => { e.preventDefault(); runAlertExport(form, f); };
+}
+
+function alertExportParams(choice, f) {
+  const params = new URLSearchParams();
+  if (choice.scope === "filtered") {
+    if (f.status) params.set("status", f.status);
+    if (f.risk) params.set("risk", f.risk);
+    if (f.source) params.set("source", f.source);
+    if (f.severity) params.set("severity", f.severity);
+    if (f.recs) params.set("recommendations", f.recs);
+    if (f.q) params.set("q", f.q);
+    if (f.sinceHours) params.set("since_hours", String(f.sinceHours));
+    if (f.from) params.set("from", f.from);
+    if (f.to) params.set("to", f.to);
+  }
+  if (choice.format !== "xlsx") params.set("format", choice.format);
+  if (choice.columns.length !== XP_COLUMN_GROUPS.length) params.set("columns", choice.columns.join(","));
+  if (choice.format === "xlsx" && choice.sheets.length !== XP_SHEETS.length) {
+    params.set("sheets", choice.sheets.length ? choice.sheets.join(",") : "none");
+  }
+  if (choice.sort !== "received_desc") params.set("sort", choice.sort);
+  return params;
+}
+
+async function runAlertExport(form, f) {
+  const values = (name) => [...form.querySelectorAll(`input[name="${name}"]:checked`)].map((i) => i.value);
+  const choice = {
+    scope: values("xpScope")[0] || "all",
+    format: values("xpFormat")[0] || "xlsx",
+    columns: values("xpCol"),
+    sheets: values("xpSheet"),
+    sort: document.getElementById("xpSort").value,
+  };
+  const err = document.getElementById("xpError");
+  if (!choice.columns.length) { err.textContent = t("xp_need_column"); err.hidden = false; return; }
+  err.hidden = true;
+  try { localStorage.setItem(XP_PREFS_KEY, JSON.stringify(choice)); } catch (e) { /* blocked storage */ }
+
+  const btn = document.getElementById("xpGo");
   btn.disabled = true;
   btn.textContent = t("btn_exporting_alerts");
+  const params = alertExportParams(choice, f);
   try {
-    const res = await fetch(API + "/alerts/export", {
+    const res = await fetch(API + "/alerts/export" + (params.toString() ? "?" + params.toString() : ""), {
       headers: dashKey() ? { "X-Dashboard-Key": dashKey() } : {},
     });
     if (!res.ok) throw new Error(String(res.status));
@@ -496,20 +779,24 @@ document.getElementById("alertsExport").onclick = async () => {
     const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = name ? name[1] : "soc-lite-alerts.xlsx";
+    a.download = name ? name[1] : `soc-lite-alerts.${choice.format}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     // The exact count, not fmtCount's compact form: "all 12K alerts" is not a count.
-    const count = Number(res.headers.get("X-Alert-Count")) || 0;
-    toast(t("toast_alerts_exported", count.toLocaleString(uiLocale())));
+    const count = (Number(res.headers.get("X-Alert-Count")) || 0).toLocaleString(uiLocale());
+    toast(choice.scope === "all" && choice.format === "xlsx"
+      ? t("toast_alerts_exported", count) : t("toast_alerts_exported_n", count));
+    closeModal();
   } catch (e) {
     toast(t("toast_alerts_export_failed"), true);
+    btn.disabled = false;
+    btn.textContent = t("xp_download");
   }
-  btn.disabled = false;
-  btn.textContent = t("btn_export_alerts_xlsx");
-};
+}
+
+document.getElementById("alertsExport").onclick = openAlertExport;
 
 document.getElementById("alertRows").addEventListener("click", async (e) => {
   const timeline = e.target.getAttribute && e.target.getAttribute("data-timeline");
@@ -1564,6 +1851,7 @@ async function loadRecommendationCounts() {
     const counts = (res && res.counts) || {};
     for (const cell of cells) {
       const n = Number(counts[cell.getAttribute("data-rec-count")]) || 0;
+      state.recCounts.set(cell.getAttribute("data-rec-count"), n);
       cell.innerHTML = n
         ? `<span class="rec-count" title="${esc(t("rec_count_title", n))}">${esc(String(n))}</span>`
         : DASH;
@@ -2174,14 +2462,34 @@ const PSET_SECTIONS = [
       "client_login_backstop_max_failures", "client_login_backstop_max_lock_hours"] },
   { id: "access", title: "pps_access", sub: "pps_access_sub",
     keys: ["client_portal_url", "client_export_max_alerts"] },
-  { id: "email", title: "pps_email", sub: "pps_email_sub",
-    keys: ["weekly_report_email_enabled", "email_attachments_enabled",
-      "email_attachment_max_bytes", "client_immediate_min_risk"] },
-  // Anything not listed above (a setting added later) also lands here.
+  // Anything not listed above or in EMAIL_SECTIONS (a setting added later) also lands here.
   { id: "advanced", title: "pps_advanced", sub: "pps_advanced_sub",
     keys: ["client_portal_enabled", "weekly_report_check_interval_seconds",
       "weekly_report_max_findings_listed"] },
 ];
+/* Email switches: shown in the Emails tab ("Email sending" panel), not here, so
+ * everything that decides whether an email goes out is in one place. Each row
+ * also shows who would receive it (recipients are edited in Settings). */
+const EMAIL_SECTIONS = [
+  { id: "email_master", title: "es_master", sub: "es_master_sub", keys: ["email_delivery_enabled"] },
+  { id: "email_alerts", title: "es_alerts", sub: "es_alerts_sub",
+    keys: ["alert_email_client_enabled", "client_immediate_min_risk", "alert_email_cthree_enabled",
+      "alert_email_internal_enabled", "alert_email_engineer_enabled"] },
+  { id: "email_recs", title: "es_recs", sub: "es_recs_sub", keys: ["recommendation_email_enabled"] },
+  { id: "email_weekly", title: "es_weekly", sub: "es_weekly_sub",
+    keys: ["weekly_report_email_enabled", "email_attachments_enabled", "email_attachment_max_bytes"] },
+];
+// Which recipient list each switch sends to: [primary, fallback when blank].
+const EMAIL_RECIPIENTS = {
+  alert_email_client_enabled: ["client_notification_emails"],
+  client_immediate_min_risk: ["client_notification_emails"],
+  alert_email_cthree_enabled: ["cthree_notification_emails"],
+  alert_email_internal_enabled: ["internal_notification_emails"],
+  alert_email_engineer_enabled: ["engineer_notification_emails"],
+  recommendation_email_enabled: ["recommendation_notification_emails", "client_notification_emails"],
+  weekly_report_email_enabled: ["weekly_report_emails", "client_notification_emails"],
+};
+const emailSettingsState = { recipients: null, delivery: null };
 const PSET_WEEKDAY_I18N = {
   MON: "weekday_mon", TUE: "weekday_tue", WED: "weekday_wed", THU: "weekday_thu",
   FRI: "weekday_fri", SAT: "weekday_sat", SUN: "weekday_sun",
@@ -2229,12 +2537,28 @@ function psetControlHtml(key, spec) {
   return `<input type="${spec.secret ? "password" : "text"}"${maxlength} id="${id}">`;
 }
 
+/** "To: a@x, b@y" under an email switch, from the recipients saved in Settings
+ * (the fallback list when the primary one is blank); a warning when none. */
+function emailRecipientsHtml(key) {
+  const fields = EMAIL_RECIPIENTS[key];
+  const rec = emailSettingsState.recipients;
+  if (!fields || !rec) return "";
+  const value = (f) => String((rec[f] && rec[f].value) || "").trim();
+  let used = fields[0], list = value(fields[0]);
+  if (!list && fields[1]) { used = fields[1]; list = value(fields[1]); }
+  const link = `<a data-goto-settings>${esc(t("es_edit_recipients"))}</a>`;
+  if (!list) return `<span class="pset-rcpt warn">${esc(t("es_no_recipients"))} ${link}</span>`;
+  const note = used !== fields[0] ? ` ${esc(t("es_rcpt_fallback"))}` : "";
+  return `<span class="pset-rcpt">${esc(t("es_rcpt_to"))} <span class="mono">${esc(list)}</span>${note} · ${link}</span>`;
+}
+
 function psetRowHtml(key, spec) {
   const changed = spec.source === "db";
   return `<div class="pset-row" data-pset-row="${esc(key)}">
     <div class="pset-label">
       <label for="pset-${esc(key)}">${esc(psetLabel(key))}</label>
       <span class="hint">${esc(psetHint(key, spec))}</span>
+      ${emailRecipientsHtml(key)}
       <span class="key">${esc(key)}</span>
     </div>
     <div>
@@ -2288,21 +2612,45 @@ function renderPortalSettings(settings) {
     spec.key = settingKey;
   }
   psetState.settings = settings;
-  const listed = new Set(PSET_SECTIONS.flatMap((s) => s.keys));
+  const listed = new Set([...PSET_SECTIONS, ...EMAIL_SECTIONS].flatMap((s) => s.keys));
   const extra = Object.keys(settings).filter((k) => !listed.has(k)).sort();
-  box.innerHTML = PSET_SECTIONS.map((sec) => {
+  renderSettingSections(box, PSET_SECTIONS, settings, extra, (id) => psetState.open.has(id));
+  renderEmailSettings(settings);
+}
+
+/** The Emails tab's "Email sending" panel: the same rows, every section open. */
+function renderEmailSettings(settings) {
+  const box = document.getElementById("emailSettingsBody");
+  if (!box) return;
+  const d = emailSettingsState.delivery;
+  let master = "";
+  if (d) {
+    master = d.configured
+      ? `<div class="email-master">${esc(t("es_service_ok", d.provider || "", d.endpoint || ""))}</div>`
+      : `<div class="email-master bad">${esc(t("es_service_missing", tBackendText(d.reason || "")))}</div>`;
+  }
+  renderSettingSections(box, EMAIL_SECTIONS, settings, [], () => true, master);
+  box.querySelectorAll("[data-goto-settings]").forEach((a) => {
+    a.onclick = () => { const tab = document.querySelector('a.tab[data-view="settings"]'); if (tab) tab.click(); };
+  });
+}
+
+function renderSettingSections(box, sections, settings, extra, isOpen, introHtml = "") {
+  box.innerHTML = introHtml + sections.map((sec) => {
     const keys = sec.keys.filter((k) => settings[k]).concat(sec.id === "advanced" ? extra : []);
     if (!keys.length) return "";
     const changed = keys.filter((k) => settings[k].source === "db").length;
-    const open = psetState.open.has(sec.id) ? " open" : "";
+    const open = isOpen(sec.id) ? " open" : "";
     return `<details class="pset-sec" data-pset-sec="${esc(sec.id)}"${open}>
-      <summary><span class="t">${esc(t(sec.title))}</span><span class="s">${esc(t(sec.sub))}</span>
+      <summary><span class="t">${esc(t(sec.title))}</span>${helpBtn("help_pset_" + sec.id)}<span class="s">${esc(t(sec.sub))}</span>
         ${changed ? `<span class="srcbadge changed">${esc(t("pps_changed_n", changed))}</span>` : ""}</summary>
       <div class="pset-body">${keys.map((k) => psetRowHtml(k, settings[k])).join("")}</div>
     </details>`;
   }).join("");
 
+  const shown = new Set(sections.flatMap((sec) => sec.keys).concat(extra));
   for (const [key, spec] of Object.entries(settings || {})) {
+    if (!shown.has(key)) continue;
     psetSetValue(key, spec, spec.value);
     const err = box.querySelector(`[data-pset-err="${CSS.escape(key)}"]`);
     if (err) { err.textContent = ""; err.classList.remove("show"); }
@@ -2343,6 +2691,7 @@ async function savePortalSetting(key, spec) {
     toast(t("pset_saved", psetLabel(key)));
     await loadPortalSettings();
     if (key.startsWith("weekly_report")) loadPortalReports();
+    if (key === "email_delivery_enabled" && state.view === "emails") loadDelivery();
   } catch (e) {
     if (err) { err.textContent = psetErrorMessage(e); err.classList.add("show"); }
     else toast(t("toast_save_failed") + psetErrorMessage(e), true);
@@ -2363,6 +2712,17 @@ async function resetPortalSetting(key) {
   }
 }
 
+/** Emails tab: recipients and mail-service status for the "Email sending"
+ * panel, then the switches themselves (rendered by loadPortalSettings). */
+async function loadEmailSettings() {
+  try {
+    const s = await api("/settings");
+    emailSettingsState.recipients = s.recipients || null;
+    emailSettingsState.delivery = s.delivery || null;
+  } catch (e) { /* the switches still render without the recipient lines */ }
+  await loadPortalSettings();
+}
+
 async function loadPortalSettings() {
   const box = document.getElementById("portalSettingsBody");
   if (!box) return;
@@ -2376,11 +2736,13 @@ async function loadPortalSettings() {
     renderPortalStatus();
   } catch (e) {
     box.innerHTML = `<p class="muted">${esc(t("pset_load_failed"))}${esc(psetErrorMessage(e))}</p>`;
+    const ebox = document.getElementById("emailSettingsBody");
+    if (ebox) ebox.innerHTML = box.innerHTML;
   }
 }
 
-(function wirePortalSettingsPanel() {
-  const box = document.getElementById("portalSettingsBody");
+for (const id of ["portalSettingsBody", "emailSettingsBody"]) (function wirePortalSettingsPanel() {
+  const box = document.getElementById(id);
   if (!box) return;
   const onEdit = (e) => {
     const row = e.target.closest && e.target.closest("[data-pset-row]");
@@ -2431,7 +2793,7 @@ const portalLive = { state: null };
 
 const PW_STATUS_BADGE = {
   CLAIMED: "PROCESSING", GENERATED: "SUCCESS", QUEUED: "STARTED", SENT: "SUCCESS",
-  NO_RECIPIENTS: "PARTIAL", FAILED: "FAILED", SKIPPED: "PENDING",
+  NO_RECIPIENTS: "PARTIAL", FAILED: "FAILED", SKIPPED: "PENDING", EMAIL_FAILED: "FAILED",
 };
 
 function portalPill(cls, label) {
@@ -2613,7 +2975,7 @@ function ppLatestCard() {
   const detail = [when ? t("pp_created_at", when) : "", total ? t("pp_n_alerts", total) : t("pp_no_alerts")]
     .filter(Boolean).join(" · ");
   return ppCard(r.status === "FAILED" ? "bad" : "good", label,
-    `${esc(pwRange(r))} ${portalPill(PW_STATUS_BADGE[r.status] || "UNKNOWN", pwStatusLabel(r.status))}`,
+    `${esc(pwRange(r))} ${portalPill(PW_STATUS_BADGE[pwEffectiveStatus(r)] || "UNKNOWN", pwStatusLabel(pwEffectiveStatus(r)))}`,
     esc(detail), view);
 }
 
@@ -2875,8 +3237,8 @@ function renderPortalUsers() {
   }).join("");
   box.innerHTML = `<div class="pp-tablewrap"><table class="pp-table">
     <thead><tr>
-      <th>${esc(t("pp_th_account"))}</th><th>${esc(t("pu_th_status"))}</th>
-      <th>${esc(t("pu_th_last_login"))}</th><th>${esc(t("pu_th_actions"))}</th>
+      <th>${esc(t("pp_th_account"))}</th><th>${esc(t("pu_th_status"))}${helpBtn("help_portal_account_status")}</th>
+      <th>${esc(t("pu_th_last_login"))}${helpBtn("help_portal_sessions")}</th><th>${esc(t("pu_th_actions"))}</th>
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
@@ -3031,6 +3393,15 @@ function pwPeriodLabel(p) {
   return p.period_key && range !== p.period_key ? `${range} (${p.period_key})` : range;
 }
 
+/** The run status as the engineer cares about it: QUEUED only means "handed to
+ * the outbox", so once the mail service has accepted the email it reads SENT,
+ * and a handoff that failed reads EMAIL_FAILED (delivery_status from the API). */
+function pwEffectiveStatus(r) {
+  if (r.status === "QUEUED" && r.delivery_status === "ACCEPTED") return "SENT";
+  if (r.status === "QUEUED" && r.delivery_status === "FAILED") return "EMAIL_FAILED";
+  return r.status;
+}
+
 function pwStatusLabel(status) {
   const k = "pw_status_" + status;
   return t(k) === k ? String(status || "") : t(k);
@@ -3086,12 +3457,14 @@ function pwRowHtml(r) {
       <button class="small" data-pw-act="regen-cancel" data-period="${key}">${esc(t("pu_cancel"))}</button>
     </div>`;
   }
-  const err = r.error
-    ? `<div class="pp-err show">${esc(t("pw_error_prefix"))}${esc(r.error)}</div>` : "";
+  const status = pwEffectiveStatus(r);
+  const errHtml = r.error ? esc(r.error) : status === "EMAIL_FAILED" ? esc(r.delivery_error || "") : "";
+  const err = errHtml
+    ? `<div class="pp-err show">${esc(t("pw_error_prefix"))}${errHtml}</div>` : "";
   const fileHtml = r.has_file ? "" : `<span class="pp-cell-sub">${esc(t("pp_no_file"))}</span>`;
   return `<tr>
     <td data-label="${L("pw_th_period")}">${esc(pwRange(r))}<span class="pp-cell-sub mono">${key}</span></td>
-    <td data-label="${L("pw_th_status")}">${portalPill(PW_STATUS_BADGE[r.status] || "UNKNOWN", pwStatusLabel(r.status))}${err}</td>
+    <td data-label="${L("pw_th_status")}">${portalPill(PW_STATUS_BADGE[status] || "UNKNOWN", pwStatusLabel(status))}${err}</td>
     <td data-label="${L("pw_th_counts")}">${pwCountsHtml(r.counts)}${fileHtml}</td>
     <td data-label="${L("pw_th_completed")}">${completed ? esc(completed) : DASH}<span class="pp-cell-sub">${esc(pwTriggerLabel(r.trigger))}</span></td>
     <td data-label="${L("pw_th_actions")}">${actions}</td>
@@ -3118,7 +3491,7 @@ function renderPortalReports() {
       <div class="grow">${esc(d.enabled ? t("pp_weekly_on_sentence", day, sch.time) : t("pp_weekly_off_sentence"))}
         <span class="muted">${esc(t(d.email_enabled ? "pw_email_on" : "pp_email_off"))}</span></div>
       <button class="primary" data-pw-act="run">${esc(t("pw_run"))}</button>
-      <button data-pw-act="preview">${esc(t("pw_preview"))}</button>
+      <button data-pw-act="preview">${esc(t("pw_preview"))}</button>${helpBtn("help_portal_report_actions")}
     </div>
     ${due ? `<p class="pp-sub" style="margin:-6px 0 14px">${esc(t("pp_run_explain", pwPeriodLabel(due)))}</p>` : ""}
     <div class="pp-err" id="pw-err" role="alert"></div>

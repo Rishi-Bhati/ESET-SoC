@@ -206,6 +206,37 @@ const I18N = {
     btn_exporting_alerts: "変換中…",
     toast_alerts_exported: (n) => `全${n}件のアラートをスプレッドシート（.xlsx）としてダウンロードしました`,
     toast_alerts_export_failed: "スプレッドシートへの変換に失敗しました",
+    range_30d: "30日", range_custom: "期間指定",
+    filter_received: "受信日時で絞り込み", filter_received_from: "受信日（開始）", filter_received_to: "受信日（終了）",
+    filter_source: "取り込み元で絞り込み", filter_severity: "ESET の重大度で絞り込み",
+    filter_recs: "推奨対策で絞り込み", filter_sort: "並び順",
+    opt_all_sources: "すべての取り込み元", opt_all_severities: "すべての重大度（ESET）",
+    opt_recs_any: "推奨対策：すべて", opt_recs_with: "推奨対策あり", opt_recs_without: "推奨対策なし",
+    opt_sort_updated: "並び順：更新が新しい順", opt_sort_received_desc: "並び順：受信が新しい順",
+    opt_sort_received_asc: "並び順：受信が古い順", opt_sort_risk: "並び順：リスクが高い順",
+    alerts_filter_note: (shown, loaded) => `読み込み済み ${loaded} 件中 ${shown} 件が一致`,
+    xp_title: "アラートのエクスポート",
+    xp_scope: "対象のアラート", xp_scope_all: "記録されているすべてのアラート",
+    xp_scope_filtered: "現在のフィルター条件に一致するアラート",
+    xp_scope_hint: "フィルター条件は、表に読み込まれた最新 500 件だけでなく、全履歴に適用されます。",
+    xp_no_filters: "フィルターは設定されていません。",
+    xp_format: "形式", xp_format_xlsx: "Excel（.xlsx）", xp_format_csv: "CSV（アラートシートのみ）",
+    xp_columns: "アラートシートの列", xp_cols_all: "すべて選択", xp_cols_summary: "概要のみ",
+    xp_cols_hint: "相関 ID は常に出力されます。",
+    xp_col_overview: "基本情報（ID・ステータス・リスク・検知名・端末・取り込み元）", xp_col_times: "日時（JST）",
+    xp_col_alert: "アラートの詳細項目", xp_col_risk: "リスク判定の根拠", xp_col_threat_intel: "脅威インテリジェンス",
+    xp_col_ai: "AI 出力・AI 実行記録", xp_col_notifications: "通知・メール配信",
+    xp_col_recommendations: "エンジニア推奨対策", xp_col_errors: "エラー",
+    xp_col_raw: "元のリクエスト（JSON）", xp_col_other: "その他の項目",
+    xp_sheets: "追加シート（Excel のみ）", xp_sheet_risk_factors: "リスク要因", xp_sheet_emails: "メール",
+    xp_sheet_recommendations: "推奨対策（取り下げ分を含む）", xp_sheet_info: "エクスポート情報",
+    xp_sort: "並び順", xp_sort_received_desc: "受信が新しい順", xp_sort_received_asc: "受信が古い順",
+    xp_sort_updated: "更新が新しい順", xp_sort_risk: "リスクが高い順",
+    xp_cancel: "キャンセル", xp_download: "ダウンロード", xp_need_column: "列を 1 つ以上選んでください。",
+    xp_f_search: "検索語", xp_f_received: "受信日時", xp_f_status: "ステータス", xp_f_risk: "リスク",
+    xp_f_source: "取り込み元", xp_f_severity: "重大度（ESET）", xp_f_recs: "推奨対策",
+    xp_last_hours: (h) => `直近 ${h} 時間`,
+    toast_alerts_exported_n: (n) => `${n}件のアラートをダウンロードしました`,
     btn_copy_panel: "表示中の内容をコピー",
     toast_panel_copied: "表示中の内容をコピーしました",
     toast_copy_failed: "コピーできませんでした。テキストを選択してコピーしてください。",
@@ -575,8 +606,8 @@ const I18N = {
     pset_d_client_login_backstop_max_lock_hours: "ネットワークのロックはロック時間から始まり、失敗のたびに倍になり、この時間で頭打ちになります。",
     pset_k_client_export_max_alerts: "エクスポートの最大アラート数",
     pset_d_client_export_max_alerts: "クライアントが1回のエクスポートに含められるアラートの上限です。",
-    pset_k_client_immediate_min_risk: "お客様への即時メール: 最低リスク",
-    pset_d_client_immediate_min_risk: "このリスク以上のアラートで、お客様へ即時にメールを送ります。",
+    pset_k_client_immediate_min_risk: "お客様への通知: 対象とする最低リスク",
+    pset_d_client_immediate_min_risk: "このリスク以上のアラートだけ、お客様向け通知とシースリー向けの確認依頼を送ります。「低」はすべてのアラートです。",
     pset_k_weekly_report_enabled: "週次レポートを自動で作成する",
     pset_d_weekly_report_enabled: "下の曜日・時刻に、週次レポートを自動で作成します。",
     pset_k_weekly_report_weekday: "送信する曜日",
@@ -588,7 +619,7 @@ const I18N = {
     pset_k_weekly_report_max_findings_listed: "本文に記載する検出の上限",
     pset_d_weekly_report_max_findings_listed: "レポート本文に列挙する個別検出の上限です。",
     pset_k_email_attachments_enabled: "メール添付を有効にする",
-    pset_d_email_attachments_enabled: "週次ワークブックなどのファイルをメールに添付します。",
+    pset_d_email_attachments_enabled: "週次レポートの Excel をメールに添付します。オフのとき、または上限サイズを超えるときは、添付せずポータルへのリンクを記載します。",
     pset_k_email_attachment_max_bytes: "添付ファイルの最大サイズ(バイト)",
     pset_d_email_attachment_max_bytes: "これを超えるファイルは添付されません。",
     panel_portal_users: "クライアントアカウント",
@@ -672,6 +703,7 @@ const I18N = {
     pw_status_GENERATED: "生成済み",
     pw_status_QUEUED: "送信待ち",
     pw_status_SENT: "送信済み",
+    pw_status_EMAIL_FAILED: "メール送信失敗",
     pw_status_NO_RECIPIENTS: "宛先なし",
     pw_status_FAILED: "失敗",
     pw_status_SKIPPED: "スキップ",
@@ -751,7 +783,22 @@ const I18N = {
     pp_weekly_off_detail: "「今すぐ作成」を押したときだけ作成されます。",
     pp_weekly_next: (when, period) => `次回: ${when} (対象: ${period})`,
     pp_email_on: "メールでも送信されます。",
-    pp_email_off: "メール送信は無効です (このリリースでは未使用)。お客様はポータルからダウンロードします。",
+    panel_email_sending: "メール送信の設定",
+    sub_email_sending: "どのメールを誰に送るかを決めます。保存すると次のメールから反映されます（再起動は不要）。",
+    help_email_sending: "メールの種類ごとに、送信のオン・オフと宛先を確認できます。宛先は設定タブで変更します。どのスイッチも、オフの間はそのメールを作成しません（全体のスイッチだけは、作成したメールを送信待ちに残します）。",
+    es_master: "メール送信（全体）", es_master_sub: "オフの間もメールは作成され、送信待ちに残ります",
+    es_alerts: "アラート通知メール", es_alerts_sub: "アラートを受信するたびに、宛先ごとに送るメール",
+    es_recs: "推奨対策のメール", es_recs_sub: "エンジニアが推奨対策を追加・取り下げたときにお客様へ送るメール",
+    es_weekly: "週次レポートのメール", es_weekly_sub: "週次レポートを作成したときに送るメールと添付ファイル",
+    es_rcpt_to: "宛先:", es_rcpt_fallback: "（専用の宛先が空欄のため、クライアント通知の宛先を使用）",
+    es_no_recipients: "宛先が設定されていないため、送信されません。", es_edit_recipients: "宛先を変更（設定タブ）",
+    es_service_ok: (provider, endpoint) => `メールサービスの接続先: ${provider}（${endpoint}）`,
+    es_service_missing: (reason) => `メールサービスの接続設定が不足しているため、送信をオンにできません（${reason}）。EMAIL_API_URL などをデプロイのシークレットに設定し、コンテナを再起動してください。`,
+    help_pset_email_master: "オフにすると、メールサービスへの引き渡しを止めます。メールは作成され続け、オンに戻すと送信待ちのものから順に送られます。",
+    help_pset_email_alerts: "アラートごとに送る4種類のメールを、宛先ごとにオン・オフできます。お客様向けとシースリー向けは、最低リスク未満のアラートでは送りません。",
+    help_pset_email_recs: "推奨対策の本文、担当エンジニア、対象アラートの概要とポータルへのリンクを送ります。お客様がポータルで見られる内容だけを記載します。",
+    help_pset_email_weekly: "週次レポートの集計と高リスクの検知一覧を送ります。Excel を添付するかどうかと、添付の上限サイズもここで決めます。",
+    pp_email_off: "メールでは送信しません（メールタブで切り替えられます）。お客様はポータルからダウンロードします。",
     pp_change_schedule: "スケジュールを変更",
     pp_view_history: "履歴を見る",
     pp_latest_none: "まだありません",
@@ -788,15 +835,72 @@ const I18N = {
     pps_signin_sub: "セッションの有効期間とロックの条件",
     pps_access: "ポータルのURLとエクスポート",
     pps_access_sub: "メール内リンクのURL、エクスポートの上限",
-    pps_email: "メール (このリリースでは未使用)",
-    pps_email_sub: "メール送信を有効にしたときに使われます",
     pps_advanced: "詳細設定",
     pps_advanced_sub: "通常は変更不要です",
     pps_on: "有効",
     pps_changed_n: (n) => `${n} 件を変更済み`,
     pps_changed_title: "この画面で保存した値です。「既定値に戻す」で .env の値に戻ります。",
     pset_k_weekly_report_email_enabled: "週次レポートをメールで送る",
-    pset_d_weekly_report_email_enabled: "レポート宛先にメールで送信します (このリリースでは未使用)。",
+    pset_d_weekly_report_email_enabled: "週次レポートを作成したとき（自動・手動・再生成）に、集計と高リスクの検知一覧をメールで送ります。オフのときは作成のみで、お客様はポータルからダウンロードします。",
+    pset_k_email_delivery_enabled: "メールを送信する",
+    pset_d_email_delivery_enabled: "すべてのメールをメールサービスへ引き渡します。オフの間もメールは作成され、「送信待ち」に残り、オンにした時点でまとめて送信されます。既定値は EMAIL_DELIVERY_ENABLED です。",
+    pset_k_alert_email_client_enabled: "お客様向け通知",
+    pset_d_alert_email_client_enabled: "アラートごとに、AI が作成したお客様向けの日本語通知を送ります。AI の要約が作成できなかったアラートでは送りません。",
+    pset_k_alert_email_cthree_enabled: "シースリー向けの確認依頼",
+    pset_d_alert_email_cthree_enabled: "お客様向け通知の内容を、シースリーの窓口に確認用として送ります。対象リスクはお客様向け通知と同じです。",
+    pset_k_alert_email_internal_enabled: "社内チーム向けの要約",
+    pset_d_alert_email_internal_enabled: "アラートごとに、社内チーム向けの日本語の要約を送ります。AI の要約が作成できなかったときは、その旨の通知を送ります。",
+    pset_k_alert_email_engineer_enabled: "エンジニア向けレポート（英語）",
+    pset_d_alert_email_engineer_enabled: "アラートごとに、エンジニア向けの英語の技術レポートを送ります。AI の要約が作成できなかったときは、その旨の通知を送ります。",
+    pset_k_recommendation_email_enabled: "推奨対策をお客様にメールで知らせる",
+    pset_d_recommendation_email_enabled: "エンジニアが推奨対策を追加したときにお客様へメールを送ります。メールで知らせた推奨対策を取り下げたときは、取り下げのお知らせも送ります（取り下げの理由は記載しません）。",
+    // ---- help ("i") buttons ----
+    help_btn_aria: "この項目の説明",
+    help_overview_alerts: "選んだ期間に受信したアラートの件数を時間帯ごとに表示します。",
+    help_overview_risk: "ルールエンジンが算出したリスクレベル（ESETが報告した重大度とは別）ごとの件数です。",
+    help_overview_outcomes: "パイプラインの処理結果（成功・一部成功・失敗など）ごとの件数です。",
+    help_overview_source: "アラートが届いた経路です。ウェブフックはHTTPで、シスログはsyslog形式で受信したものです。",
+    help_flow: "受信したアラートごとに1本のレーンが表示され、処理の各段階を順に進みます。色は待機・実行中・完了・スキップ・失敗を表します。",
+    help_alerts_panel: "「ステータス」は処理の進み具合、「リスク」はルールエンジンが算出した危険度、「重大度（ESET）」は ESET が報告した値です。表は最新 500 件を読み込み、その中で絞り込みます。",
+    help_alerts_range: "受信日時（JST）で絞り込みます。「期間指定」では開始日と終了日を両方含む日付で指定します。",
+    help_alerts_recs: "エンジニアの推奨対策（取り下げたものを除く）が付いているアラートだけ、または付いていないアラートだけを表示します。",
+    help_alerts_export: "全アラート、または現在のフィルター条件に一致するアラートを Excel か CSV でダウンロードします。列のグループ、追加シート、並び順も選べます。",
+    help_xp_scope: "「すべて」は記録済みの全アラートです。フィルター条件を選ぶと、表の 500 件に限らず全履歴に同じ条件を適用して出力します。",
+    help_xp_format: "Excel はアラートシートと追加シートを含みます。CSV はアラートシートだけで、Excel で日本語が文字化けしないよう BOM 付き UTF-8 で出力します。",
+    help_xp_columns: "アラートシートに出力する列のグループです。「概要のみ」は基本情報・日時・リスク判定・推奨対策の列です。",
+    help_xp_sheets: "リスク要因・メール配信・推奨対策の履歴・エクスポート条件を、別シートとして追加します（Excel のみ）。",
+    help_alerts_status: "パイプラインでの処理状態です。PARTIALは処理は完了したものの、AI要約が代替文になったなど一部の段階が失敗したことを示します。",
+    help_alerts_risk: "ルールエンジンが算出したリスクです（ESETが報告した重大度、脅威対策の状況、外部の脅威情報、重要な端末かどうかなどから決まります）。AIはこの値を変更できません。",
+    help_alerts_reco: "このアラートに追加されたエンジニアの推奨対応の件数です。追加されるとクライアントポータルにも表示されます。",
+    help_ai_content: "成功したアラートごとにAIが作成した、お客様向け・社内向け・エンジニア向けの通知文です。",
+    help_ai_risk: "AIの入出力に対するセキュリティ検査の結果を分類した件数です。",
+    help_ai_live: "アラートがAI段階に到達した瞬間に表示されるリアルタイムの記録です。パイプラインフローと同じWebSocketを使います。",
+    help_ai_traces: "アプリ内のAI呼び出し1回ごとの記録です。行を開くと、入力・出力・セキュリティ検査の詳細を確認できます。",
+    help_mail_delivery: "メールサービスの稼働状況とキューの件数です。「今すぐ送信」は、待機中のメールをすぐにメールサービスへ引き渡します。",
+    help_outbox: "作成済みで、まだメールサービスへ引き渡されていないメールです。受け付けられた後の配信と再試行はメールサービスが行います。",
+    help_handoff: "メールサービスへ引き渡した履歴です。受付済み・保留中・失敗の状態と、試行回数を確認できます。",
+    help_logs: "アプリケーションの動作記録とHTTPアクセス記録です。期間・取得元・レベル・検索で絞り込めます。",
+    help_rcpt_client: "お客様向けの日本語通知（概要と必要な確認事項）の宛先です。",
+    help_rcpt_cthree: "C-Three窓口向けの日本語通知の宛先です。連絡メモとお客様への返信案が含まれます。",
+    help_rcpt_internal: "社内チーム向けの日本語通知の宛先です。詳細な評価と推奨対応が含まれます。",
+    help_rcpt_engineer: "エンジニア向けの英語通知の宛先です。技術的な内訳、不明点、調査項目が含まれます。",
+    help_rcpt_recommendation: "推奨対策が追加・取り下げられたときにお客様へ送るメールの宛先です。空欄の場合はクライアント通知の宛先を使います。送信のオン・オフはメールタブで切り替えます。",
+    help_rcpt_weekly: "週次レポートのメールの宛先です。空欄の場合はクライアント通知の宛先を使います。送信のオン・オフはメールタブで切り替えます。",
+    help_ai_provider: "使用中のAIプロバイダーとモデルです。「キーの取得元」は、APIキーをどこから読み込んでいるか（AWS Secrets Manager、環境変数、未設定）を示します。キー自体は表示されません。",
+    help_posture: "導入環境のセキュリティ設定を1項目ずつ確認した結果です。緑は問題なし、黄は注意、赤は要対応です。",
+    help_runtime: "現在有効な設定値の一覧です。ここでは読み取り専用で、変更は環境設定（.env）で行います。",
+    help_api_fields: "アラートのどの項目が、リスク判定や重複排除などの動作に影響するかの一覧です。リクエストに含まれない項目は、推測せず省略されます。",
+    help_portal_status: "ポータルのオン・オフ、ログインできるアカウント数、週次レポートの予定と直近のレポート、そして次にすべきことをまとめています。",
+    help_portal_accounts: "クライアントがポータルにログインするためのアカウントです。自己登録はなく、作成とパスワードの再設定はエンジニアが行います。",
+    help_portal_account_status: "有効：ログインできます。無効：停止中で、ログインできません。ロック中：ログイン失敗が続き一時的に制限されています。攻撃の疑い：失敗が多く、ログイン実績のないネットワークに厳しい制限をかけています。",
+    help_portal_sessions: "現在ログイン中の端末（セッション）の数です。「すべてのセッションを終了」を使うと、この数がすぐに0になります。",
+    help_portal_reports: "週ごとに作成されるExcelレポートの一覧です。ここから、今すぐ作成、プレビュー、ダウンロード、再作成ができます。",
+    help_portal_report_actions: "今すぐ作成は直近の対象期間のレポートを作ります。プレビューは保存も送信もせずにファイルをダウンロードします。再作成は保存済みのファイルを上書きします。",
+    help_portal_settings: "ポータルの動作設定です。変更は次回の読み取り時に反映され、再起動は不要です。「元に戻す」で環境設定の既定値に戻ります。",
+    help_pset_schedule: "週次レポートを自動作成する曜日と時刻（日本時間）です。初回に有効にしたときは基準を記録するだけで、過去の週のレポートは作りません。",
+    help_pset_signin: "セッションの有効時間と、パスワードを何度も間違えたときのログイン保護の設定です。同じIPアドレスからの失敗が続くとそのアドレスだけが一時ロックされ、ほかの場所からは通常どおりログインできます。",
+    help_pset_access: "メール内のリンクに使うポータルの公開URLと、1回のエクスポートに含められるアラート数の上限です。",
+    help_pset_advanced: "ポータル全体のオン・オフと、週次レポートのスケジューラーの内部設定です。通常は変更不要です。",
   },
 
   en: {
@@ -945,6 +1049,37 @@ const I18N = {
     btn_exporting_alerts: "Converting…",
     toast_alerts_exported: (n) => `Downloaded all ${n} alert${n === "1" ? "" : "s"} as a spreadsheet (.xlsx)`,
     toast_alerts_export_failed: "Spreadsheet conversion failed",
+    range_30d: "30d", range_custom: "Custom",
+    filter_received: "Filter by received time", filter_received_from: "Received from", filter_received_to: "Received to",
+    filter_source: "Filter by source", filter_severity: "Filter by ESET-reported severity",
+    filter_recs: "Filter by recommendations", filter_sort: "Sort order",
+    opt_all_sources: "All sources", opt_all_severities: "All reported severities",
+    opt_recs_any: "Recommendations: any", opt_recs_with: "With recommendations", opt_recs_without: "Without recommendations",
+    opt_sort_updated: "Sort: last updated", opt_sort_received_desc: "Sort: newest received",
+    opt_sort_received_asc: "Sort: oldest received", opt_sort_risk: "Sort: highest risk first",
+    alerts_filter_note: (shown, loaded) => `${shown} of ${loaded} loaded alerts match`,
+    xp_title: "Export alerts",
+    xp_scope: "Which alerts", xp_scope_all: "Every recorded alert",
+    xp_scope_filtered: "Alerts matching the current filters",
+    xp_scope_hint: "The filters are applied to the whole history, not only to the newest 500 alerts loaded in the table.",
+    xp_no_filters: "No filters are set.",
+    xp_format: "Format", xp_format_xlsx: "Excel (.xlsx)", xp_format_csv: "CSV (Alerts sheet only)",
+    xp_columns: "Alerts sheet columns", xp_cols_all: "Select all", xp_cols_summary: "Summary only",
+    xp_cols_hint: "The correlation ID is always included.",
+    xp_col_overview: "Overview (ID, status, risk, detection, endpoint, source)", xp_col_times: "Times (JST)",
+    xp_col_alert: "Other alert fields", xp_col_risk: "Risk decision and factors", xp_col_threat_intel: "Threat intelligence",
+    xp_col_ai: "AI output and AI run record", xp_col_notifications: "Notifications and email delivery",
+    xp_col_recommendations: "Engineer recommendations", xp_col_errors: "Errors",
+    xp_col_raw: "Original request (JSON)", xp_col_other: "Other fields",
+    xp_sheets: "Extra sheets (Excel only)", xp_sheet_risk_factors: "Risk factors", xp_sheet_emails: "Emails",
+    xp_sheet_recommendations: "Recommendations (incl. retracted)", xp_sheet_info: "Export info",
+    xp_sort: "Order", xp_sort_received_desc: "Newest received first", xp_sort_received_asc: "Oldest received first",
+    xp_sort_updated: "Last updated first", xp_sort_risk: "Highest risk first",
+    xp_cancel: "Cancel", xp_download: "Download", xp_need_column: "Choose at least one column group.",
+    xp_f_search: "Search", xp_f_received: "Received", xp_f_status: "Status", xp_f_risk: "Risk",
+    xp_f_source: "Source", xp_f_severity: "Severity (ESET)", xp_f_recs: "Recommendations",
+    xp_last_hours: (h) => `Last ${h} hours`,
+    toast_alerts_exported_n: (n) => `Downloaded ${n} alert${n === "1" ? "" : "s"}`,
     btn_copy_panel: "Copy current panel",
     toast_panel_copied: "Current panel copied",
     toast_copy_failed: "Copy failed. Select the text and copy it manually.",
@@ -1282,8 +1417,8 @@ const I18N = {
     pset_d_client_login_backstop_max_lock_hours: "A network lock starts at the lockout duration and doubles with each further wrong password, up to this.",
     pset_k_client_export_max_alerts: "Export alert limit",
     pset_d_client_export_max_alerts: "Most alerts one client spreadsheet export may contain.",
-    pset_k_client_immediate_min_risk: "Immediate client email: lowest risk",
-    pset_d_client_immediate_min_risk: "Alerts at this risk or higher trigger an immediate email to the client.",
+    pset_k_client_immediate_min_risk: "Client notification: lowest risk",
+    pset_d_client_immediate_min_risk: "Only alerts at this risk or higher send the client notification and its C-Three review copy. Low = every alert.",
     pset_k_weekly_report_enabled: "Create the weekly report automatically",
     pset_d_weekly_report_enabled: "Create the weekly report automatically at the time below.",
     pset_k_weekly_report_weekday: "Send weekday",
@@ -1295,7 +1430,7 @@ const I18N = {
     pset_k_weekly_report_max_findings_listed: "Findings listed in the email",
     pset_d_weekly_report_max_findings_listed: "Most individual findings listed in the report email body.",
     pset_k_email_attachments_enabled: "Enable email attachments",
-    pset_d_email_attachments_enabled: "Attach files (e.g. the weekly workbook) to emails.",
+    pset_d_email_attachments_enabled: "Attach the weekly report workbook to its email. When off, or when the file is over the size limit, the email links to the portal instead.",
     pset_k_email_attachment_max_bytes: "Maximum attachment size (bytes)",
     pset_d_email_attachment_max_bytes: "Largest attachment that will be sent; bigger files are left out.",
     panel_portal_users: "Client accounts",
@@ -1378,6 +1513,7 @@ const I18N = {
     pw_status_CLAIMED: "Generating",
     pw_status_GENERATED: "Generated",
     pw_status_QUEUED: "Queued",
+    pw_status_EMAIL_FAILED: "Email failed",
     pw_status_SENT: "Sent",
     pw_status_NO_RECIPIENTS: "No recipients",
     pw_status_FAILED: "Failed",
@@ -1458,7 +1594,22 @@ const I18N = {
     pp_weekly_off_detail: "Reports are created only when you press Create report now.",
     pp_weekly_next: (when, period) => `Next: ${when} (covers ${period})`,
     pp_email_on: "Also sent by email.",
-    pp_email_off: "Not emailed (email delivery is off in this release); clients download it from the portal.",
+    panel_email_sending: "Email sending",
+    sub_email_sending: "Which emails are sent, and to whom. Saved changes apply to the next email — no restart.",
+    help_email_sending: "Each email type with its on/off switch and its recipients. Recipients are edited in Settings. While a type is off, that email is not written at all (only the master switch keeps written emails waiting in the outbox).",
+    es_master: "Email sending (all emails)", es_master_sub: "While off, emails are still written and wait in the outbox",
+    es_alerts: "Alert notification emails", es_alerts_sub: "Sent for every new alert, one per audience",
+    es_recs: "Recommendation emails", es_recs_sub: "Sent to the client when an engineer adds or withdraws a recommendation",
+    es_weekly: "Weekly report email", es_weekly_sub: "Sent when a weekly report is produced, and its attachment",
+    es_rcpt_to: "To:", es_rcpt_fallback: "(its own list is blank, so the client notification list is used)",
+    es_no_recipients: "No recipients are set, so nothing is sent.", es_edit_recipients: "Edit recipients (Settings)",
+    es_service_ok: (provider, endpoint) => `Mail service: ${provider} (${endpoint})`,
+    es_service_missing: (reason) => `The mail service is not configured, so sending cannot be switched on (${reason}). Set EMAIL_API_URL and the other EMAIL_* values in the deployment secret and restart the container.`,
+    help_pset_email_master: "Off stops handing emails to the mail service. Emails keep being written; when switched back on, the waiting ones are sent first.",
+    help_pset_email_alerts: "Switch each of the four per-alert emails on or off. The client notification and the C-Three copy are not sent for alerts below the lowest risk.",
+    help_pset_email_recs: "Sends the recommendation text, the engineer, a short description of the alert and a portal link — only what the client can already see in the portal.",
+    help_pset_email_weekly: "Sends the weekly counts and the high-risk findings. Also decides whether the workbook is attached, and the largest file that will be.",
+    pp_email_off: "Not emailed (switch it on in the Emails tab); clients download it from the portal.",
     pp_change_schedule: "Change schedule",
     pp_view_history: "View history",
     pp_latest_none: "None yet",
@@ -1495,15 +1646,72 @@ const I18N = {
     pps_signin_sub: "How long sessions last and when sign-in locks",
     pps_access: "Portal address and exports",
     pps_access_sub: "The link used in emails, export size limit",
-    pps_email: "Email (not used in this release)",
-    pps_email_sub: "Only used once email delivery is switched on",
     pps_advanced: "Advanced",
     pps_advanced_sub: "Rarely needs changing",
     pps_on: "On",
     pps_changed_n: (n) => `${n} changed here`,
     pps_changed_title: "Saved on this screen. Reset to default returns it to the .env value.",
     pset_k_weekly_report_email_enabled: "Email the weekly report",
-    pset_d_weekly_report_email_enabled: "Send the report to the report recipients by email (not used in this release).",
+    pset_d_weekly_report_email_enabled: "When a weekly report is produced (scheduled, manual or regenerated), email its counts and the high-risk findings. When off, reports are only produced and clients download them from the portal.",
+    pset_k_email_delivery_enabled: "Send emails",
+    pset_d_email_delivery_enabled: "Hands every email to the mail service. While off, emails are still written and wait in the outbox; they are sent once this is switched on. Default: EMAIL_DELIVERY_ENABLED.",
+    pset_k_alert_email_client_enabled: "Client notification",
+    pset_d_alert_email_client_enabled: "For each alert, send the AI-drafted Japanese notification to the client. Not sent for an alert whose AI summary failed.",
+    pset_k_alert_email_cthree_enabled: "C-Three review copy",
+    pset_d_alert_email_cthree_enabled: "Send the client notification to the C-Three desk for review. Uses the same lowest risk as the client notification.",
+    pset_k_alert_email_internal_enabled: "Internal team summary",
+    pset_d_alert_email_internal_enabled: "For each alert, send the Japanese summary to the internal team (or an 'AI summary failed' notice).",
+    pset_k_alert_email_engineer_enabled: "Engineer report (English)",
+    pset_d_alert_email_engineer_enabled: "For each alert, send the English technical report to the engineers (or an 'AI summary failed' notice).",
+    pset_k_recommendation_email_enabled: "Email clients about recommendations",
+    pset_d_recommendation_email_enabled: "Email the client when an engineer adds a recommendation. If a recommendation that was emailed is retracted, a withdrawal notice follows (without the retraction reason).",
+    // ---- help ("i") buttons ----
+    help_btn_aria: "About this item",
+    help_overview_alerts: "Number of alerts received in the chosen time window, shown over time.",
+    help_overview_risk: "Alerts per risk level as computed by the rule engine (not the severity ESET reported).",
+    help_overview_outcomes: "How many alerts ended in each pipeline outcome (success, partial, failed and so on).",
+    help_overview_source: "How alerts arrived: by webhook over HTTP, or as syslog messages.",
+    help_flow: "Each incoming alert gets a lane and moves through the pipeline stages in real time. Colours show waiting, running, done, skipped and failed.",
+    help_alerts_panel: "Status is how far processing got; Risk is the level worked out by the rule engine; Severity (ESET) is what ESET reported. The table loads the newest 500 alerts and filters within them.",
+    help_alerts_range: "Filters by received time (JST). Custom takes a start and end date, both included.",
+    help_alerts_recs: "Shows only alerts that have (or do not have) an active engineer recommendation. Retracted ones do not count.",
+    help_alerts_export: "Download every alert, or only those matching the current filters, as Excel or CSV. You can also choose column groups, extra sheets and the order.",
+    help_xp_scope: "Every recorded alert, or only those matching the current filters. Filters are applied to the whole history, not just the 500 rows in the table.",
+    help_xp_format: "Excel includes the Alerts sheet and the extra sheets. CSV is the Alerts sheet only, as UTF-8 with a BOM so Excel shows Japanese correctly.",
+    help_xp_columns: "Groups of columns written to the Alerts sheet. Summary only keeps overview, times, risk decision and recommendations.",
+    help_xp_sheets: "Adds separate sheets for risk factors, email delivery, the recommendation history and the export conditions (Excel only).",
+    help_alerts_status: "Where the alert is in the pipeline. PARTIAL means processing finished but a step failed, for example the AI summary fell back to fixed text.",
+    help_alerts_risk: "The risk level computed by the rule engine from the ESET severity, whether the threat was handled, threat intelligence and endpoint importance. The AI cannot change it.",
+    help_alerts_reco: "Number of engineer recommendations added to this alert. Active ones also show in the client portal.",
+    help_ai_content: "Notification text the AI wrote for each completed alert: for the client, the internal team and the engineer.",
+    help_ai_risk: "Count of AI calls grouped by the result of the security check on their input and output.",
+    help_ai_live: "Real-time record shown the moment an alert reaches the AI stage. It uses the same WebSocket as the pipeline flow.",
+    help_ai_traces: "One row per AI call made by the application. Open a row to see its input, output and security checks.",
+    help_mail_delivery: "Status of the mail service and its queue. Send queued now hands waiting emails to the mail service immediately.",
+    help_outbox: "Emails composed but not yet handed to the mail service. After it accepts them, delivery and retries are its job.",
+    help_handoff: "History of emails handed to the mail service, with their state (accepted, pending, failed) and the number of attempts.",
+    help_logs: "Application events and HTTP access records. Filter by time range, source, level or search text.",
+    help_rcpt_client: "Recipients of the client-facing Japanese notification (a summary and required confirmations).",
+    help_rcpt_cthree: "Recipients of the Japanese note for the C-Three front office, with coordination notes and a drafted client reply.",
+    help_rcpt_internal: "Recipients of the Japanese internal-team notification with the detailed assessment and recommended actions.",
+    help_rcpt_engineer: "Recipients of the English engineer notification: technical breakdown, unknowns and investigation items.",
+    help_rcpt_recommendation: "Who receives the client email when a recommendation is added or withdrawn. Blank falls back to the client recipients. Switch it on or off in the Emails tab.",
+    help_rcpt_weekly: "Who receives the weekly report email. Blank falls back to the client recipients. Switch it on or off in the Emails tab.",
+    help_ai_provider: "The AI provider and model in use. Key source shows where the API key is loaded from (AWS Secrets Manager, environment variable or not set). The key itself is never shown.",
+    help_posture: "A check of each deployment security control. Green is fine, amber needs attention, red needs action.",
+    help_runtime: "The settings currently in effect. They are read-only here and are changed in the environment (.env).",
+    help_api_fields: "Which alert fields drive behaviour such as risk scoring and deduplication. Fields missing from a request are left out, never guessed.",
+    help_portal_status: "Summary of the portal switch, how many accounts can sign in, the weekly report schedule and latest report, and what to do next.",
+    help_portal_accounts: "The accounts clients use to sign in. There is no self-service sign-up; engineers create accounts and reset passwords.",
+    help_portal_account_status: "Active: can sign in. Disabled: switched off. Locked: temporarily blocked after repeated wrong passwords. Under attack: many failures, so networks that never signed in before are tightly limited.",
+    help_portal_sessions: "How many sign-ins (sessions) are active now. Signing the account out everywhere ends them immediately.",
+    help_portal_reports: "The Excel report created for each week. From here you can create one now, preview, download or regenerate.",
+    help_portal_report_actions: "Create now builds the latest due week. Preview downloads the file without storing or sending it. Regenerate overwrites the stored file.",
+    help_portal_settings: "Portal behaviour settings. Changes apply on the next read with no restart; Reset returns a setting to its environment default.",
+    help_pset_schedule: "The weekday and time (JST) the weekly report is created automatically. The first time it is enabled it only records a baseline and does not create a report for a past week.",
+    help_pset_signin: "Session lifetime and the protection against repeated wrong passwords. Failures from one address lock only that address for a while; the account still signs in normally from elsewhere.",
+    help_pset_access: "The public portal address used in email links, and the most alerts one export may contain.",
+    help_pset_advanced: "The master portal switch and internal weekly report scheduler settings. They rarely need changing.",
   },
 };
 
@@ -1529,6 +1737,7 @@ const BADGE_LABELS_JA = {
   // states (src/storage/delivery_store.py).
   CLIENT_JA: "クライアント向け", CTHREE_JA: "シースリー向け", INTERNAL_JA: "社内向け",
   ENGINEER_EN: "エンジニア向け（英語）", ACCEPTED: "受付済み",
+  WEEKLY_REPORT_JA: "週次レポート", RECOMMENDATION_JA: "推奨対策", RECOMMENDATION_RETRACTED_JA: "推奨対策の取り下げ",
   STARTED: "開始", BLOCKED: "ブロック済み", ERROR: "エラー", OK: "正常",
   SAFE: "安全", REVIEW: "要確認", SENSITIVE_DATA_DETECTED: "機密情報検出", SECRET_DETECTED: "シークレット検出",
   FAILED_SECURITY_CHECK: "セキュリティチェック失敗",
@@ -1788,6 +1997,7 @@ const BACKEND_TEXT_JA = {
   "4 notifications generated": "4件の通知を生成しました",
   "No prohibited claims": "禁止表現なし",
   "No recipients configured": "宛先が設定されていません",
+  "No emails to send (no recipients, or these email types are switched off)": "送信するメールはありません（宛先が未設定か、メールの種類がオフです）",
   "No indicators to look up": "照会できる指標がありません",
   "No AI content to send": "送信するAIコンテンツがありません",
 
@@ -2020,6 +2230,7 @@ function applyStaticI18n() {
     el.setAttribute("title", t(el.getAttribute("data-i18n-title")));
   });
   applyMixedContentI18n();
+  refreshInfoButtons();
 }
 
 /** A handful of strings mix translatable prose with an embedded technical
@@ -2067,6 +2278,115 @@ function setLang(lang) {
   // state here instead.
   if (typeof renderWsStatus === "function") renderWsStatus();
   if (typeof refreshCurrentViewTranslations === "function") refreshCurrentViewTranslations();
+}
+
+/* ---------- Info ("i") buttons ----------
+ * One reusable help affordance. Markup (static HTML or a JS template string):
+ *   <button type="button" class="info-btn" data-help="help_xxx" aria-expanded="false">SVG</button>
+ * or, from JS, `${helpBtn("help_xxx")}`. The text lives in I18N.<lang>.help_xxx
+ * and is read through t() each time the popover opens (and re-read on a language
+ * switch), so it is never stale. One delegated handler below serves every button:
+ * click / Enter / Space toggles a single shared role="tooltip" popover, Escape or
+ * a click elsewhere closes it, and only one is open at a time. */
+const INFO_ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+  + '<circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+  + '<circle cx="8" cy="4.9" r="1" fill="currentColor"/>'
+  + '<path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+function helpBtn(key) {
+  const label = String(t("help_btn_aria")).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const k = String(key).replace(/[^\w-]/g, "");
+  return `<button type="button" class="info-btn" data-help="${k}" aria-label="${label}" aria-expanded="false">${INFO_ICON_SVG}</button>`;
+}
+
+const infoState = { btn: null, pop: null };
+
+function infoPop() {
+  if (!infoState.pop) {
+    const el = document.createElement("div");
+    el.id = "infoPop";
+    el.className = "info-pop";
+    el.setAttribute("role", "tooltip");
+    el.hidden = true;
+    document.body.appendChild(el);
+    infoState.pop = el;
+  }
+  return infoState.pop;
+}
+
+function placeInfoPop() {
+  const pop = infoState.pop, btn = infoState.btn;
+  if (!pop || !btn || pop.hidden) return;
+  const m = 8, r = btn.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+  pop.style.left = "0px";
+  pop.style.top = "0px";
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = r.left + r.width / 2 - w / 2;
+  left = Math.max(m, Math.min(left, vw - w - m));
+  let top = r.bottom + 6;
+  if (top + h > vh - m && r.top - 6 - h >= m) top = r.top - 6 - h;
+  top = Math.max(m, Math.min(top, vh - h - m));
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+
+function closeInfoPop(restoreFocus) {
+  const btn = infoState.btn;
+  if (infoState.pop) infoState.pop.hidden = true;
+  if (btn) {
+    btn.setAttribute("aria-expanded", "false");
+    btn.removeAttribute("aria-describedby");
+    if (restoreFocus && btn.isConnected) btn.focus();
+  }
+  infoState.btn = null;
+}
+
+function openInfoPop(btn) {
+  closeInfoPop(false);
+  const pop = infoPop();
+  // Inside a modal <dialog> (top layer) the popover must be the dialog's child to show.
+  const host = btn.closest("dialog") || document.body;
+  if (pop.parentNode !== host) host.appendChild(pop);
+  pop.textContent = t(btn.getAttribute("data-help"));
+  pop.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
+  btn.setAttribute("aria-describedby", "infoPop");
+  infoState.btn = btn;
+  placeInfoPop();
+}
+
+/** Re-reads every help button's label and the open popover's text after a
+ * language switch (called from applyStaticI18n). */
+function refreshInfoButtons() {
+  const label = t("help_btn_aria");
+  document.querySelectorAll(".info-btn[data-help]").forEach((b) => b.setAttribute("aria-label", label));
+  if (infoState.btn && infoState.pop && !infoState.pop.hidden) {
+    infoState.pop.textContent = t(infoState.btn.getAttribute("data-help"));
+    placeInfoPop();
+  }
+}
+
+// Capture phase + stopPropagation: a help button sitting inside a clickable row,
+// <summary> or <label> must not also trigger that parent's action.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest && e.target.closest(".info-btn[data-help]");
+  if (btn) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (infoState.btn === btn) closeInfoPop(false); else openInfoPop(btn);
+    return;
+  }
+  if (infoState.btn && !(infoState.pop && infoState.pop.contains(e.target))) closeInfoPop(false);
+}, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && infoState.btn) { e.preventDefault(); e.stopPropagation(); closeInfoPop(true); }
+}, true);
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", placeInfoPop);
+  window.addEventListener("scroll", (e) => {
+    if (infoState.pop && e.target !== infoState.pop) placeInfoPop();
+  }, true);
 }
 
 document.addEventListener("DOMContentLoaded", () => {

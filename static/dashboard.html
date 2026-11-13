@@ -189,6 +189,26 @@
   button.small{padding:5px 10px;font-size:11.5px;border-radius:var(--r-sm)}
   button.small.primary{padding:5px 12px}
 
+  /* ---------- Info ("i") buttons + shared popover (see i18n.js, helpBtn) ---------- */
+  button.info-btn{
+    display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;
+    width:18px;height:18px;min-width:18px;padding:0;margin:0 0 0 5px;gap:0;
+    border:none;background:transparent;border-radius:50%;color:var(--dim);font-weight:400;
+    text-transform:none;letter-spacing:0;line-height:1;
+  }
+  button.info-btn svg{display:block;pointer-events:none}
+  button.info-btn:hover:not(:disabled),button.info-btn[aria-expanded="true"]{background:transparent;border:none;color:var(--accent)}
+  button.info-btn:focus-visible{outline:none;box-shadow:var(--ring)}
+  .panel > .head > h3 + button.info-btn{margin:0 auto 0 -6px}
+  .info-pop{
+    position:fixed;z-index:1000;box-sizing:border-box;max-width:min(300px,calc(100vw - 16px));
+    padding:9px 12px;background:var(--panel3);color:var(--text);border:1px solid var(--border2);
+    border-radius:var(--r-md);box-shadow:0 8px 24px rgba(0,0,0,.28);
+    font-size:12px;line-height:1.55;font-weight:400;text-transform:none;letter-spacing:0;
+    overflow-wrap:anywhere;white-space:normal;text-align:left;
+  }
+  .info-pop[hidden]{display:none}
+
   /* Segmented control — two or three mutually exclusive options (language,
      theme) read as ONE control with a selected segment, not as a row of
      independent buttons that happen to sit together. */
@@ -535,6 +555,7 @@
   .b-FAILED_SECURITY_CHECK{--bdg:var(--text-danger)}
   /* notification audiences — identity, not state, so they take the accent family
      and neighbouring hues rather than any status colour */
+  .b-WEEKLY_REPORT_JA{--bdg:var(--text-info)} .b-RECOMMENDATION_JA{--bdg:#fbbf24} .b-RECOMMENDATION_RETRACTED_JA{--bdg:var(--dim)}
   .b-CTHREE_JA{--bdg:#a78bfa} .b-INTERNAL_JA{--bdg:#2dd4bf} .b-ENGINEER_EN{--bdg:#f472b6}
 
   /* ---------- Flow graph ---------- */
@@ -722,6 +743,22 @@
     overflow-x:auto;font-family:var(--font-mono);font-size:11.5px;line-height:1.6;color:var(--text);
     margin:0;white-space:pre;
   }
+  #alertRows td.row button{white-space:nowrap}
+  .pset-rcpt{display:block;margin-top:5px;font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
+  .pset-rcpt.warn{color:var(--text-warn)}
+  .pset-rcpt a{cursor:pointer}
+  .email-master{margin:0 0 12px;padding:10px 12px;border-radius:var(--r-sm);font-size:12px;line-height:1.6;
+    border:1px solid var(--border);background:var(--panel2);color:var(--muted)}
+  .email-master.bad{border-color:color-mix(in srgb, var(--warning) 40%, transparent);color:var(--text-warn)}
+  .xp-section{margin:0 0 16px}
+  .xp-section h4{margin:0 0 8px;font-size:11.5px;color:var(--muted);font-weight:600}
+  .xp-choices{display:flex;flex-wrap:wrap;gap:6px 18px}
+  .xp-choices label{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text);cursor:pointer}
+  .xp-choices input{width:auto;margin:0}
+  .xp-choices label.disabled{opacity:.5;cursor:not-allowed}
+  .xp-hint{font-size:11.5px;color:var(--dim);margin:6px 0 0;line-height:1.55}
+  .xp-filters{margin:6px 0 0;padding:8px 12px;border-radius:var(--r-sm);background:var(--panel2);border:1px solid var(--border);font-size:12px;color:var(--muted);line-height:1.6}
+  .xp-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
   .field{margin-bottom:15px}
   .field label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:6px;font-weight:550}
   .field .hint{font-size:11px;color:var(--dim);margin-top:5px}
@@ -768,6 +805,8 @@
     #view-alerts .head{align-items:flex-start;flex-wrap:wrap}
     #view-alerts .head .row{width:100%;flex-wrap:wrap}
     #view-alerts .head input{flex:1 1 100%;min-width:0}
+    #view-alerts .alerts-dates{width:100%}
+    #view-alerts .alerts-dates input{flex:1 1 0;min-width:0}
     nav a.tab.active::before{bottom:0}
   }
 </style>
@@ -875,7 +914,7 @@
       <div class="grid2 lead">
         <div class="panel">
           <div class="head">
-            <h3 data-i18n="panel_alerts_ingested">Alerts Ingested</h3>
+            <h3 data-i18n="panel_alerts_ingested">Alerts Ingested</h3><button type="button" class="info-btn" data-help="help_overview_alerts" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             <div class="headline" id="seriesHeadline"></div>
             <select id="seriesWindow" style="width:auto">
               <option value="6" data-i18n="opt_last_6h">Last 6 hours</option>
@@ -887,17 +926,17 @@
           <div class="body"><div id="chartSeries"></div></div>
         </div>
         <div class="panel">
-          <div class="head"><h3 data-i18n="panel_risk_distribution">Risk Distribution</h3></div>
+          <div class="head"><h3 data-i18n="panel_risk_distribution">Risk Distribution</h3><button type="button" class="info-btn" data-help="help_overview_risk" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
           <div class="body"><div id="chartRisk"></div></div>
         </div>
       </div>
       <div class="grid2">
         <div class="panel">
-          <div class="head"><h3 data-i18n="panel_pipeline_outcomes">Pipeline Outcomes</h3></div>
+          <div class="head"><h3 data-i18n="panel_pipeline_outcomes">Pipeline Outcomes</h3><button type="button" class="info-btn" data-help="help_overview_outcomes" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
           <div class="body"><div id="chartStatus"></div></div>
         </div>
         <div class="panel">
-          <div class="head"><h3 data-i18n="panel_ingest_source">Ingest Source</h3></div>
+          <div class="head"><h3 data-i18n="panel_ingest_source">Ingest Source</h3><button type="button" class="info-btn" data-help="help_overview_source" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
           <div class="body"><div id="chartSource"></div></div>
         </div>
       </div>
@@ -907,7 +946,7 @@
     <section class="view" id="view-flow">
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_live_flow">Live Pipeline Flow</h3>
+          <h3 data-i18n="panel_live_flow">Live Pipeline Flow</h3><button type="button" class="info-btn" data-help="help_flow" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="legend">
             <span class="k"><span class="sw" style="background:var(--dim)"></span><span data-i18n="legend_waiting">Waiting</span></span>
             <span class="k"><span class="sw" style="background:var(--accent)"></span><span data-i18n="legend_running">Running</span></span>
@@ -926,8 +965,31 @@
     <section class="view" id="view-alerts">
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_alerts">Alerts</h3>
+          <h3 data-i18n="panel_alerts">Alerts</h3><button type="button" class="info-btn" data-help="help_alerts_panel" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="row">
+            <span class="muted" id="alertsFilterNote" style="font-size:11.5px"></span>
+            <button class="small" id="alertsExport" data-i18n="btn_export_alerts_xlsx">Convert to Spreadsheet</button>
+            <button type="button" class="info-btn" data-help="help_alerts_export" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          </div>
+        </div>
+        <div class="log-toolbar">
+          <input id="fSearch" type="search" class="log-search" data-i18n-placeholder="placeholder_search_alerts" data-i18n-aria-label="placeholder_search_alerts" placeholder="Search detection / endpoint / IP / hash">
+          <div class="seg" id="fRange" role="group" data-i18n-aria-label="filter_received">
+            <button class="small primary" data-range="" data-i18n="range_all">All</button>
+            <button class="small" data-range="24" data-i18n="range_24h">24h</button>
+            <button class="small" data-range="168" data-i18n="range_7d">7d</button>
+            <button class="small" data-range="720" data-i18n="range_30d">30d</button>
+            <button class="small" data-range="custom" data-i18n="range_custom">Custom</button>
+          </div>
+          <button type="button" class="info-btn" data-help="help_alerts_range" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <span class="row alerts-dates" id="fCustomDates" style="display:none">
+            <input type="date" id="fFrom" data-i18n-aria-label="filter_received_from" style="width:auto">
+            <span class="muted">—</span>
+            <input type="date" id="fTo" data-i18n-aria-label="filter_received_to" style="width:auto">
+          </span>
+        </div>
+        <div class="log-toolbar log-toolbar-2">
+          <div class="row" style="flex-wrap:wrap;gap:8px">
             <select id="fStatus" style="width:auto" data-i18n-aria-label="filter_status">
               <option value="" data-i18n="opt_all_statuses">All statuses</option>
               <option value="PENDING" data-i18n="status_pending">PENDING</option>
@@ -944,15 +1006,32 @@
               <option value="LOW" data-i18n="alert_risk_low">Low</option>
               <option value="UNKNOWN" data-i18n="alert_risk_unknown">Not assessed</option>
             </select>
-            <input id="fSearch" data-i18n-placeholder="placeholder_search_alerts" data-i18n-aria-label="placeholder_search_alerts" placeholder="Search detection / endpoint / IP / hash" style="width:250px">
-            <button class="small" id="alertsExport" data-i18n="btn_export_alerts_xlsx">Convert to Spreadsheet</button>
+            <select id="fSource" style="width:auto" data-i18n-aria-label="filter_source">
+              <option value="" data-i18n="opt_all_sources">All sources</option>
+            </select>
+            <select id="fSeverity" style="width:auto" data-i18n-aria-label="filter_severity">
+              <option value="" data-i18n="opt_all_severities">All reported severities</option>
+            </select>
+            <select id="fRecs" style="width:auto" data-i18n-aria-label="filter_recs">
+              <option value="" data-i18n="opt_recs_any">Recommendations: any</option>
+              <option value="with" data-i18n="opt_recs_with">With recommendations</option>
+              <option value="without" data-i18n="opt_recs_without">Without recommendations</option>
+            </select>
+            <button type="button" class="info-btn" data-help="help_alerts_recs" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            <select id="fSort" style="width:auto" data-i18n-aria-label="filter_sort">
+              <option value="updated_desc" data-i18n="opt_sort_updated">Sort: last updated</option>
+              <option value="received_desc" data-i18n="opt_sort_received_desc">Sort: newest received</option>
+              <option value="received_asc" data-i18n="opt_sort_received_asc">Sort: oldest received</option>
+              <option value="risk_desc" data-i18n="opt_sort_risk">Sort: highest risk first</option>
+            </select>
           </div>
+          <button class="small ghost" id="alertsClear" data-i18n="btn_clear_filters">Clear filters</button>
         </div>
         <div class="scroll">
           <table>
             <thead><tr>
-              <th data-i18n="th_status">Status</th><th data-i18n="th_risk">Risk</th><th data-i18n="th_detection">Detection</th><th data-i18n="th_endpoint">Endpoint</th>
-              <th data-i18n="th_source">Source</th><th data-i18n="th_recommendations">Recommendations</th><th data-i18n="th_updated">Updated</th><th data-i18n="th_correlation_id">Correlation ID</th><th></th>
+              <th><span data-i18n="th_status">Status</span><button type="button" class="info-btn" data-help="help_alerts_status" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></th><th><span data-i18n="th_risk">Risk</span><button type="button" class="info-btn" data-help="help_alerts_risk" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></th><th data-i18n="th_detection">Detection</th><th data-i18n="th_endpoint">Endpoint</th>
+              <th data-i18n="th_source">Source</th><th><span data-i18n="th_recommendations">Recommendations</span><button type="button" class="info-btn" data-help="help_alerts_reco" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></th><th data-i18n="th_updated">Updated</th><th data-i18n="th_correlation_id">Correlation ID</th><th></th>
             </tr></thead>
             <tbody id="alertRows"></tbody>
           </table>
@@ -980,7 +1059,7 @@
     <!-- ─────── AI CONTENT ─────── -->
     <section class="view" id="view-ai">
       <div class="panel">
-        <div class="head"><h3 data-i18n="panel_ai_notifications">AI-Generated Notifications</h3><span class="muted mono" id="aiCount"></span></div>
+        <div class="head"><h3 data-i18n="panel_ai_notifications">AI-Generated Notifications</h3><button type="button" class="info-btn" data-help="help_ai_content" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="muted mono" id="aiCount"></span></div>
         <div class="scroll" id="aiList"></div>
         <div class="empty" id="aiEmpty" data-i18n="ai_content_empty">No AI content yet — it appears once an alert completes with status SUCCESS.</div>
       </div>
@@ -994,12 +1073,12 @@
 
       <div class="grid2">
         <div class="panel">
-          <div class="head"><h3 data-i18n="panel_ai_risk_breakdown">AI Risk Breakdown</h3></div>
+          <div class="head"><h3 data-i18n="panel_ai_risk_breakdown">AI Risk Breakdown</h3><button type="button" class="info-btn" data-help="help_ai_risk" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
           <div class="body"><div id="aiRiskChart"></div></div>
         </div>
         <div class="panel">
           <div class="head">
-            <h3 data-i18n="panel_live_ai_activity">Live AI Activity</h3>
+            <h3 data-i18n="panel_live_ai_activity">Live AI Activity</h3><button type="button" class="info-btn" data-help="help_ai_live" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             <span class="muted" style="font-size:11.5px" data-i18n="sub_same_ws">Same WebSocket as Pipeline Flow</span>
           </div>
           <div class="scroll" id="aiLiveFeed" style="max-height:230px"></div>
@@ -1009,7 +1088,7 @@
 
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_recent_ai_traces">Recent AI Traces</h3>
+          <h3 data-i18n="panel_recent_ai_traces">Recent AI Traces</h3><button type="button" class="info-btn" data-help="help_ai_traces" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <select id="aiTraceRisk" style="width:auto">
             <option value="" data-i18n="opt_all_risk_levels">All risk levels</option>
             <option value="SAFE" data-i18n="risk_safe">Safe</option>
@@ -1037,9 +1116,17 @@
 
     <!-- ─────── EMAILS ─────── -->
     <section class="view" id="view-emails">
+      <div class="panel" id="emailSendingPanel">
+        <div class="head">
+          <h3 data-i18n="panel_email_sending">Email sending</h3><button type="button" class="info-btn" data-help="help_email_sending" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <span class="muted" style="font-size:11.5px" data-i18n="sub_email_sending">Which emails are sent, and to whom. Saved changes apply to the next email — no restart.</span>
+        </div>
+        <div class="body" id="emailSettingsBody"></div>
+      </div>
+
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_mail_delivery">Mail Delivery</h3>
+          <h3 data-i18n="panel_mail_delivery">Mail Delivery</h3><button type="button" class="info-btn" data-help="help_mail_delivery" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="row">
             <span class="muted" style="font-size:11.5px" id="deliveryConfig"></span>
             <button class="small primary" id="dispatchNow" data-i18n="btn_dispatch_now">Send queued now</button>
@@ -1053,7 +1140,7 @@
 
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_outbox">Email Outbox — Awaiting Handoff</h3>
+          <h3 data-i18n="panel_outbox">Email Outbox — Awaiting Handoff</h3><button type="button" class="info-btn" data-help="help_outbox" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <span class="muted mono" id="emailCount"></span>
         </div>
         <div class="scroll">
@@ -1070,7 +1157,7 @@
 
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_handoff_history">Handoff History</h3>
+          <h3 data-i18n="panel_handoff_history">Handoff History</h3><button type="button" class="info-btn" data-help="help_handoff" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <select id="deliveryFilter" style="width:auto">
             <option value="" data-i18n="opt_all">All</option>
             <option value="ACCEPTED" data-i18n="opt_accepted">Accepted</option>
@@ -1095,19 +1182,19 @@
     <section class="view" id="view-portal">
       <p class="pp-lede" data-i18n="pp_intro">The client portal is the separate site at /client where your clients sign in to read their alerts and download weekly reports. Here you switch it on, manage who can sign in, and check that the weekly report is being produced.</p>
       <div class="panel" id="portalStatusPanel">
-        <div class="head"><h3 data-i18n="pp_status_title">At a glance</h3><button class="small" id="pp-refresh" data-i18n="pp_refresh">Refresh</button></div>
+        <div class="head"><h3 data-i18n="pp_status_title">At a glance</h3><button type="button" class="info-btn" data-help="help_portal_status" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><button class="small" id="pp-refresh" data-i18n="pp_refresh">Refresh</button></div>
         <div class="body"><div id="portalStatusBody"><p class="muted" data-i18n="pp_loading">Loading…</p></div></div>
       </div>
       <div class="panel" id="portalUsersPanel">
-        <div class="head"><h3 data-i18n="panel_portal_users">Client accounts</h3><span class="pp-sub" data-i18n="pp_users_sub">Who can sign in to the portal</span></div>
+        <div class="head"><h3 data-i18n="panel_portal_users">Client accounts</h3><button type="button" class="info-btn" data-help="help_portal_accounts" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="pp-sub" data-i18n="pp_users_sub">Who can sign in to the portal</span></div>
         <div class="body"><div id="portalUsersBody"><p class="muted" data-i18n="pu_loading">Loading accounts…</p></div></div>
       </div>
       <div class="panel" id="portalReportsPanel">
-        <div class="head"><h3 data-i18n="panel_portal_reports">Weekly reports</h3><span class="pp-sub" data-i18n="pp_reports_sub">The Excel report clients download each week</span></div>
+        <div class="head"><h3 data-i18n="panel_portal_reports">Weekly reports</h3><button type="button" class="info-btn" data-help="help_portal_reports" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="pp-sub" data-i18n="pp_reports_sub">The Excel report clients download each week</span></div>
         <div class="body"><div id="portalReportsBody"><p class="muted" data-i18n="pw_loading">Loading weekly reports…</p></div></div>
       </div>
       <div class="panel" id="portalSettingsPanel">
-        <div class="head"><h3 data-i18n="panel_portal_settings">Portal settings</h3><span class="pp-sub" data-i18n="sub_portal_settings">Changes apply on the next action — no restart</span></div>
+        <div class="head"><h3 data-i18n="panel_portal_settings">Portal settings</h3><button type="button" class="info-btn" data-help="help_portal_settings" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="pp-sub" data-i18n="sub_portal_settings">Changes apply on the next action — no restart</span></div>
         <div class="body"><div id="portalSettingsBody"><p class="muted" data-i18n="pset_loading">Loading settings…</p></div></div>
       </div>
     </section>
@@ -1116,7 +1203,7 @@
     <section class="view" id="view-logs">
       <div class="panel">
         <div class="head">
-          <h3 data-i18n="panel_app_logs">Application Logs</h3>
+          <h3 data-i18n="panel_app_logs">Application Logs</h3><button type="button" class="info-btn" data-help="help_logs" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="row">
             <span class="pill" id="logLiveState"><span class="dot"></span><span></span></span>
             <label class="row muted" style="font-size:11.5px;gap:5px">
@@ -1180,32 +1267,32 @@
         <div class="body">
           <div class="grid2 pair">
             <div class="field">
-              <label><span data-i18n="label_client">Client notification (JA)</span><span class="srcbadge" id="src-client" data-i18n="src_from_env">env</span></label>
+              <label><span data-i18n="label_client">Client notification (JA)</span><button type="button" class="info-btn" data-help="help_rcpt_client" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="srcbadge" id="src-client" data-i18n="src_from_env">env</span></label>
               <input id="in-client" placeholder="client@example.com, other@example.com">
               <div class="hint" data-i18n="hint_client">Customer-facing summary and required confirmations.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_cthree">C-Three front office (JA)</span><span class="srcbadge" id="src-cthree" data-i18n="src_from_env">env</span></label>
+              <label><span data-i18n="label_cthree">C-Three front office (JA)</span><button type="button" class="info-btn" data-help="help_rcpt_cthree" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="srcbadge" id="src-cthree" data-i18n="src_from_env">env</span></label>
               <input id="in-cthree" placeholder="frontoffice@example.com">
               <div class="hint" data-i18n="hint_cthree">Coordination notes plus a drafted client reply.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_internal">Internal team (JA)</span><span class="srcbadge" id="src-internal" data-i18n="src_from_env">env</span></label>
+              <label><span data-i18n="label_internal">Internal team (JA)</span><button type="button" class="info-btn" data-help="help_rcpt_internal" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="srcbadge" id="src-internal" data-i18n="src_from_env">env</span></label>
               <input id="in-internal" placeholder="soc-internal@example.com">
               <div class="hint" data-i18n="hint_internal">Detailed assessment and recommended actions.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_engineer">Engineer (EN)</span><span class="srcbadge" id="src-engineer" data-i18n="src_from_env">env</span></label>
+              <label><span data-i18n="label_engineer">Engineer (EN)</span><button type="button" class="info-btn" data-help="help_rcpt_engineer" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="srcbadge" id="src-engineer" data-i18n="src_from_env">env</span></label>
               <input id="in-engineer" placeholder="engineering@example.com">
               <div class="hint" data-i18n="hint_engineer">Technical breakdown, unknowns, investigation items.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_recommendation_emails">Recommendation notices (JA)</span><span class="srcbadge" id="src-recommendation" data-i18n="src_from_env">env</span></label>
+              <label><span data-i18n="label_recommendation_emails">Recommendation notices (JA)</span><button type="button" class="info-btn" data-help="help_rcpt_recommendation" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="srcbadge" id="src-recommendation" data-i18n="src_from_env">env</span></label>
               <input id="in-recommendation" placeholder="client@example.com">
               <div class="hint" data-i18n="hint_recommendation_emails">Notifies when a recommendation is added. Blank falls back to the client recipients list.</div>
             </div>
             <div class="field">
-              <label><span data-i18n="label_weekly_report_emails">Weekly report (JA)</span><span class="srcbadge" id="src-weekly" data-i18n="src_from_env">env</span></label>
+              <label><span data-i18n="label_weekly_report_emails">Weekly report (JA)</span><button type="button" class="info-btn" data-help="help_rcpt_weekly" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="srcbadge" id="src-weekly" data-i18n="src_from_env">env</span></label>
               <input id="in-weekly" placeholder="client@example.com">
               <div class="hint" data-i18n="hint_weekly_report_emails">Where the weekly report is sent. Blank falls back to the client recipients list.</div>
             </div>
@@ -1218,7 +1305,7 @@
         </div>
       </div>
       <div class="panel">
-        <div class="head"><h3 data-i18n="panel_ai_provider">AI Provider</h3><span class="muted" style="font-size:11.5px" data-i18n="sub_ai_readonly">Read-only — set per environment. The API key stays in the secret store.</span></div>
+        <div class="head"><h3 data-i18n="panel_ai_provider">AI Provider</h3><button type="button" class="info-btn" data-help="help_ai_provider" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="muted" style="font-size:11.5px" data-i18n="sub_ai_readonly">Read-only — set per environment. The API key stays in the secret store.</span></div>
         <div class="body">
           <div class="kv" id="aiProviderKv"></div>
           <div class="row" style="margin-top:10px">
@@ -1228,11 +1315,11 @@
         </div>
       </div>
       <div class="panel">
-        <div class="head"><h3 data-i18n="panel_security_posture">Security posture</h3><span class="muted" style="font-size:11.5px" id="postureSummary"></span></div>
+        <div class="head"><h3 data-i18n="panel_security_posture">Security posture</h3><button type="button" class="info-btn" data-help="help_posture" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="muted" style="font-size:11.5px" id="postureSummary"></span></div>
         <div class="posture" id="postureList"></div>
       </div>
       <div class="panel">
-        <div class="head"><h3 data-i18n="panel_runtime_config">Runtime Configuration</h3><span class="muted" style="font-size:11.5px" data-i18n="sub_readonly_env">Read-only — set in .env</span></div>
+        <div class="head"><h3 data-i18n="panel_runtime_config">Runtime Configuration</h3><button type="button" class="info-btn" data-help="help_runtime" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button><span class="muted" style="font-size:11.5px" data-i18n="sub_readonly_env">Read-only — set in .env</span></div>
         <div class="body"><div class="kv" id="runtimeKv"></div></div>
       </div>
     </section>
@@ -1259,7 +1346,7 @@
         </div>
       </div>
       <div class="panel">
-        <div class="head"><h3 data-i18n="panel_fields_behaviour">Fields That Drive Behaviour</h3></div>
+        <div class="head"><h3 data-i18n="panel_fields_behaviour">Fields That Drive Behaviour</h3><button type="button" class="info-btn" data-help="help_api_fields" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
         <table>
           <thead><tr><th data-i18n="th_field2">Field</th><th data-i18n="th_effect">Effect</th></tr></thead>
           <tbody>

@@ -26,6 +26,7 @@ const SESSION_KEY = "client_session";
 const LANG_KEY = "client_lang";
 const THEME_KEY = "client_theme";
 const EXPORT_PREFS_KEY = "client_export_prefs";
+const OD_PREFS_KEY = "client_report_prefs";
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];   // display order
 const FILTER_SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 const SERIOUS = ["CRITICAL", "HIGH"];
@@ -75,6 +76,7 @@ const state = {
   reports: null,
   reportsError: "",
   reportsSeq: 0,
+  od: { weeks: null, error: "", seq: 0, busy: false },   // on-demand report: weeks offered
   keepHash: false,
   exp: null,             // export dialog state
   exportAbort: null,
@@ -151,6 +153,130 @@ function flag(cond, text) { return cond ? text : ""; }
 
 function show(el, on) { el.hidden = !on; }
 function setNotice(el, text) { el.textContent = text || ""; show(el, !!text); }
+
+// -------------------------------------------------------- info ("i") buttons
+// One reusable help affordance. Static markup:
+//   <button type="button" class="info-btn" data-help="help_xxx" data-i18n-aria="help_btn_aria" aria-expanded="false">SVG</button>
+// From JS: helpBtnEl("help_xxx") (a DOM node, for el()/append code) or helpBtnHtml("help_xxx")
+// (a pre-escaped string for template literals). The text is CLIENT_I18N.<lang>.help_xxx, read
+// through t() each time the popover opens and again on a language switch. One delegated
+// handler serves every button: click / Enter / Space toggles a single shared role="tooltip"
+// popover; Escape or a click elsewhere closes it; only one is open at a time. The popover is
+// filled with textContent only.
+const SVG_NS = "http://www.w3.org/2000/svg";
+const infoState = { btn: null, pop: null };
+
+function helpBtnEl(key) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "info-btn";
+  b.setAttribute("data-help", String(key).replace(/[^\w-]/g, ""));
+  b.setAttribute("aria-label", t("help_btn_aria"));
+  b.setAttribute("aria-expanded", "false");
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const ring = document.createElementNS(SVG_NS, "circle");
+  [["cx", "8"], ["cy", "8"], ["r", "6.5"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "1.4"]]
+    .forEach(([k, v]) => ring.setAttribute(k, v));
+  const dot = document.createElementNS(SVG_NS, "circle");
+  [["cx", "8"], ["cy", "4.9"], ["r", "1"], ["fill", "currentColor"]].forEach(([k, v]) => dot.setAttribute(k, v));
+  const stem = document.createElementNS(SVG_NS, "path");
+  [["d", "M8 7.3v4.2"], ["stroke", "currentColor"], ["stroke-width", "1.5"], ["stroke-linecap", "round"]]
+    .forEach(([k, v]) => stem.setAttribute(k, v));
+  svg.append(ring, dot, stem);
+  b.append(svg);
+  return b;
+}
+function helpBtnHtml(key) { return helpBtnEl(key).outerHTML; }
+
+function infoPop() {
+  if (!infoState.pop) {
+    const p = document.createElement("div");
+    p.id = "infoPop";
+    p.className = "info-pop";
+    p.setAttribute("role", "tooltip");
+    p.hidden = true;
+    document.body.appendChild(p);
+    infoState.pop = p;
+  }
+  return infoState.pop;
+}
+
+function placeInfoPop() {
+  const pop = infoState.pop, btn = infoState.btn;
+  if (!pop || !btn || pop.hidden) return;
+  const m = 8, r = btn.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+  pop.style.left = "0px";
+  pop.style.top = "0px";
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  const left = Math.max(m, Math.min(r.left + r.width / 2 - w / 2, vw - w - m));
+  let top = r.bottom + 6;
+  if (top + h > vh - m && r.top - 6 - h >= m) top = r.top - 6 - h;
+  top = Math.max(m, Math.min(top, vh - h - m));
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+
+function closeInfoPop(restoreFocus) {
+  const btn = infoState.btn;
+  if (infoState.pop) infoState.pop.hidden = true;
+  if (btn) {
+    btn.setAttribute("aria-expanded", "false");
+    btn.removeAttribute("aria-describedby");
+    if (restoreFocus && btn.isConnected) btn.focus();
+  }
+  infoState.btn = null;
+}
+
+function openInfoPop(btn) {
+  closeInfoPop(false);
+  const pop = infoPop();
+  // A modal <dialog> sits in the top layer, above anything in <body>: inside one, the
+  // popover has to be a child of that dialog to be visible.
+  const host = btn.closest("dialog") || document.body;
+  if (pop.parentNode !== host) host.appendChild(pop);
+  pop.textContent = t(btn.getAttribute("data-help"));
+  pop.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
+  btn.setAttribute("aria-describedby", "infoPop");
+  infoState.btn = btn;
+  placeInfoPop();
+}
+
+/** After a language switch: re-label every button and re-read the open popover's text. */
+function refreshInfoButtons() {
+  document.querySelectorAll(".info-btn[data-help]").forEach((b) => b.setAttribute("aria-label", t("help_btn_aria")));
+  if (infoState.btn && infoState.pop && !infoState.pop.hidden) {
+    infoState.pop.textContent = t(infoState.btn.getAttribute("data-help"));
+    placeInfoPop();
+  }
+}
+
+// Capture phase + stopPropagation: a help button inside a <summary>, <label> or other
+// clickable element must not also trigger that parent's action.
+document.addEventListener("click", (ev) => {
+  const btn = ev.target.closest && ev.target.closest(".info-btn[data-help]");
+  if (btn) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (infoState.btn === btn) closeInfoPop(false); else openInfoPop(btn);
+    return;
+  }
+  if (infoState.btn && !(infoState.pop && infoState.pop.contains(ev.target))) closeInfoPop(false);
+}, true);
+document.addEventListener("keydown", (ev) => {
+  // preventDefault so Escape closes only the popover, not the dialog it sits in.
+  if (ev.key === "Escape" && infoState.btn) { ev.preventDefault(); ev.stopPropagation(); closeInfoPop(true); }
+}, true);
+window.addEventListener("resize", placeInfoPop);
+window.addEventListener("scroll", (ev) => {
+  if (infoState.pop && ev.target !== infoState.pop) placeInfoPop();
+}, true);
 
 let toastTimer = 0;
 function toast(text, isError) {
@@ -250,6 +376,7 @@ function applyStaticI18n() {
     const name = state.user.display_name || state.user.username || "";
     $("userName").textContent = t("signed_in_as", name);
   }
+  refreshInfoButtons();
 }
 
 function setLang(lang) {
@@ -257,6 +384,7 @@ function setLang(lang) {
   state.lang = lang;
   storeSet("local", LANG_KEY, lang);
   applyStaticI18n();
+  setNotice($("odStatus"), "");                 // a finished-report message is in the old language
   if (state.token) quietly(renderAll);
 }
 
@@ -277,6 +405,7 @@ function renderAll() {
   renderOverview();
   renderList();
   renderReports();
+  renderOnDemand();
   if ($("detailDialog").open) renderDetail();
   if ($("exportDialog").open) buildExport();
 }
@@ -305,6 +434,8 @@ function endSession(reason) {
   state.detail = null;
   state.reports = null;
   state.reportsError = "";
+  state.od = { weeks: null, error: "", seq: 0, busy: false };
+  setNotice($("odStatus"), "");
   storeDel("session", SESSION_KEY);
   disposeCharts();
   state.statsKey = "";
@@ -708,8 +839,8 @@ function deltaInfo(cur, prev, unit) {
     text: t(key, fmtNum(Math.abs(diff)), fmtNum(prev)) };
 }
 
-function figure(label, value, delta, note, spark) {
-  const children = [el("dt", null, label), el("dd", { class: "fig-n" }, fmtNum(value))];
+function figure(label, value, delta, note, spark, helpKey) {
+  const children = [el("dt", null, [label, helpKey ? helpBtnEl(helpKey) : null]), el("dd", { class: "fig-n" }, fmtNum(value))];
   if (delta) {
     children.push(el("dd", { class: "fig-delta" }, [
       el("span", { class: "delta-chip delta-" + delta.dir, "aria-hidden": "true" }, delta.chip),
@@ -771,11 +902,11 @@ function renderFigures(s) {
   const box = $("ovFigures");
   disposeChartsIn(box);
   box.replaceChildren(
-    figure(t("fig_total"), s.total, deltaInfo(s.total, prev.total), null, sparkTotal),
-    figure(t("fig_serious"), serious, deltaInfo(serious, sumCounts(prev.totals, SERIOUS)), null, sparkSerious),
-    figure(t("fig_devices"), s.devices_affected, deltaInfo(s.devices_affected, prev.devices_affected, "devices")),
+    figure(t("fig_total"), s.total, deltaInfo(s.total, prev.total), null, sparkTotal, "help_fig_total"),
+    figure(t("fig_serious"), serious, deltaInfo(serious, sumCounts(prev.totals, SERIOUS)), null, sparkSerious, "help_fig_serious"),
+    figure(t("fig_devices"), s.devices_affected, deltaInfo(s.devices_affected, prev.devices_affected, "devices"), undefined, undefined, "help_fig_devices"),
     figure(t("fig_advice"), advice, null, advice && typeof s.latest_advice_at === "number"
-      ? t("advice_latest", fmtShortDay(s.latest_advice_at)) : t("advice_none")),
+      ? t("advice_latest", fmtShortDay(s.latest_advice_at)) : t("advice_none"), undefined, "help_fig_advice"),
   );
   const k = chartTokens();
   if (sparkTotal) drawSpark(sparkTotal, totalSeries, k.accent);
@@ -1375,6 +1506,7 @@ function alertItemHtml(a) {
 }
 
 function renderChips() {
+  const helpChipsHtml = helpBtnHtml("help_chips");
   const data = state.list;
   const counts = data ? data.counts_by_risk || {} : {};
   const r = state.filters.risk;
@@ -1383,7 +1515,7 @@ function renderChips() {
   const sevHtml = SEVERITIES.map((lvl) => `
     <button type="button" class="chip chip-${esc(lvl)}" data-risk="${esc(lvl)}" aria-pressed="${esc(r.has(lvl))}">
       <span class="dot" aria-hidden="true"></span><span>${esc(t("sev_" + lvl))}</span><span class="n">${esc(data ? fmtNum(counts[lvl]) : "")}</span></button>`).join("");
-  $("countChips").innerHTML = allHtml + sevHtml;
+  $("countChips").innerHTML = allHtml + sevHtml + helpChipsHtml;
 }
 
 function renderList() {
@@ -1486,6 +1618,11 @@ function kvRowsHtml(source, keys, labelFor) {
 }
 
 function renderDetail() {
+  const helpDetailFactsHtml = helpBtnHtml("help_detail_facts");
+  const helpDetailAiMoreHtml = helpBtnHtml("help_detail_ai_more");
+  const helpDetailStoryHtml = helpBtnHtml("help_detail_story");
+  const helpDetailRecsHtml = helpBtnHtml("help_detail_recs");
+  const helpDetailTechnicalHtml = helpBtnHtml("help_detail_technical");
   const body = $("detailBody");
   if (state.detailError) { body.innerHTML = `<div class="state error">${esc(state.detailError)}</div>`; return; }
   const data = state.detail;
@@ -1538,9 +1675,9 @@ function renderDetail() {
     flat.received_at_jst ? `<span>${esc(t("received_on", fmtJstText(flat.received_at_jst)))}</span>` : "",
   ].join("");
   const factsSectionHtml = factsHtml
-    ? `<section class="d-section"><h3>${esc(t("section_facts"))}</h3><dl class="kv">${factsHtml}</dl></section>` : "";
+    ? `<section class="d-section"><h3 class="has-help">${esc(t("section_facts"))}</h3>${helpDetailFactsHtml}<dl class="kv">${factsHtml}</dl></section>` : "";
   const aiMoreSectionHtml = aiMoreHtml
-    ? `<details class="disclose"><summary>${esc(t("section_ai_more"))}</summary>
+    ? `<details class="disclose"><summary>${esc(t("section_ai_more"))}${helpDetailAiMoreHtml}</summary>
         <div class="disclose-body"><dl class="kv">${aiMoreHtml}</dl></div></details>` : "";
 
   body.innerHTML = `
@@ -1550,13 +1687,13 @@ function renderDetail() {
       <p class="detail-meta muted">${metaHtml}</p>
     </div>
     <section class="d-section">
-      <h3>${esc(t("section_story"))}</h3>${storyHtml}${reasonHtml}
+      <h3 class="has-help">${esc(t("section_story"))}</h3>${helpDetailStoryHtml}${storyHtml}${reasonHtml}
     </section>
     <section class="recs${flag(recs.length, " has-recs")}" aria-labelledby="recsTitle">
-      <h3 id="recsTitle">${esc(t("section_recs"))}</h3>${recsHtml}</section>
+      <h3 id="recsTitle" class="has-help">${esc(t("section_recs"))}</h3>${helpDetailRecsHtml}${recsHtml}</section>
     ${factsSectionHtml}
     ${aiMoreSectionHtml}
-    <details class="disclose"><summary>${esc(t("section_technical"))}</summary>
+    <details class="disclose"><summary>${esc(t("section_technical"))}${helpDetailTechnicalHtml}</summary>
       <div class="disclose-body">${groupsHtml}${rawHtml}</div></details>`;
 }
 
@@ -1594,7 +1731,7 @@ function showTab(name, skipHash) {
   if (name !== "overview") disposeCharts();
   else if (state.stats && !state.overviewError) quietly(renderOverview);
   if (name === "overview") loadOverview();
-  if (name === "reports") loadReports();
+  if (name === "reports") { loadReports(); loadOnDemand(); }
 }
 
 function onTabKey(ev) {
@@ -1656,10 +1793,11 @@ function reportCountText(r) {
 }
 
 function reportDownloadHtml(r) {
+  const helpReportNofileHtml = helpBtnHtml("help_report_nofile");
   if (r.has_file) return `<button type="button" class="btn" data-period="${esc(r.period_key)}">${esc(t("btn_download"))}</button>`;
   // No workbook: a week with no alerts says so already; a week with only High/Critical needs the reason.
   const onlySerious = Number((r.counts || {}).total) > 0;
-  return `<span class="muted small">${esc(t(onlySerious ? "report_unavailable_serious" : "report_unavailable"))}</span>`;
+  return `<span class="muted small">${esc(t(onlySerious ? "report_unavailable_serious" : "report_unavailable"))}${helpReportNofileHtml}</span>`;
 }
 
 /** A week's severity split: a thin bar (the shape, aligned across weeks) and the counts
@@ -1730,6 +1868,105 @@ async function onReportDownload(ev) {
   }
 }
 
+// ---------------------------------------------------------- on-demand report
+// "Create a report now": any of the recent weeks (this week = so far), built by
+// the server on request and downloaded. Never stored or emailed, so it cannot
+// clash with the scheduled report for the same week.
+
+function loadOdPrefs() {
+  try {
+    const p = JSON.parse(storeGet("local", OD_PREFS_KEY) || "null");
+    return p && typeof p === "object" ? p : {};
+  } catch (e) { return {}; }
+}
+
+async function loadOnDemand() {
+  const seq = ++state.od.seq;
+  state.od.error = "";
+  if (state.od.weeks === null) renderOnDemand();
+  try {
+    const data = await api("/reports/on-demand");
+    if (seq !== state.od.seq) return;
+    state.od.weeks = Array.isArray(data.weeks) ? data.weeks : [];
+  } catch (e) {
+    if (seq !== state.od.seq || !state.token) return;
+    if (state.od.weeks === null) state.od.error = t("od_err_load");
+  }
+  renderOnDemand();
+}
+
+function odWeekLabel(w) {
+  const n = fmtNum((w.counts || {}).total);
+  return w.in_progress
+    ? t("od_week_current", fmtDay(w.period_start), n)
+    : t("od_week_option", t("range", fmtDay(w.period_start), fmtDay(w.last_day)), n);
+}
+
+function renderOnDemand() {
+  const sel = $("odWeek");
+  const status = $("odStatus");
+  const weeks = state.od.weeks;
+  if (state.od.error) {
+    sel.innerHTML = "";
+    renderRetry(status, state.od.error, () => { setNotice(status, ""); status.classList.remove("error"); loadOnDemand(); });
+    $("odGo").disabled = true;
+    return;
+  }
+  const keep = sel.value;
+  if (weeks === null) {
+    sel.innerHTML = `<option value="">${esc(t("od_loading_weeks"))}</option>`;
+    $("odGo").disabled = true;
+  } else {
+    sel.innerHTML = weeks.map((w) => `<option value="${esc(w.period_key)}">${esc(odWeekLabel(w))}</option>`).join("");
+    // Default: the most recent finished week (what the next scheduled report would cover).
+    const fallback = (weeks.find((w) => !w.in_progress) || weeks[0] || {}).period_key || "";
+    sel.value = weeks.some((w) => w.period_key === keep) ? keep : fallback;
+    $("odGo").disabled = state.od.busy || !weeks.length;
+  }
+  const prefs = loadOdPrefs();
+  if (!$("odForm").dataset.ready) {
+    $("odLang").value = prefs.lang === "en" || prefs.lang === "ja" ? prefs.lang : state.lang;
+    $("odHigh").checked = !!prefs.high;
+    $("odForm").dataset.ready = "1";
+  }
+}
+
+async function onOnDemandSubmit(ev) {
+  ev.preventDefault();
+  if (state.od.busy) return;
+  const key = $("odWeek").value;
+  if (!key) return;
+  const week = (state.od.weeks || []).find((w) => w.period_key === key);
+  const lang = $("odLang").value === "en" ? "en" : "ja";
+  const high = $("odHigh").checked;
+  storeSet("local", OD_PREFS_KEY, JSON.stringify({ lang, high }));
+  const btn = $("odGo");
+  const status = $("odStatus");
+  status.classList.remove("error", "notice-error");
+  state.od.busy = true;
+  btn.disabled = true;
+  btn.textContent = t("od_busy");
+  setNotice(status, t("export_working"));
+  try {
+    const res = await apiFetch("/reports/on-demand", {
+      method: "POST", body: { period_key: key, include_high_risk: high, header_lang: lang },
+    });
+    const blob = await res.blob();
+    saveBlob(blob, filenameFrom(res, "weekly_report_" + key + ".xlsx"));
+    const label = !week ? key : week.in_progress ? t("od_this_week", fmtDay(week.period_start))
+      : t("range", fmtDay(week.period_start), fmtDay(week.last_day));
+    setNotice(status, t("od_done", label, fmtNum(res.headers.get("X-Alert-Count"))));
+  } catch (e) {
+    if (!state.token) return;
+    status.classList.add("notice-error");
+    setNotice(status, e.status === 429 ? t("err_export_busy") : e.status === 0 ? t("err_network") : t("od_err_failed"));
+  } finally {
+    state.od.busy = false;
+    btn.textContent = t("od_go");
+    btn.disabled = !(state.od.weeks || []).length;
+  }
+}
+
 // --------------------------------------------------------------------- export
 
 function loadExportPrefs() {
@@ -1785,6 +2022,12 @@ function captureExportOpts() {
 }
 
 function buildExport() {
+  const helpExportFieldsHtml = helpBtnHtml("help_export_fields");
+  const helpExportOrderHtml = helpBtnHtml("help_export_order");
+  const helpExportLimitHtml = helpBtnHtml("help_export_limit");
+  const helpExportHeaderLangHtml = helpBtnHtml("help_export_header_lang");
+  const helpFilterSortHtml = helpBtnHtml("help_filter_sort");
+  const helpExportInfoHtml = helpBtnHtml("help_export_info");
   if (!state.exp || !state.catalog) return;
   captureExportOpts();
   const c = state.catalog;
@@ -1821,8 +2064,8 @@ function buildExport() {
           <button type="button" class="btn btn-sm" data-preset="none">${esc(t("preset_none"))}</button>
         </div>
         <div class="exp-grid">
-          <div class="exp-section"><h3>${esc(t("export_fields"))}</h3>${checklistHtml}</div>
-          <div class="exp-section"><h3>${esc(t("export_order"))}</h3>
+          <div class="exp-section"><h3 class="has-help">${esc(t("export_fields"))}</h3>${helpExportFieldsHtml}${checklistHtml}</div>
+          <div class="exp-section"><h3 class="has-help">${esc(t("export_order"))}</h3>${helpExportOrderHtml}
             <p class="muted small">${esc(t("export_order_help"))}</p>
             <ol class="order" id="expOrder"></ol></div>
         </div>
@@ -1832,20 +2075,20 @@ function buildExport() {
       <summary>${esc(t("more_options"))}</summary>
       <div class="disclose-body">
         <div class="opts">
-          <label class="field" for="expLimit"><span>${esc(t("export_limit", maxAlerts))}</span>
+          <label class="field" for="expLimit"><span class="lbl"><span>${esc(t("export_limit", maxAlerts))}</span>${helpExportLimitHtml}</span>
             <input id="expLimit" type="number" min="1" max="${esc(maxAlerts)}" step="1" value="${esc(e.limit)}"></label>
-          <label class="field" for="expHeaderLang"><span>${esc(t("export_header_lang"))}</span>
+          <label class="field" for="expHeaderLang"><span class="lbl"><span>${esc(t("export_header_lang"))}</span>${helpExportHeaderLangHtml}</span>
             <select id="expHeaderLang">
               <option value="ja"${flag(e.headerLang === "ja", " selected")}>${esc(t("export_lang_ja"))}</option>
               <option value="en"${flag(e.headerLang === "en", " selected")}>${esc(t("export_lang_en"))}</option>
             </select></label>
-          <label class="field" for="expSort"><span>${esc(t("filter_sort"))}</span>
+          <label class="field" for="expSort"><span class="lbl"><span>${esc(t("filter_sort"))}</span>${helpFilterSortHtml}</span>
             <select id="expSort">
               <option value="desc"${flag(e.sort === "desc", " selected")}>${esc(t("sort_desc"))}</option>
               <option value="asc"${flag(e.sort === "asc", " selected")}>${esc(t("sort_asc"))}</option>
             </select></label>
         </div>
-        <p><label class="check"><input type="checkbox" id="expInfo"${flag(e.info, " checked")}><span>${esc(t("export_info_sheet"))}</span></label></p>
+        <p><label class="check"><input type="checkbox" id="expInfo"${flag(e.info, " checked")}><span>${esc(t("export_info_sheet"))}</span></label>${helpExportInfoHtml}</p>
       </div>
     </details>`;
   renderOrder();
@@ -2022,6 +2265,7 @@ function bind() {
     tab.addEventListener("keydown", onTabKey);
   });
   $("reportRows").addEventListener("click", onReportDownload);
+  $("odForm").addEventListener("submit", onOnDemandSubmit);
 
   $("detailClose").addEventListener("click", () => $("detailDialog").close());
   $("detailDialog").addEventListener("close", onDetailClosed);

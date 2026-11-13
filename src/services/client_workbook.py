@@ -23,8 +23,8 @@ HEADER_LANGS = ("ja", "en")
 
 # Sheet names per header language.
 SHEET_NAMES: dict[str, dict[str, str]] = {
-    "ja": {"alerts": "アラート", "info": "エクスポート情報"},
-    "en": {"alerts": "Alerts", "info": "Export info"},
+    "ja": {"alerts": "アラート", "info": "エクスポート情報", "summary": "概要"},
+    "en": {"alerts": "Alerts", "info": "Export info", "summary": "Summary"},
 }
 
 _INFO_LABELS: dict[str, dict[str, str]] = {
@@ -66,7 +66,8 @@ def _as_text(value: Any) -> str:
 
 
 def _build(bundles: list[AlertBundle], specs: list[FieldSpec], header_lang: str,
-           include_info_sheet: bool, title: str) -> bytes:
+           include_info_sheet: bool, title: str,
+           summary: Sequence[tuple[str, str]] | None = None) -> bytes:
     columns = [s.key for s in specs]
     headers = [s.label_ja if header_lang == "ja" else s.label_en for s in specs]
     rows = [{s.key: _as_text(s.extractor(b)) for s in specs} for b in bundles]
@@ -94,6 +95,15 @@ def _build(bundles: list[AlertBundle], specs: list[FieldSpec], header_lang: str,
         info.column_dimensions["A"].width = 48
         info.column_dimensions["B"].width = 60
 
+    if summary:
+        labels = _INFO_LABELS[header_lang]
+        sheet = wb.create_sheet(SHEET_NAMES[header_lang]["summary"], 0)
+        writer.write(sheet, ["k", "v"], [{"k": _as_text(k), "v": _as_text(v)} for k, v in summary],
+                     headers=[labels["item"], labels["value"]])
+        sheet.column_dimensions["A"].width = 40
+        sheet.column_dimensions["B"].width = 70
+        wb.active = 0
+
     wb.properties.title = _as_text(title)[:255] or None
     wb.properties.creator = "ESET SOC Lite"
     buf = io.BytesIO()
@@ -107,13 +117,16 @@ async def build_workbook(
     header_lang: str,
     include_info_sheet: bool,
     title: str,
+    summary: Sequence[tuple[str, str]] | None = None,
 ) -> bytes:
     """
     One row per bundle, one column per field in `field_keys` (validated through
     client_fields.get_fields -> ValueError if unknown). header_lang is "ja" or "en".
     include_info_sheet adds a sheet describing the export (title, generated-at in JST,
-    row count). Returns the .xlsx file bytes; CPU work runs off the event loop.
+    row count). `summary` (label, value) pairs, when given, become a first sheet
+    (the on-demand weekly report's counts). Returns the .xlsx file bytes; CPU work
+    runs off the event loop.
     """
     specs = _validate(field_keys, header_lang)        # before any work
     return await asyncio.to_thread(_build, list(bundles), specs, header_lang,
-                                   bool(include_info_sheet), title)
+                                   bool(include_info_sheet), title, summary)

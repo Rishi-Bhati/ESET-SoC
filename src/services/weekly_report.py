@@ -316,6 +316,161 @@ def _remove_quietly(path: str) -> None:
         pass
 
 
+# ------------------------------------------------------------------ on demand (client portal)
+#
+# A client can build a report for any recent week themselves, including the week
+# in progress. It is built on the fly and downloaded: never archived, emailed or
+# recorded in weekly_reports, so it can never collide with (or pre-empt) the
+# scheduled report for the same week.
+
+ON_DEMAND_WEEKS_OFFERED = 12          # weeks listed in the portal (this week + 11 before)
+ON_DEMAND_MAX_WEEKS_BACK = 52         # oldest week a client may ask for
+
+
+def current_period(now: datetime | None = None) -> Period:
+    """The ISO week (Monday 00:00 JST onwards) that contains `now`."""
+    current = to_jst(now or datetime.now(timezone.utc))
+    monday = (current - timedelta(days=current.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return _period_from_start(monday)
+
+
+def on_demand_period(period_key: Any, now: datetime | None = None) -> Period:
+    """The period a client may build: a valid ISO week that has started and is at
+    most ON_DEMAND_MAX_WEEKS_BACK weeks old. Raises ValueError otherwise."""
+    period = period_from_key(period_key)
+    current = current_period(now)
+    if period.start > current.start:
+        raise ValueError("That week has not started yet")
+    if period.start < current.start - timedelta(weeks=ON_DEMAND_MAX_WEEKS_BACK):
+        raise ValueError(f"Only the last {ON_DEMAND_MAX_WEEKS_BACK} weeks can be reported")
+    return period
+
+
+async def on_demand_weeks(now: datetime | None = None,
+                          count: int = ON_DEMAND_WEEKS_OFFERED) -> list[dict[str, Any]]:
+    """The weeks offered in the portal, newest first, with their alert counts."""
+    now = now or datetime.now(timezone.utc)
+    current = current_period(now)
+    weeks = []
+    for back in range(count):
+        period = _period_from_start(current.start - timedelta(weeks=back))
+        by_risk = await alert_index_store.counts_by_risk(period.start_epoch, period.end_epoch)
+        counts = {level: int(by_risk.get(level, 0)) for level in alert_index_store.RISK_ORDER}
+        counts["total"] = sum(counts.values())
+        weeks.append({
+            "period_key": period.key,
+            "period_start": period.start.isoformat(),
+            "last_day": period.last_day.isoformat(),
+            "in_progress": period.end > to_jst(now),
+            "counts": counts,
+        })
+    return weeks
+
+
+_OD_TEXT: dict[str, dict[str, str]] = {
+    "ja": {
+        "title": "週次アラートレポート（任意作成） {label} (JST) [{key}]",
+        "title_partial": "週次アラートレポート（任意作成・途中経過） {label} (JST) [{key}]",
+        "report": "レポート", "period": "対象期間 (JST)", "period_value": "{start} 00:00 〜 {end} 00:00（受信日時ベース、終了時刻を含まない）",
+        "state": "状態", "complete": "週の終了後に作成（確定値）",
+        "partial": "週の途中で作成（{now} JST 時点の途中経過）",
+        "created": "作成方法", "created_value": "クライアントポータルから任意に作成（保存・メール送信はされません）",
+        "generated": "作成日時 (JST)", "total": "合計",
+        "content": "アラートシートの内容",
+        "content_lm": "重大度「低」「中」のアラートのみ（定期の週次レポートと同じ）",
+        "content_all": "すべての重大度のアラート",
+        "rows": "アラートシートの行数",
+        "capped": "対象 {total} 件のうち、最初の {rows} 件のみを出力しました（上限 {cap} 件）",
+        "count": "{n} 件",
+    },
+    "en": {
+        "title": "Weekly alert report (on demand) {label} (JST) [{key}]",
+        "title_partial": "Weekly alert report (on demand, week to date) {label} (JST) [{key}]",
+        "report": "Report", "period": "Period (JST)", "period_value": "{start} 00:00 to {end} 00:00 (by received time, end exclusive)",
+        "state": "State", "complete": "Created after the week ended (final figures)",
+        "partial": "Created during the week (figures up to {now} JST)",
+        "created": "Created", "created_value": "On demand from the client portal (not stored or emailed)",
+        "generated": "Generated at (JST)", "total": "Total",
+        "content": "Alerts sheet contains",
+        "content_lm": "Low and Medium alerts only (same as the scheduled weekly report)",
+        "content_all": "Alerts of every severity",
+        "rows": "Rows in the Alerts sheet",
+        "capped": "Only the first {rows} of {total} matching alerts are listed (limit {cap})",
+        "count": "{n}",
+    },
+}
+_OD_RISK_EN = {"CRITICAL": "Critical", "HIGH": "High", "MEDIUM": "Medium", "LOW": "Low"}
+
+
+@dataclass
+class OnDemandReport:
+    period: Period
+    content: bytes
+    rows: int
+    matching: int
+    counts: dict[str, int]
+    in_progress: bool
+    filename: str
+
+
+async def build_on_demand(period: Period, *, include_high_risk: bool, header_lang: str,
+                          max_rows: int, now: datetime | None = None) -> OnDemandReport:
+    """The workbook a client asked for: a Summary sheet (every severity counted),
+    the Alerts sheet (LOW/MEDIUM, or every level when include_high_risk) with the
+    weekly report's fields, and the info sheet. At most `max_rows` alert rows."""
+    if header_lang not in client_workbook.HEADER_LANGS:
+        raise ValueError("header_lang must be ja or en")
+    now_jst = to_jst(now or datetime.now(timezone.utc))
+    text = _OD_TEXT[header_lang]
+    levels = alert_index_store.RISK_ORDER if include_high_risk else LOW_MEDIUM
+    by_risk = await alert_index_store.counts_by_risk(period.start_epoch, period.end_epoch)
+    counts = {level: int(by_risk.get(level, 0)) for level in alert_index_store.RISK_ORDER}
+    counts["total"] = sum(counts.values())
+
+    bundles: list[alert_catalog.AlertBundle] = []
+    matching = 0
+    offset = 0
+    while len(bundles) < max_rows:
+        page, matching = await alert_catalog.list_bundles(BundleQuery(
+            risk_levels=set(levels), received_from=period.start_epoch, received_to=period.end_epoch,
+            limit=min(PAGE_SIZE, max_rows - len(bundles)), offset=offset, order="asc"))
+        bundles += page
+        offset += PAGE_SIZE
+        if offset >= matching or not page:
+            break
+    bundles = bundles[:max_rows]
+
+    in_progress = period.end > now_jst
+    if header_lang == "ja":
+        label = period.label_ja()
+        def day(d: date) -> str: return f"{d.year}年{d.month:02d}月{d.day:02d}日"
+        risk_name = lambda level: risk_label(level, "ja")  # noqa: E731
+    else:
+        label = f"{period.start:%Y-%m-%d} to {period.last_day:%Y-%m-%d}"
+        def day(d: date) -> str: return d.isoformat()
+        risk_name = _OD_RISK_EN.get  # noqa: E731
+    title = text["title_partial" if in_progress else "title"].format(label=label, key=period.key)
+    now_text = now_jst.strftime("%Y-%m-%d %H:%M")
+    summary: list[tuple[str, str]] = [
+        (text["report"], title),
+        (text["period"], text["period_value"].format(start=day(period.start.date()), end=day(period.end.date()))),
+        (text["state"], text["partial"].format(now=now_text) if in_progress else text["complete"]),
+        (text["created"], text["created_value"]),
+        (text["generated"], now_jst.strftime("%Y-%m-%d %H:%M:%S")),
+        *[(str(risk_name(level)), text["count"].format(n=counts[level])) for level in alert_index_store.RISK_ORDER],
+        (text["total"], text["count"].format(n=counts["total"])),
+        (text["content"], text["content_all" if include_high_risk else "content_lm"]),
+        (text["rows"], str(len(bundles))),
+    ]
+    if matching > len(bundles):
+        summary.append(("", text["capped"].format(rows=len(bundles), total=matching, cap=max_rows)))
+    content = await client_workbook.build_workbook(
+        bundles, WEEKLY_FIELDS, header_lang, include_info_sheet=True, title=title, summary=summary)
+    suffix = "to-date" if in_progress else "on-demand"
+    return OnDemandReport(period, content, len(bundles), matching, counts, in_progress,
+                          f"weekly_report_{period.key}_{suffix}.xlsx")
+
+
 # ------------------------------------------------------------------ email
 
 def _parse_recipients(raw: str) -> list[str]:

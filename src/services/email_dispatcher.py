@@ -26,7 +26,7 @@ from src.config import settings
 from src.models.email_message import EmailMessage
 from src.services import email_outbox
 from src.services.email_delivery import get_provider
-from src.storage import delivery_store
+from src.storage import delivery_store, runtime_settings
 from src.utils import events
 
 logger = structlog.get_logger(__name__)
@@ -38,7 +38,11 @@ _dispatch_lock = asyncio.Lock()
 # Notification types that are not about one alert (their correlation_id is not
 # an alert id), so they report no "SEND" stage: Pipeline Flow would otherwise
 # grow a phantom lane for them.
-NON_ALERT_NOTIFICATION_TYPES: frozenset[str] = frozenset({"WEEKLY_REPORT_JA"})
+# Recommendation emails carry the alert's id (so they sit with the alert in the
+# delivery history and exports) but are sent long after its pipeline run.
+NON_ALERT_NOTIFICATION_TYPES: frozenset[str] = frozenset({
+    "WEEKLY_REPORT_JA", "RECOMMENDATION_JA", "RECOMMENDATION_RETRACTED_JA",
+})
 
 
 async def _emit_send_stage(message: EmailMessage, state: str, detail: str) -> None:
@@ -47,12 +51,17 @@ async def _emit_send_stage(message: EmailMessage, state: str, detail: str) -> No
     await events.emit_stage(message.correlation_id, "SEND", state, detail=detail)
 
 
-def delivery_status() -> dict[str, Any]:
+async def delivery_enabled() -> bool:
+    """The master switch: EMAIL_DELIVERY_ENABLED, or its dashboard override."""
+    return bool(await runtime_settings.get("email_delivery_enabled"))
+
+
+async def delivery_status() -> dict[str, Any]:
     """Whether handoff is on and correctly configured — surfaced in the dashboard."""
     provider = get_provider()
     ready, reason = provider.is_configured()
     return {
-        "enabled": settings.email_delivery_enabled,
+        "enabled": await delivery_enabled(),
         "provider": provider.name,
         "configured": ready,
         "reason": reason,
@@ -71,7 +80,7 @@ async def dispatch_pending(limit: int = 50) -> dict[str, Any]:
     Attempts handoff of everything currently queued. Returns a summary; never
     raises, so a mail-service outage cannot disturb the ingestion pipeline.
     """
-    if not settings.email_delivery_enabled:
+    if not await delivery_enabled():
         return {"skipped": "delivery disabled", "accepted": 0, "failed": 0, "pending": 0}
 
     provider = get_provider()

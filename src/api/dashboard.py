@@ -7,7 +7,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, field_validator
 import structlog
 from src.config import settings
@@ -26,6 +26,7 @@ from src.services.ai import factory as ai_factory
 from src.services.ai.base import AIConfigurationError
 from src.middleware.security import auth_limiter, client_key
 from src.middleware.auth import check_engineer_access
+from src.utils.jst_time import jst_day_start_epoch
 
 router = APIRouter(prefix="/dashboard/api", tags=["Dashboard"])
 logger = structlog.get_logger(__name__)
@@ -123,21 +124,98 @@ async def get_alerts(request: Request) -> dict[str, Any]:
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _export_csv_param(value: str | None, allowed: tuple[str, ...] | None, name: str,
+                      upper: bool = True, max_items: int = 20) -> set[str] | None:
+    """A comma list -> set (None when absent/blank). 400 on a value outside `allowed`."""
+    if value is None or not value.strip():
+        return None
+    items = [p.strip() for p in value.split(",") if p.strip()]
+    if len(items) > max_items or any(len(p) > 64 for p in items):
+        raise HTTPException(status_code=400, detail=f"Too many or too long values for {name}")
+    items = [p.upper() if upper else p.lower() for p in items]
+    if allowed is not None:
+        bad = [p for p in items if p not in allowed]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"Invalid {name}: {', '.join(bad)}. Allowed: {', '.join(allowed)}")
+    return set(items)
+
+
+def _export_day(value: str | None, name: str) -> float | None:
+    if not value:
+        return None
+    try:
+        return jst_day_start_epoch(value)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"{name} must be a YYYY-MM-DD date (JST)") from None
+
+
 @router.get("/alerts/export")
-async def export_alerts(request: Request) -> Response:
+async def export_alerts(
+    request: Request,
+    status: str | None = Query(None, max_length=200, description="comma list of job statuses"),
+    risk: str | None = Query(None, max_length=200, description="comma list: CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN"),
+    source: str | None = Query(None, max_length=200, description="comma list, e.g. WEBHOOK,SYSLOG"),
+    severity: str | None = Query(None, max_length=200, description="comma list of ESET-reported severities"),
+    from_: str | None = Query(None, alias="from", max_length=10, description="received on/after, YYYY-MM-DD JST"),
+    to: str | None = Query(None, max_length=10, description="received on/before, YYYY-MM-DD JST (inclusive)"),
+    since_hours: int | None = Query(None, ge=1, le=24 * 366, description="received in the last N hours"),
+    q: str | None = Query(None, max_length=200, description="search text (detection, endpoint, id, IP, hash, ...)"),
+    recommendations: str | None = Query(None, max_length=10, description="with | without"),
+    columns: str | None = Query(None, max_length=300, description="comma list of column groups"),
+    sheets: str | None = Query(None, max_length=200, description="comma list of extra sheets ('none' for Alerts only)"),
+    format: str = Query("xlsx", max_length=8, description="xlsx | csv (csv = Alerts sheet only)"),
+    sort: str = Query("received_desc", max_length=20),
+) -> Response:
     """
-    Every alert ever recorded — not the table's loaded window, filters or page —
-    as one .xlsx workbook with every field of its detail view
-    (src/services/alert_export.py).
+    Without parameters: every alert ever recorded — not the table's loaded window,
+    filters or page — as one .xlsx workbook with every field of its detail view
+    (src/services/alert_export.py). The parameters narrow the history (filters
+    apply to the WHOLE history, not just the rows the table has loaded), pick the
+    Alerts-sheet column groups and extra sheets, the order, and .xlsx or .csv.
     """
     _check_access(request)
-    content, count = await alert_export.export_alerts_xlsx()
+    fmt = (format or "xlsx").strip().lower()
+    if fmt not in alert_export.FORMATS:
+        raise HTTPException(status_code=400, detail="format must be xlsx or csv")
+    order = (sort or "received_desc").strip().lower()
+    if order not in alert_export.SORTS:
+        raise HTTPException(status_code=400, detail=f"sort must be one of {', '.join(alert_export.SORTS)}")
+    rec = (recommendations or "").strip().lower() or None
+    if rec is not None and rec not in alert_export.REC_FILTERS:
+        raise HTTPException(status_code=400, detail="recommendations must be 'with' or 'without'")
+    start, end = _export_day(from_, "from"), _export_day(to, "to")
+    if end is not None:
+        end += 86400
+    if since_hours is not None:
+        since = time.time() - since_hours * 3600
+        start = since if start is None else max(start, since)
+    if start is not None and end is not None and start >= end:
+        raise HTTPException(status_code=400, detail="'from' must not be after 'to'")
+    sheet_set = None
+    if sheets is not None:
+        sheet_set = set() if sheets.strip().lower() == "none" else \
+            (_export_csv_param(sheets, alert_export.SHEETS, "sheets", upper=False) or set())
+    column_set = _export_csv_param(columns, alert_export.COLUMN_GROUPS, "columns", upper=False)
+    options = alert_export.ExportOptions(
+        statuses=_export_csv_param(status, None, "status"),
+        risks=_export_csv_param(risk, ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"), "risk"),
+        sources=_export_csv_param(source, None, "source"),
+        severities=_export_csv_param(severity, None, "severity"),
+        received_from=start, received_to=end,
+        search=(q or "").strip() or None,
+        recommendations=rec,
+        columns=column_set, sheets=sheet_set, fmt=fmt, sort=order,
+    )
+    content, count = await alert_export.export_alerts_xlsx(options)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = "-filtered" if options.filtered else ""
+    media = XLSX_MEDIA_TYPE if fmt == "xlsx" else "text/csv; charset=utf-8"
     return Response(
-        content=content, media_type=XLSX_MEDIA_TYPE,
+        content=content, media_type=media,
         headers={
-            "Content-Disposition": f'attachment; filename="soc-lite-alerts-{stamp}.xlsx"',
+            "Content-Disposition": f'attachment; filename="soc-lite-alerts-{stamp}{suffix}.{fmt}"',
             "X-Alert-Count": str(count),
+            "Cache-Control": "no-store",
         },
     )
 
@@ -439,8 +517,8 @@ async def get_settings(request: Request) -> dict[str, Any]:
             "syslog_tcp_port": settings.syslog_tcp_port,
             "dashboard_protected": bool(settings.dashboard_access_key),
         },
-        "delivery": email_dispatcher.delivery_status(),
-        "security": _security_posture(request),
+        "delivery": await email_dispatcher.delivery_status(),
+        "security": _security_posture(request, await email_dispatcher.delivery_enabled()),
         "ai": _ai_status(),
     }
 
@@ -508,7 +586,7 @@ async def test_ai_connection(request: Request) -> dict[str, Any]:
     }
 
 
-def _security_posture(request: Request) -> list[dict[str, str]]:
+def _security_posture(request: Request, email_delivery_on: bool | None = None) -> list[dict[str, str]]:
     """
     Deployment checklist for Settings: one entry per control, each "ok",
     "warn" or "bad". Reports only whether something is configured, never a
@@ -530,7 +608,8 @@ def _security_posture(request: Request) -> list[dict[str, str]]:
         {"id": "threat_intel", "status": "warn" if settings.use_mock_threat_intel else "ok"},
         {"id": "ai_key_store", "status": {"aws_secrets_manager": "ok", "environment": "warn"}.get(
             _ai_status()["key_source"], "bad")},
-        {"id": "email_delivery", "status": "ok" if settings.email_delivery_enabled else "warn"},
+        {"id": "email_delivery", "status": "ok" if (settings.email_delivery_enabled if email_delivery_on is None
+                                                    else email_delivery_on) else "warn"},
     ]
 
 
@@ -574,7 +653,7 @@ async def get_delivery_overview(
     _check_access(request)
     limit = max(1, min(limit, 500))
     return {
-        "config": email_dispatcher.delivery_status(),
+        "config": await email_dispatcher.delivery_status(),
         "counts": await delivery_store.counts_by_status(),
         "deliveries": await delivery_store.list_deliveries(
             limit=limit, status=status, correlation_id=correlation_id,

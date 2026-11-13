@@ -83,7 +83,7 @@ async def _queue_notifications(correlation_id: str, emails: list, *, fallback: b
         # Anything not accepted stays queued for the sweeper.
         asyncio.create_task(email_dispatcher.dispatch_soon())
     else:
-        await events.emit_stage(correlation_id, "EMAIL", "skipped", detail="No recipients configured")
+        await events.emit_stage(correlation_id, "EMAIL", "skipped", detail="No emails to send (no recipients, or these email types are switched off)")
 
 
 async def process_alert_pipeline(correlation_id: str, raw_payload: dict, source: str) -> None:

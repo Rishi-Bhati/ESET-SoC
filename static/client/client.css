@@ -432,6 +432,15 @@ details.disclose>summary:hover{color:var(--text)}
   border-top:1px solid var(--border);flex-wrap:wrap;font-size:12.5px}
 
 /* ---------------------------------------------------------- weekly reports */
+.ondemand{margin:0 0 28px}
+.od-title{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.od-intro{margin:4px 0 16px;font-size:13px;max-width:78ch}
+.od-form{display:flex;flex-wrap:wrap;gap:14px 20px;align-items:flex-end}
+.od-form .od-week{flex:1 1 340px;max-width:480px}
+.od-form .od-lang{flex:0 1 160px}
+.od-check{min-height:38px}
+#odStatus{margin-top:14px}
+.reports-subhead{font-size:14px;font-weight:600;margin:0 0 10px}
 .report-list{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--r-lg);
   background:var(--panel);overflow:hidden}
 .report-list:empty{display:none}
@@ -522,6 +531,8 @@ details.raw pre{margin:8px 0 0;padding:10px;background:var(--panel2);border:1px 
   .report-action{grid-column:1 / -1;justify-self:start;text-align:left;max-width:none}
 }
 @media (max-width: 640px){
+  .od-form .od-week,.od-form .od-lang{flex:1 1 100%;max-width:none}
+  .od-form .btn{width:100%}
   main{padding:20px 16px 32px}
   .topbar-inner{height:52px;padding:0 16px;gap:8px}
   .subnav .tabs{padding:0 6px}
@@ -590,3 +601,24 @@ details.raw pre{margin:8px 0 0;padding:10px;background:var(--panel2);border:1px 
   details.disclose>summary::before,.table-view>summary::before{transition:none}
   dialog.modal[open]{animation:none}
 }
+
+/* ------------------------------------------------------------------ info ("i") buttons
+   One small help button after a label (see helpBtnEl / helpBtnHtml in client.js) and the
+   single shared popover it opens. Headings that carry one get .has-help so the button
+   sits on the same line. */
+.info-btn{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;
+  width:20px;height:20px;min-width:20px;padding:0;margin:0 0 0 4px;border:0;border-radius:50%;
+  background:transparent;color:var(--dim);font:inherit;line-height:1;cursor:pointer;
+  text-transform:none;letter-spacing:0;transition:color .12s}
+.info-btn svg{display:block;pointer-events:none}
+.info-btn:hover,.info-btn[aria-expanded="true"]{color:var(--accent)}
+.info-btn:focus-visible{outline:none;box-shadow:var(--ring);border-radius:50%}
+.has-help{display:inline-block;vertical-align:middle}
+.lbl{display:inline-flex;align-items:center}
+.lead-row{display:flex;align-items:flex-start;gap:2px}
+.lead-row .lead{margin:0}
+.info-pop{position:fixed;z-index:300;box-sizing:border-box;max-width:min(300px,calc(100vw - 16px));
+  padding:9px 12px;background:var(--panel3);color:var(--text);border:1px solid var(--border2);
+  border-radius:var(--r-md);box-shadow:var(--shadow-lg);font-size:13px;line-height:1.55;font-weight:400;
+  text-transform:none;letter-spacing:0;overflow-wrap:anywhere;white-space:normal;text-align:left}
+.info-pop[hidden]{display:none}

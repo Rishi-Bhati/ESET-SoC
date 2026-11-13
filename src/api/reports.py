@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from src.api.dashboard import _check_access
 from src.services import weekly_report
-from src.storage import weekly_report_store
+from src.storage import delivery_store, weekly_report_store
 
 async def _gate(request: Request) -> None:
     """Every route: dashboard key (dashboard._check_access)."""
@@ -46,8 +46,11 @@ def _base_key(period_key: str) -> str:
         raise HTTPException(status_code=400, detail=str(e)) from None
 
 
-def _history_row(row: dict[str, Any]) -> dict[str, Any]:
+async def _history_row(row: dict[str, Any]) -> dict[str, Any]:
     key = row["period_key"]
+    # What became of the email after it was queued (QUEUED only means "handed to
+    # the outbox"): PENDING, ACCEPTED (the mail service has it) or FAILED.
+    delivery = await delivery_store.get_delivery(row["email_id"]) if row.get("email_id") else None
     try:
         has_file = os.path.isfile(weekly_report.report_path(key))
         period = weekly_report.period_from_key(key).to_dict()
@@ -70,6 +73,8 @@ def _history_row(row: dict[str, Any]) -> dict[str, Any]:
         "resend_count": row["resend_count"],
         "attempts": row["attempts"],
         "error": row["error"],
+        "delivery_status": delivery.get("status") if delivery else None,
+        "delivery_error": delivery.get("error") if delivery else None,
     }
 
 
@@ -78,7 +83,7 @@ async def weekly_overview(limit: int = Query(50, ge=1, le=500),
                           offset: int = Query(0, ge=0)) -> dict[str, Any]:
     info = await weekly_report.schedule_info()
     rows = await weekly_report_store.list_reports(limit=limit, offset=offset)
-    return {**info, "reports": [_history_row(r) for r in rows]}
+    return {**info, "reports": [await _history_row(r) for r in rows]}
 
 
 @router.get("/weekly/preview")
@@ -113,7 +118,7 @@ async def weekly_run(body: RunRequest | None = None) -> dict[str, Any]:
         key = (await weekly_report.latest_due_period()).key
     result = await weekly_report.generate_report(key, trigger="manual", regenerate=body.regenerate)
     row = await weekly_report_store.get(key)
-    return {**result, "report": _history_row(row) if row else None}
+    return {**result, "report": await _history_row(row) if row else None}
 
 
 @router.get("/weekly/{period_key}/download")

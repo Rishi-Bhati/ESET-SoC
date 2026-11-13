@@ -39,7 +39,7 @@ from src.models.pipeline_result import PipelineResult
 from src.models.email_message import EmailMessage
 from src.services.email_layout import EmailDocument, Section, render_html, render_text
 from src.services.risk_text_ja import to_japanese
-from src.storage import settings_store
+from src.storage import runtime_settings, settings_store
 from src.utils.jst_time import MISSING, AlertTime, parse_alert_time
 
 logger = structlog.get_logger(__name__)
@@ -299,10 +299,40 @@ _FALLBACK_SPECS = [
 ]
 
 
+# Dashboard switches (runtime_settings, Emails tab) for each alert email type.
+TYPE_SWITCHES = {
+    "CLIENT_JA": "alert_email_client_enabled",
+    "CTHREE_JA": "alert_email_cthree_enabled",
+    "INTERNAL_JA": "alert_email_internal_enabled",
+    "ENGINEER_EN": "alert_email_engineer_enabled",
+}
+# The client notification and its C-Three review copy go out only from this
+# risk level up (client_immediate_min_risk).
+CLIENT_FACING = frozenset({"CLIENT_JA", "CTHREE_JA"})
+_RISK_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+async def _skip_reason(result: PipelineResult, notification_type: str) -> str | None:
+    """Why this alert email type is not sent, or None to send it."""
+    switch = TYPE_SWITCHES.get(notification_type)
+    if switch and not await runtime_settings.get(switch):
+        return f"{switch} is off"
+    if notification_type in CLIENT_FACING:
+        minimum = await runtime_settings.get("client_immediate_min_risk")
+        if _RISK_RANK.get(str(result.risk_level).upper(), 0) < _RISK_RANK.get(minimum, 1):
+            return f"risk {result.risk_level} is below client_immediate_min_risk {minimum}"
+    return None
+
+
 async def _build(result: PipelineResult, specs, email_id_suffix: str = "") -> list[EmailMessage]:
     created_at = datetime.now(timezone.utc).isoformat()
     messages: list[EmailMessage] = []
     for notification_type, settings_field, compose in specs:
+        skip = await _skip_reason(result, notification_type)
+        if skip:
+            logger.info("email_composer_type_skipped", notification_type=notification_type,
+                        correlation_id=result.correlation_id, reason=skip)
+            continue
         recipients = _parse_recipients(await settings_store.get_effective(settings_field))
         if not recipients:
             logger.warning(

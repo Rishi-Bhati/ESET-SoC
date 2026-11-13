@@ -78,6 +78,7 @@
             <button type="button" class="seg-btn" data-days="30"></button>
             <button type="button" class="seg-btn" data-days="90"></button>
           </div>
+          <button type="button" class="info-btn" data-help="help_home_period" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         </div>
       </div>
 
@@ -100,7 +101,7 @@
           <section class="panel trend" aria-labelledby="ovTrendTitle">
             <div class="panel-head trend-head">
               <div class="panel-titles">
-                <h2 id="ovTrendTitle"></h2>
+                <h2 id="ovTrendTitle" class="has-help"></h2><button type="button" class="info-btn" data-help="help_trend" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
                 <p id="ovTrendSub" class="panel-sub"></p>
               </div>
               <div id="ovLegend" class="legend" role="group" data-i18n-aria="legend_label" aria-label="Severities shown in the chart"></div>
@@ -115,7 +116,7 @@
 
           <section class="panel mix-panel" aria-labelledby="ovSeverityTitle">
             <div class="panel-head">
-              <h2 id="ovSeverityTitle" data-i18n="severity_title">Severity mix</h2>
+              <h2 id="ovSeverityTitle" class="has-help" data-i18n="severity_title">Severity mix</h2><button type="button" class="info-btn" data-help="help_severity" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
               <p class="panel-sub" data-i18n="severity_sub">Share of the alerts in this period.</p>
             </div>
             <div id="ovSeverity" class="severity" role="group"></div>
@@ -125,13 +126,13 @@
         <div class="ov-grid ov-ranks">
           <section class="panel" aria-labelledby="ovDevicesTitle">
             <div class="panel-head">
-              <h2 id="ovDevicesTitle" data-i18n="devices_title">Devices with the most alerts</h2>
+              <h2 id="ovDevicesTitle" class="has-help" data-i18n="devices_title">Devices with the most alerts</h2><button type="button" class="info-btn" data-help="help_devices" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <div id="ovDevices" class="ranked"></div>
           </section>
           <section class="panel" aria-labelledby="ovThreatsTitle">
             <div class="panel-head">
-              <h2 id="ovThreatsTitle" data-i18n="threats_title">Most common threats</h2>
+              <h2 id="ovThreatsTitle" class="has-help" data-i18n="threats_title">Most common threats</h2><button type="button" class="info-btn" data-help="help_threats" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             </div>
             <div id="ovThreats" class="ranked"></div>
             <p class="ranked-note" data-i18n="threats_note">Threat names are shown as ESET reports them.</p>
@@ -169,7 +170,7 @@
       <div class="toolbar">
         <div id="countChips" class="chips" role="group" data-i18n-aria="counts_label" aria-label="Filter by severity"></div>
         <div class="toolbar-right">
-          <label class="field field-inline" for="fPeriod"><span data-i18n="filter_period">Period</span>
+          <label class="field field-inline" for="fPeriod"><span data-i18n="filter_period">Period</span><button type="button" class="info-btn" data-help="help_filter_period" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
             <select id="fPeriod">
               <option value="all" data-i18n="period_all">All time</option>
               <option value="7" data-i18n="period_7">Last 7 days</option>
@@ -183,7 +184,7 @@
       </div>
 
       <div id="customDates" class="custom-dates" hidden>
-        <label class="field" for="fFrom"><span data-i18n="filter_from">From</span>
+        <label class="field" for="fFrom"><span class="lbl"><span data-i18n="filter_from">From</span><button type="button" class="info-btn" data-help="help_filter_dates" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></span>
           <input id="fFrom" type="date">
         </label>
         <label class="field" for="fTo"><span data-i18n="filter_to">To</span>
@@ -194,13 +195,13 @@
       <details id="moreFilters" class="disclose">
         <summary data-i18n="more_options">More options</summary>
         <div class="disclose-body more-grid">
-          <label class="field" for="fSort"><span data-i18n="filter_sort">Order</span>
+          <label class="field" for="fSort"><span class="lbl"><span data-i18n="filter_sort">Order</span><button type="button" class="info-btn" data-help="help_filter_sort" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></span>
             <select id="fSort">
               <option value="desc" data-i18n="sort_desc">Newest first</option>
               <option value="asc" data-i18n="sort_asc">Oldest first</option>
             </select>
           </label>
-          <label class="field" for="fSize"><span data-i18n="filter_page_size">Alerts per page</span>
+          <label class="field" for="fSize"><span class="lbl"><span data-i18n="filter_page_size">Alerts per page</span><button type="button" class="info-btn" data-help="help_filter_page_size" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></span>
             <select id="fSize">
               <option value="10">10</option>
               <option value="25" selected>25</option>
@@ -232,10 +233,29 @@
     <section id="panelReports" role="tabpanel" aria-labelledby="tabReports" hidden>
       <div class="page-head">
         <div class="page-heading">
-          <h1 data-i18n="reports_title">Weekly reports</h1>
+          <h1 class="has-help" data-i18n="reports_title">Weekly reports</h1><button type="button" class="info-btn" data-help="help_reports_page" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <p class="page-sub" data-i18n="reports_intro">Each week we prepare an Excel file listing that week's low and medium alerts. High and critical alerts are counted here and can be seen under All alerts.</p>
         </div>
       </div>
+      <div class="card ondemand" id="odCard">
+        <h2 class="od-title has-help" data-i18n="od_title">Create a report now</h2><button type="button" class="info-btn" data-help="help_od" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+        <p class="muted od-intro" data-i18n="od_intro">Pick a week to create an Excel file in the same format as the weekly report and download it straight away.</p>
+        <form id="odForm" class="od-form" novalidate>
+          <label class="field od-week" for="odWeek"><span data-i18n="od_week">Week</span>
+            <select id="odWeek" required></select>
+          </label>
+          <label class="field od-lang" for="odLang"><span data-i18n="export_header_lang">Header language</span>
+            <select id="odLang">
+              <option value="ja" data-i18n="export_lang_ja">Japanese</option>
+              <option value="en" data-i18n="export_lang_en">English</option>
+            </select>
+          </label>
+          <label class="check od-check"><input type="checkbox" id="odHigh"><span data-i18n="od_include_high">Also list High and Critical alerts</span></label>
+          <button type="submit" id="odGo" class="btn btn-primary" data-i18n="od_go">Create and download</button>
+        </form>
+        <div id="odStatus" class="notice" role="status" aria-live="polite" hidden></div>
+      </div>
+      <h2 class="reports-subhead" data-i18n="reports_scheduled">Reports prepared every week</h2>
       <div id="reportsState" class="state card" role="status" aria-live="polite" hidden></div>
       <ul id="reportRows" class="report-list"></ul>
     </section>
@@ -266,7 +286,7 @@
       <button type="button" id="exportClose" class="btn btn-ghost" data-i18n="btn_close">Close</button>
     </div>
     <div class="modal-body">
-      <p id="exportScope" class="lead"></p>
+      <div class="lead-row"><p id="exportScope" class="lead"></p><button type="button" class="info-btn" data-help="help_export_scope" data-i18n-aria="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
       <div id="exportBody"></div>
       <div id="exportStatus" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="exportProgress" class="progress" hidden><span></span></div>

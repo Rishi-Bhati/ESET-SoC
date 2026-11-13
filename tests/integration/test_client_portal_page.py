@@ -165,7 +165,7 @@ def test_portal_ui_calls_only_the_existing_client_api():
     paths = set(re.findall(r'api(?:Fetch)?\("(/[^"?]*)', js))
     # /stats: the Home charts' aggregate endpoint (counts only; same scoping as /alerts).
     assert paths <= {"/auth/login", "/auth/logout", "/auth/me", "/alerts", "/alerts/", "/alerts/export",
-                     "/export/fields", "/reports", "/reports/", "/stats"}, paths
+                     "/export/fields", "/reports", "/reports/", "/reports/on-demand", "/stats"}, paths
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")

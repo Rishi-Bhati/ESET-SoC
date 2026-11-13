@@ -116,11 +116,18 @@ def test_export_ignores_the_dashboard_window_filters_and_paging(client: TestClie
     asyncio.run(create_jobs())
     assert len(client.get("/dashboard/api/jobs?limit=500").json()["jobs"]) == 500
 
-    res, wb = _export(client, params={"status": "SUCCESS", "limit": 10, "offset": 50, "page": 3})
+    # The table's paging parameters mean nothing to the export.
+    res, wb = _export(client, params={"limit": 10, "offset": 50, "page": 3})
     rows = _rows(wb)
     assert len(rows) == 600 == int(res.headers["x-alert-count"])
     assert {r["record"] for r in rows} == {"job only (no result yet)"}, "unfinished alerts are included too"
     assert {r["job.status"] for r in rows} == {"PENDING"}
+
+    # A filter, unlike paging, applies to the whole history, not the loaded 500.
+    res = client.get(EXPORT, params={"status": "PENDING"})
+    assert res.status_code == 200 and int(res.headers["x-alert-count"]) == 600
+    assert res.headers["content-disposition"].endswith('-filtered.xlsx"')
+    assert int(client.get(EXPORT, params={"status": "SUCCESS"}).headers["x-alert-count"]) == 0
 
 
 def test_a_retried_alert_is_still_one_row(client: TestClient, recipients, monkeypatch):
@@ -275,6 +282,95 @@ def test_oversized_and_illegal_values_are_made_storable():
     long_text = writer.cell_value("x" * (EXCEL_CELL_MAX + 500))
     assert len(long_text) == EXCEL_CELL_MAX and "truncated" in long_text and writer.truncated_cells == 1
     assert writer.cell_value("a\x00b\x1bc") == "a�b�c"
+
+
+# ------------------------------------------------------- filters and options
+
+def _count(res) -> int:
+    assert res.status_code == 200, res.text
+    return int(res.headers["x-alert-count"])
+
+
+def test_filters_apply_to_the_whole_history(client: TestClient, sixty_alerts):
+    rows = _rows(_export(client)[1])
+    by_risk = {lvl: sum(1 for r in rows if r["risk_level"] == lvl) for lvl in SEVERITIES}
+    res = client.get(EXPORT, params={"risk": "HIGH,CRITICAL"})
+    assert _count(res) == by_risk["HIGH"] + by_risk["CRITICAL"]
+    assert res.headers["content-disposition"].endswith('-filtered.xlsx"')
+    wb = load_workbook(io.BytesIO(res.content))
+    assert {r["risk_level"] for r in _rows(wb)} <= {"HIGH", "CRITICAL"}
+    info = dict(wb["Export info"].iter_rows(values_only=True))
+    assert info["Risk level"] == "CRITICAL, HIGH" and "Filtered" in info["Scope"]
+
+    assert _count(client.get(EXPORT, params={"source": "syslog"})) == 12
+    assert _count(client.get(EXPORT, params={"source": "WEBHOOK", "risk": "LOW"})) == \
+        sum(1 for r in rows if r["risk_level"] == "LOW" and r["job.source"] == "WEBHOOK")
+    # search: detection name, endpoint, hash
+    assert _count(client.get(EXPORT, params={"q": "export.test.7"})) == 1
+    assert _count(client.get(EXPORT, params={"q": "HOST-012"})) == 1
+    assert _count(client.get(EXPORT, params={"q": f"{12:064x}"})) == 1
+    # reported severity (what ESET said, not the computed risk)
+    assert _count(client.get(EXPORT, params={"severity": "critical"})) == 15
+    # received window (JST days) and "last N hours"
+    today = datetime.now(JST).date().isoformat()
+    assert _count(client.get(EXPORT, params={"from": today, "to": today})) == 60
+    assert _count(client.get(EXPORT, params={"to": "2020-01-01"})) == 0
+    assert _count(client.get(EXPORT, params={"since_hours": 1})) == 60
+    # status
+    assert _count(client.get(EXPORT, params={"status": "SUCCESS,PARTIAL"})) == 60
+    assert _count(client.get(EXPORT, params={"status": "FAILED"})) == 0
+
+
+def test_recommendation_filter_counts_only_active_ones(client: TestClient, sixty_alerts):
+    a, b = sixty_alerts[0], sixty_alerts[1]
+    client.post(f"/dashboard/api/alerts/{a}/recommendations", json={"body": "Do X", "author": "e"})
+    rec = client.post(f"/dashboard/api/alerts/{b}/recommendations", json={"body": "Do Y", "author": "e"}).json()
+    client.post(f"/dashboard/api/recommendations/{rec['recommendation']['id']}/retract",
+                json={"author": "e", "reason": "r"})
+    res = client.get(EXPORT, params={"recommendations": "with"})
+    wb = load_workbook(io.BytesIO(res.content))
+    assert [r["correlation_id"] for r in _rows(wb)] == [a]
+    # the Recommendations sheet only covers the exported alerts
+    assert {r["correlation_id"] for r in _rows(wb, "Recommendations")} == {a}
+    assert _count(client.get(EXPORT, params={"recommendations": "without"})) == 59
+
+
+def test_column_groups_sheets_and_sort(client: TestClient, sixty_alerts):
+    res = client.get(EXPORT, params={"columns": "overview,recommendations", "sheets": "none", "sort": "received_asc"})
+    wb = load_workbook(io.BytesIO(res.content))
+    assert wb.sheetnames == ["Alerts"]
+    header = [c.value for c in wb["Alerts"][1]]
+    assert header[0] == "correlation_id" and "risk_level" in header and "engineer_recommendations" in header
+    assert not any(h.startswith(("ai_output", "threat_intel")) or h == "raw_request (JSON)" for h in header)
+    assert [r["correlation_id"] for r in _rows(wb)] == sixty_alerts, "oldest first"
+
+    res = client.get(EXPORT, params={"sheets": "recommendations,info"})
+    assert load_workbook(io.BytesIO(res.content)).sheetnames == ["Alerts", "Recommendations", "Export info"]
+
+    res = client.get(EXPORT, params={"sort": "risk_desc"})
+    ranks = [SEVERITIES.index(r["risk_level"]) for r in _rows(load_workbook(io.BytesIO(res.content)))]
+    assert ranks == sorted(ranks, reverse=True)
+
+
+def test_csv_export_is_excel_friendly_and_formula_safe(client: TestClient, recipients):
+    _ingest(client, 1, detection_name="=HYPERLINK(\"http://evil\",\"x\")", endpoint_name="東京-PC")
+    res = client.get(EXPORT, params={"format": "csv", "columns": "overview"})
+    assert res.status_code == 200 and res.headers["content-type"].startswith("text/csv")
+    assert res.headers["content-disposition"].endswith('.csv"')
+    assert res.content.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM so Excel reads Japanese"
+    import csv as csv_mod
+    rows = list(csv_mod.DictReader(io.StringIO(res.content.decode("utf-8-sig"))))
+    assert len(rows) == 1 and rows[0]["normalized_alert.endpoint_name"] == "東京-PC"
+    assert rows[0]["normalized_alert.detection_name"].startswith("'="), "formula neutralised"
+
+
+@pytest.mark.parametrize("params", [
+    {"format": "pdf"}, {"risk": "SEVERE"}, {"columns": "secrets"}, {"sheets": "everything"},
+    {"sort": "random"}, {"recommendations": "maybe"}, {"from": "2026-13-01"},
+    {"from": "2026-11-10", "to": "2026-11-01"},
+])
+def test_invalid_export_options_are_rejected(client: TestClient, params):
+    assert client.get(EXPORT, params=params).status_code == 400
 
 
 # ------------------------------------------------------------------- UI

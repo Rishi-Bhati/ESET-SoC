@@ -167,6 +167,8 @@ def test_runtime_registry_covers_required_keys():
         "weekly_report_time", "weekly_report_check_interval_seconds",
         "weekly_report_max_findings_listed", "weekly_report_email_enabled",
         "email_attachments_enabled", "email_attachment_max_bytes", "client_immediate_min_risk",
+        "email_delivery_enabled", "alert_email_client_enabled", "alert_email_cthree_enabled",
+        "alert_email_internal_enabled", "alert_email_engineer_enabled", "recommendation_email_enabled",
     }
 
 

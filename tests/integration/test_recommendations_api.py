@@ -27,7 +27,7 @@ async def test_create_list_retract_and_counts(client: TestClient):
     assert rec["body"] == "Isolate the host"
     assert rec["retracted_at"] is None
     assert body["notification"] == {
-        "queued": False, "email_id": None, "reason": "email_notifications_deferred"}
+        "queued": False, "email_id": None, "reason": "recommendation_email_disabled"}
 
     listing = client.get(f"{BASE}/alerts/{cid}/recommendations").json()
     assert [r["id"] for r in listing["recommendations"]] == [rec["id"]]

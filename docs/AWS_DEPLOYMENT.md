@@ -154,7 +154,7 @@ The portal is managed entirely from the engineering dashboard at runtime. It nee
 6. **Configure the weekly report schedule** (day, time and recipients).
 7. Verify: `curl -s -o /dev/null -w '%{http_code}\n' https://soc-poc.example.com/client/` should return a page (not 403), and `https://soc-poc.example.com/dashboard` should still return 403 from outside `AdminCidr`.
 
-**Not enabled yet:** the weekly report email and the recommendation emails are not enabled in this release. You can configure the schedule and see reports in the portal, but no email is sent for them.
+**Emails:** the weekly report email and the recommendation emails are off by default. Switch them on in the dashboard's **Emails** tab (**Email sending** panel), after checking their recipients in **Settings**. That panel also has the master switch and one switch per alert email type.
 
 ## Operations
 

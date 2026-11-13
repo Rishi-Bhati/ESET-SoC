@@ -24,7 +24,7 @@ Three credentials exist. Each is accepted only on its own routes, and none can b
 2. **Create the client accounts** in the **Client accounts** panel (see [Client accounts](#client-accounts)).
 3. **Set `client_portal_url`** to the public address, for example `https://soc-poc.example.com/client/`. It is used for links in emails only.
 4. **Check the weekly report schedule** (`weekly_report_weekday`, `weekly_report_time`). The default is Monday 09:00 JST.
-5. **Check the recipients** in the dashboard Settings tab: `weekly_report_emails` and `recommendation_notification_emails`. Blank falls back to `client_notification_emails`. These addresses are only used once the emails are switched on, which is not in this release.
+5. **Check the recipients** in the dashboard Settings tab: `weekly_report_emails` and `recommendation_notification_emails`. Blank falls back to `client_notification_emails`. Then switch on the emails you want in the **Emails** tab, **Email sending** panel (the report and recommendation emails are off by default).
 6. **Set `client_portal_enabled` to on.** Use the **Enable portal** button in the **At a glance** panel, or the **Enable client portal** setting under Portal settings, **Advanced**. The portal stays off until you do this. If the key is blank or shorter than 16 characters, the dashboard refuses with **409** and the message says which problem it found.
 7. **Verify:**
    ```bash
@@ -179,13 +179,13 @@ Workbooks are written to `reports/weekly/<period_key>.xlsx` beside `OUTPUT_DIR`.
 
 ### Email
 
-**Not enabled in this release.** `weekly_report_email_enabled` defaults to off and has no env variable, so it can only be switched on from the dashboard. When it is on, the email goes to `weekly_report_emails` (or `client_notification_emails` if blank). The workbook is attached only if `email_attachments_enabled` is on and the file is no larger than `email_attachment_max_bytes`. Otherwise the email links to the portal.
+Off by default. `weekly_report_email_enabled` has no env variable; switch it on in the dashboard's **Emails** tab (**Email sending** panel). When it is on, the email goes to `weekly_report_emails` (or `client_notification_emails` if blank). The workbook is attached only if `email_attachments_enabled` is on and the file is no larger than `email_attachment_max_bytes`. Otherwise the email links to the portal.
 
 ### Operating the report
 
 Use the **Weekly reports** panel on the dashboard's Client Portal tab:
 
-- **Header:** whether automatic creation is on and the schedule (day and time, JST), a line saying whether email delivery is on, and which week **Create report now** would produce. Email is off in this release, so reports are generated only. The next run and the period it covers are shown in the **At a glance** panel.
+- **Header:** whether automatic creation is on and the schedule (day and time, JST), a line saying whether email delivery is on, and which week **Create report now** would produce. While the report email is off, reports are generated only. A report whose email was handed to the mail service shows **Sent**; a failed handoff shows **Email failed** with the error. The next run and the period it covers are shown in the **At a glance** panel.
 - **Create report now:** produces the latest due period. If that period is already generated, nothing is generated again, and the panel points you to **Regenerate**.
 - **Preview (xlsx):** downloads the workbook for the latest due period. Nothing is stored or sent.
 - **History table:** one row per period (dates and period key), with status and any error, the alert total with the non-zero levels underneath (and "No Excel file" when the period has no workbook), the completed time in JST with the trigger (Scheduled, Manual or Baseline) underneath, and the actions.
@@ -213,6 +213,45 @@ curl -s "${H[@]}" -o report.xlsx "$BASE/dashboard/api/reports/weekly/2026-W45/do
 
 The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or `failed`.
 
+### On-demand reports (client-initiated)
+
+Clients can build a report themselves on the portal's **Weekly reports** tab (**Create a report now**):
+
+- **Weeks:** the current ISO week (marked "so far") and the 11 before it are offered; the API accepts any week that has started and is at most 52 weeks old (`400` otherwise).
+- **Content:** a **Summary** sheet (period, whether the week is complete or in progress, counts for all four levels), the **Alerts** sheet with the weekly report's 12 fields, and the info sheet. By default the Alerts sheet lists LOW and MEDIUM only, like the scheduled report; the client can tick **Also list High and Critical alerts**. Headers in Japanese or English.
+- **Limits:** at most `client_export_max_alerts` rows (the summary says when rows were left out). It shares the one-export-at-a-time guard with the alert export (`429`).
+- **Isolation:** built on the fly and downloaded. It is **never archived, emailed or recorded** in `weekly_reports`, so it cannot pre-empt or overwrite the scheduled report for the same week, and engineers do not see it in the history.
+- **Audit log:** `client_weekly_report_on_demand` with `account`, `period_key`, `include_high_risk`, `header_lang`, `rows`, `matching`, `in_progress`.
+
+```bash
+# as the client (session token from sign-in)
+curl -s -H "X-Client-Session: $TOKEN" "$BASE/client/api/reports/on-demand"
+curl -s -X POST -H "X-Client-Session: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"period_key":"2026-W45","include_high_risk":true,"header_lang":"en"}' \
+  -o report.xlsx "$BASE/client/api/reports/on-demand"
+```
+
+## Engineer alert export (dashboard Alerts tab)
+
+**Convert to Spreadsheet** opens an export dialog. With nothing changed it produces the original export: every recorded alert, every column, all sheets, `.xlsx`.
+
+- **Which alerts:** every recorded alert, or only those matching the table's filters. The filters are sent to the server and applied to the **whole history**, not just the 500 rows the table has loaded.
+- **Table filters:** search, received time (All / 24h / 7d / 30d / custom JST dates), status, computed risk (incl. Not assessed), source, the severity ESET reported, and with / without active engineer recommendations; plus sort order and **Clear filters**.
+- **Format:** Excel, or CSV (Alerts sheet only; UTF-8 with BOM; values that Excel would run as a formula are prefixed with `'`).
+- **Columns:** groups for the Alerts sheet (overview, times, other alert fields, risk decision, threat intel, AI, notifications, recommendations, errors, original request, other). `correlation_id` is always included. **Summary only** picks overview, times, risk and recommendations.
+- **Extra sheets (Excel):** risk factors, emails, recommendations (filtered to the exported alerts), export info (which records the filters used).
+- **Order:** newest or oldest received, last updated, or highest risk first.
+
+The same as an API call (all parameters optional; comma lists):
+
+```bash
+curl -s "${H[@]}" -o alerts.csv \
+  "$BASE/dashboard/api/alerts/export?risk=HIGH,CRITICAL&source=WEBHOOK&from=2026-11-01&to=2026-11-30&recommendations=without&q=HOST-01&columns=overview,times,risk&format=csv&sort=risk_desc"
+# also: status=, severity=, since_hours=N, sheets=risk_factors,emails,recommendations,info (or none)
+```
+
+Unknown values return `400`. The file name ends in `-filtered` when filters were applied.
+
 ## Recommendations
 
 - Engineers add and retract recommendations in the dashboard: open an alert, then use the **Recommendations** section of its detail.
@@ -224,8 +263,10 @@ The run response's `action` is `generated`, `queued`, `no_recipients`, `none` or
   curl -s -X POST "${H[@]}" "$BASE/dashboard/api/recommendations/<id>/retract" \
     -d '{"author":"engineer-a","reason":"Superseded by a later step"}'
   ```
-  Body is up to 4000 characters, author up to 100, reason up to 500. The create response always carries `"notification": {"queued": false, "reason": "email_notifications_deferred"}`.
-- **No email is sent for recommendations in this release.** The recipient setting is kept for when that is switched on.
+  Body is up to 4000 characters, author up to 100, reason up to 500. Both responses carry `"notification": {"queued", "email_id", "reason"}`. `reason` is `recommendation_email_disabled`, `no_recipients`, `never_emailed` (retracting one that was not emailed), `already_retracted`, `already_queued` or `error`; the recommendation is saved either way.
+- **Recommendation emails** (`recommendation_email_enabled`, off by default; Emails tab, **Email sending**). When on, each new recommendation emails the client at `recommendation_notification_emails` (or `client_notification_emails` when blank): subject `【推奨対策】[<risk>] <detection> — <device>`, with the recommendation text, the engineer, the alert's risk, names, received time and ID, and a link to the alert in the portal (`client_portal_url` + `/#/alerts/<id>`). Email id `rec-<recommendation id>`, so it is sent once.
+- Retracting a recommendation that was emailed sends a withdrawal notice (`rec-<id>-retracted`, subject `【推奨対策の取り下げ】…`) quoting the withdrawn text. The retraction reason is internal and is never included.
+- These emails appear in the Emails tab and in the alert's delivery history (they carry the alert's id), but they do not add a stage to the alert's Pipeline Flow lane.
 
 ## Portal interface and charts
 
@@ -288,7 +329,7 @@ The charts add no new server endpoint, database field, setting or environment va
 | A week shows "no file" | No LOW or MEDIUM alerts in that period, so no workbook was written | Expected. The counts are still shown. The download endpoints return 404 |
 | A period shows `FAILED` | The generation error is in `error`. The scheduler retries up to 3 attempts in total | Fix the cause, then run the period by hand (`POST .../run`, see Operating the report). Manual runs are not limited |
 | No report at the due time | `weekly_report_enabled` is off, or the service was down through the slot and the next slot has passed | Check the setting. Run the missed period through the API (see Operating the report) |
-| The report email never arrives | Email is not enabled in this release (`weekly_report_email_enabled` is off by default). If it is on and the status is `NO_RECIPIENTS`, no recipients are set | Expected while email is off. Set recipients if you enable it |
+| The report email never arrives | `weekly_report_email_enabled` is off (the default), or the master switch `email_delivery_enabled` is off (the email waits in the outbox). If the status is `NO_RECIPIENTS`, no recipients are set. **Email failed** shows the mail service's error | Expected while email is off. Set recipients if you enable it |
 | Export returns **429** `An export is already running` | One export at a time per user | Wait for the first export to finish |
 | Export returns **400** `limit must be between 1 and N` | The requested count is above `client_export_max_alerts` | Lower the count, or raise the setting |
 | The **Portal settings** panel shows a load error | The browser may be using a cached copy of the dashboard's static files | Hard-refresh the page (Ctrl+Shift+R, or Cmd+Shift+R on macOS) |

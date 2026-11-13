@@ -482,9 +482,13 @@ never exposed.
 - Engineers add and retract recommendations on an alert from its detail view in
   the dashboard. Clients see the active ones on the alert and in exports.
   Retracted ones are hidden from clients but kept in the record.
-- No email is sent for new recommendations in this release.
-  `src/services/recommendation_notifier.py` is not called. The recipient
-  setting is kept for when that is switched on.
+- **Recommendation emails** (`recommendation_email_enabled`, off by default):
+  when on, adding a recommendation emails the client (Japanese, with the
+  recommendation text, engineer, a short description of the alert and a portal
+  link) at `recommendation_notification_emails`, or `client_notification_emails`
+  when that is blank. Retracting a recommendation that was emailed sends a
+  withdrawal notice; the retraction reason is never included
+  (`src/services/recommendation_notifier.py`).
 
 ### Weekly report
 
@@ -505,15 +509,38 @@ never exposed.
   baseline, so no report is produced for a past week. Each period is produced
   once, even across restarts. A failed period is retried automatically, up to 3
   attempts in total. Manual runs are not limited.
-- **Email is not enabled in this release.** `weekly_report_email_enabled`
-  defaults to off. When it is switched on, the report goes to
+- **Email** is off by default (`weekly_report_email_enabled`). When it is
+  switched on, the report goes to
   `weekly_report_emails`, or to `client_notification_emails` when that is blank.
   The workbook is attached if `email_attachments_enabled` is on and the file is
   within `email_attachment_max_bytes`. Otherwise the email links to the portal.
 
+### Email sending controls
+
+Everything that decides whether an email goes out is in the dashboard's
+**Emails** tab, **Email sending** panel. Each switch shows who would receive the
+email (recipients are edited in **Settings**). Changes apply to the next email.
+
+| Setting | What it controls | Default |
+|---|---|---|
+| `email_delivery_enabled` | Master switch: hand emails to the mail service. While off, emails are still written and wait in the outbox, and are sent once it is back on. Refused (409) while the mail service is not configured | `EMAIL_DELIVERY_ENABLED` |
+| `alert_email_client_enabled` | Client notification (Japanese, AI-drafted) per alert | on |
+| `client_immediate_min_risk` | Lowest risk that sends the client notification and its C-Three copy | `LOW` (every alert) |
+| `alert_email_cthree_enabled` | C-Three review copy of the client notification | on |
+| `alert_email_internal_enabled` | Internal team summary (or the "AI summary failed" notice) | on |
+| `alert_email_engineer_enabled` | English engineer report (or the "AI summary failed" notice) | on |
+| `recommendation_email_enabled` | Client email for each added recommendation, and a withdrawal notice when an emailed one is retracted | off |
+| `weekly_report_email_enabled` | Weekly report email | off |
+| `email_attachments_enabled`, `email_attachment_max_bytes` | Attach the weekly workbook, and the largest file attached | off, 1000000 |
+
+A switched-off type is not written at all (nothing waits in the outbox for it).
+The weekly report history shows what became of each report email (queued,
+handed to the mail service, or failed).
+
 ### Settings
 
-Each value is editable in the dashboard under **Client Portal → Portal settings**.
+Each value is editable in the dashboard under **Client Portal → Portal settings**
+(the email settings are in the **Emails** tab, see above).
 Changes are stored in the database and take effect on the next read. The
 environment variable of the same name (upper case) sets the default, except
 `weekly_report_email_enabled`, which has no environment variable.
@@ -531,13 +558,13 @@ environment variable of the same name (upper case) sets the default, except
 | `client_login_backstop_max_failures` | In backstop mode, wrong passwords allowed per network (IPv4 /24, IPv6 /48) before it is locked out of the account | 3 | 1–10 |
 | `client_login_backstop_max_lock_hours` | A network lock starts at `client_login_lockout_minutes` and doubles per further wrong password, up to this | 24 | 1–168 |
 | `client_export_max_alerts` | Most alerts in one client export | 5000 | 1–100000 |
-| `client_immediate_min_risk` | Minimum risk for an immediate client notification | `LOW` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. Stored, but no code reads it yet, so it has no effect |
+| `client_immediate_min_risk` | Lowest risk that sends the client notification and its C-Three review copy | `LOW` | `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
 | `weekly_report_enabled` | Run the weekly report schedule | `false` | on/off |
 | `weekly_report_weekday` | Day the report is due (JST) | `MON` | `MON` … `SUN` |
 | `weekly_report_time` | Time the report is due (JST) | `09:00` | `HH:MM`, 24-hour |
 | `weekly_report_check_interval_seconds` | How often the scheduler checks for a due report | 60 | 1–3600 |
 | `weekly_report_max_findings_listed` | Most HIGH and CRITICAL findings listed in the report email | 50 | 1–1000 |
-| `weekly_report_email_enabled` | Email the weekly report. Not enabled in this release | `false` | on/off. Dashboard only |
+| `weekly_report_email_enabled` | Email the weekly report | `false` | on/off. Dashboard only |
 | `email_attachments_enabled` | Attach files (the weekly workbook) to emails | `false` | on/off |
 | `email_attachment_max_bytes` | Largest attachment sent. Bigger files are left out | 1000000 | 1024–25000000 |
 
@@ -584,6 +611,8 @@ Client routes, using the `X-Client-Session` header (except sign-in):
 | `POST /client/api/alerts/export` | Build a customized `.xlsx` for the filtered alerts |
 | `GET /client/api/reports` | Weekly reports that were produced |
 | `GET /client/api/reports/{period_key}/download` | Download a weekly workbook |
+| `GET /client/api/reports/on-demand` | Weeks a client can build a report for (this week + 11 before), with counts |
+| `POST /client/api/reports/on-demand` | Build a weekly-format workbook now and download it (`period_key`, `include_high_risk`, `header_lang`). Not stored, emailed or added to the history |
 
 ### Security
 

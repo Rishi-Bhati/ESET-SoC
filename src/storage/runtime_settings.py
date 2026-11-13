@@ -108,8 +108,6 @@ REGISTRY: dict[str, SettingSpec] = {s.key: s for s in [
                       "with each further wrong password from it, up to this many hours."),
     _spec("client_export_max_alerts", "int", fallback=5000, min=1, max=100000, group="portal",
           description="Most alerts one client spreadsheet export may contain."),
-    _spec("client_immediate_min_risk", "enum", fallback="LOW", choices=RISK_LEVELS, group="portal",
-          description="Minimum risk level that triggers an immediate client notification."),
     # --- weekly report ---
     _spec("weekly_report_enabled", "bool", fallback=False, group="weekly_report",
           description="Send the weekly report automatically."),
@@ -126,6 +124,24 @@ REGISTRY: dict[str, SettingSpec] = {s.key: s for s in [
     # No env variable: settings has no such attribute, so the default is `fallback`.
     _spec("weekly_report_email_enabled", "bool", fallback=False, group="weekly_report",
           description="Email the weekly report to the recipients"),
+    # --- email sending (dashboard Emails tab, "Email sending" panel) ---
+    _spec("email_delivery_enabled", "bool", fallback=False, group="email",
+          description="Master switch: hand queued emails to the mail service. While off, every "
+                      "email is still written and kept in the outbox, and is sent once this is on."),
+    _spec("alert_email_client_enabled", "bool", fallback=True, group="email",
+          description="Send the client notification (Japanese, AI-drafted) for each new alert."),
+    _spec("client_immediate_min_risk", "enum", fallback="LOW", choices=RISK_LEVELS, group="email",
+          description="Lowest risk level that sends the client notification and its C-Three review "
+                      "copy. LOW = every alert."),
+    _spec("alert_email_cthree_enabled", "bool", fallback=True, group="email",
+          description="Send the C-Three review copy of the client notification for each new alert."),
+    _spec("alert_email_internal_enabled", "bool", fallback=True, group="email",
+          description="Send the internal team summary (Japanese) for each new alert."),
+    _spec("alert_email_engineer_enabled", "bool", fallback=True, group="email",
+          description="Send the engineer report (English) for each new alert."),
+    _spec("recommendation_email_enabled", "bool", fallback=False, group="email",
+          description="Email the client when an engineer adds a recommendation to an alert, and "
+                      "again if a recommendation that was emailed is retracted."),
     # --- email attachments ---
     _spec("email_attachments_enabled", "bool", fallback=False, group="email",
           description="Attach files (e.g. the weekly workbook) to emails."),
