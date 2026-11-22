@@ -11,7 +11,7 @@ import base64
 import io
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
@@ -200,6 +200,38 @@ async def test_completely_empty_week_counts_zero():
     res = await wr.generate_report(KEY, trigger="manual")
     assert res["counts"]["total"] == 0 and res["has_file"] is False
     assert (await store.get(KEY))["findings"] == []
+
+
+async def test_alerts_either_side_of_the_jst_week_boundary_land_in_their_own_week():
+    """Sunday 23:30 JST belongs to W45 and Monday 00:30 JST to W46, however `now`
+    is given: JST, aware UTC, or naive UTC (the server clock is UTC; 00:30 JST
+    Monday is still Sunday in UTC)."""
+    sunday, monday = "boundary-sun", "boundary-mon"
+    await add_alert(sunday, "MEDIUM", datetime(2026, 11, 8, 23, 30, tzinfo=JST))
+    await add_alert(monday, "MEDIUM", datetime(2026, 11, 9, 0, 30, tzinfo=JST))
+
+    async def ids_in(period: wr.Period) -> set[str]:
+        content = await wr.build_content(period, always_build_file=True)
+        cells = {c for row in load_workbook(io.BytesIO(content.xlsx)).active.iter_rows(values_only=True)
+                 for c in row}
+        found = {cid for cid in (sunday, monday) if cid in cells}
+        assert content.counts["MEDIUM"] == len(found)
+        return found
+
+    monday_0045_jst = datetime(2026, 11, 9, 0, 45, tzinfo=JST)
+    for now in (monday_0045_jst,
+                monday_0045_jst.astimezone(timezone.utc),
+                monday_0045_jst.astimezone(timezone.utc).replace(tzinfo=None)):   # 2026-11-08 15:45 UTC
+        period = wr.current_period(now)
+        assert period.key == "2026-W46", now
+        assert await ids_in(period) == {monday}
+
+    sunday_2345_jst = datetime(2026, 11, 8, 23, 45, tzinfo=JST)
+    assert wr.current_period(sunday_2345_jst).key == KEY
+    assert await ids_in(wr.current_period(sunday_2345_jst)) == {sunday}
+    # The scheduled report sent on Monday covers the week that ended at 00:00 JST.
+    assert await ids_in(await wr.latest_due_period(NOW)) == {sunday}
+    assert await ids_in(wr.period_from_key("2026-W46")) == {monday}
 
 
 async def test_high_critical_counted_and_listed_but_not_in_workbook():

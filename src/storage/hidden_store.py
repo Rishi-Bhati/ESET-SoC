@@ -80,11 +80,17 @@ async def is_hidden(correlation_id: str) -> bool:
 
 
 async def list_hidden() -> list[dict[str, Any]]:
+    """Hidden alerts, newest first, with the detection / endpoint / received time
+    from the alert index when the alert is in it (None otherwise)."""
     async with db_session() as conn:
         async with conn.execute(
-            "SELECT correlation_id, hidden_at, hidden_by, reason FROM hidden_alerts ORDER BY hidden_at DESC"
+            "SELECT h.correlation_id, h.hidden_at, h.hidden_by, h.reason, "
+            "i.detection_name, i.endpoint_name, i.received_at "
+            "FROM hidden_alerts h LEFT JOIN alert_index i ON i.correlation_id = h.correlation_id "
+            "ORDER BY h.hidden_at DESC"
         ) as cursor:
             return [
-                {"correlation_id": r[0], "hidden_at": r[1], "hidden_by": r[2], "reason": r[3]}
+                {"correlation_id": r[0], "hidden_at": r[1], "hidden_by": r[2], "reason": r[3],
+                 "detection_name": r[4], "endpoint_name": r[5], "received_at": r[6]}
                 async for r in cursor
             ]

@@ -771,6 +771,18 @@
   }
   .toast.show{opacity:1;transform:none}
   .toast.err{border-color:var(--critical);color:var(--text-danger)}
+  .toast.has-action{pointer-events:auto}
+  .toast .toast-action{margin-left:12px;padding:0;border:none;background:none;color:var(--accent);font:inherit;font-weight:650;text-decoration:underline;cursor:pointer}
+  .toast .toast-action:hover:not(:disabled){background:none;border:none;color:var(--accent)}
+
+  /* Hide / unhide alerts (storage/hidden_store.py) */
+  th.sel, td.sel{width:30px;padding-right:0}
+  td.sel input, th.sel input, .hidden-table input[type=checkbox]{width:auto;margin:0;cursor:pointer}
+  .alert-actions{margin-bottom:14px}
+  .hide-form{border:1px solid var(--border);border-radius:var(--r-md);padding:12px 14px;background:var(--panel2)}
+  .hide-form label{display:block;font-size:11.5px;color:var(--muted);margin-bottom:6px;font-weight:550}
+  .hidden-table td{vertical-align:top}
+  .hidden-table .reason{max-width:260px;overflow-wrap:anywhere;white-space:pre-wrap}
 
   .aiitem{border-bottom:1px solid var(--border);padding:13px 18px;cursor:pointer;transition:background-color .12s ease}
   .aiitem:last-child{border-bottom:none}
@@ -968,6 +980,8 @@
           <h3 data-i18n="panel_alerts">Alerts</h3><button type="button" class="info-btn" data-help="help_alerts_panel" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="row">
             <span class="muted" id="alertsFilterNote" style="font-size:11.5px"></span>
+            <button class="small danger" id="alertsHideSelected" style="display:none"></button>
+            <button class="small" id="alertsHidden" data-i18n="hidden_title">Hidden alerts</button>
             <button class="small" id="alertsExport" data-i18n="btn_export_alerts_xlsx">Convert to Spreadsheet</button>
             <button type="button" class="info-btn" data-help="help_alerts_export" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           </div>
@@ -1030,6 +1044,7 @@
         <div class="scroll">
           <table>
             <thead><tr>
+              <th class="sel"><input type="checkbox" id="alertsSelectAll" data-i18n-aria-label="alerts_select_page" aria-label="Select all alerts on this page"></th>
               <th><span data-i18n="th_status">Status</span><button type="button" class="info-btn" data-help="help_alerts_status" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></th><th><span data-i18n="th_risk">Risk</span><button type="button" class="info-btn" data-help="help_alerts_risk" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></th><th data-i18n="th_detection">Detection</th><th data-i18n="th_endpoint">Endpoint</th>
               <th data-i18n="th_source">Source</th><th><span data-i18n="th_recommendations">Recommendations</span><button type="button" class="info-btn" data-help="help_alerts_reco" data-i18n-aria-label="help_btn_aria" aria-label="About this item" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="4.9" r="1" fill="currentColor"/><path d="M8 7.3v4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></th><th data-i18n="th_updated">Updated</th><th data-i18n="th_correlation_id">Correlation ID</th><th></th>
             </tr></thead>
