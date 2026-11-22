@@ -10,6 +10,8 @@ const API = "/dashboard/api";
 const state = {
   jobs: new Map(),      // correlation_id -> job row
   recCounts: new Map(), // correlation_id -> active recommendation count (Alerts filter)
+  hidden: new Map(),    // correlation_id -> GET /alerts/hidden row (storage/hidden_store.py)
+  selected: new Set(),  // correlation_ids ticked in the Alerts table (Hide selected)
   emails: [],
   ai: [],
   runs: new Map(),      // correlation_id -> { stages: Map, started, source }
@@ -121,12 +123,21 @@ function timeAgo(ts) {
 }
 const shortId = (id) => (id ? esc(String(id).slice(0, 8)) : "—");
 
-function toast(msg, isError) {
+/** `action` ({label, onClick}) adds a button (e.g. Undo) and keeps the toast up longer. */
+function toast(msg, isError, action) {
   const el = document.getElementById("toast");
   el.textContent = msg;
-  el.className = "toast show" + (isError ? " err" : "");
+  if (action) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "toast-action";
+    btn.textContent = action.label;
+    btn.onclick = () => { el.className = "toast"; action.onClick(); };
+    el.appendChild(btn);
+  }
+  el.className = "toast show" + (isError ? " err" : "") + (action ? " has-action" : "");
   clearTimeout(el._t);
-  el._t = setTimeout(() => (el.className = "toast"), 2600);
+  el._t = setTimeout(() => (el.className = "toast"), action ? 8000 : 2600);
 }
 
 /* ══════════════ auth + fetch ══════════════ */
@@ -555,6 +566,7 @@ function renderAlerts() {
 
   document.getElementById("alertRows").innerHTML = rows.map((j) => `
     <tr class="clickable" data-id="${esc(j.correlation_id)}">
+      <td class="sel" data-select-cell><input type="checkbox" data-select="${esc(j.correlation_id)}"${state.selected.has(j.correlation_id) ? " checked" : ""} aria-label="${esc(t("alerts_select_row", String(j.correlation_id).slice(0, 8)))}"></td>
       <td>${badge(j.status)}</td>
       <td>${j.risk_level ? badge(j.risk_level) : DASH}</td>
       <td>${j.detection_name ? esc(j.detection_name) : DASH}</td>
@@ -571,7 +583,10 @@ function renderAlerts() {
       </td>
     </tr>`).join("");
   makeRowsFocusable(document.getElementById("alertRows"), "tr.clickable");
+  const all = document.getElementById("alertsSelectAll");
+  if (all) all.checked = rows.length > 0 && rows.every((j) => state.selected.has(j.correlation_id));
 
+  renderHiddenControls();
   renderCards();
   loadRecommendationCounts();
 }
@@ -799,6 +814,15 @@ async function runAlertExport(form, f) {
 document.getElementById("alertsExport").onclick = openAlertExport;
 
 document.getElementById("alertRows").addEventListener("click", async (e) => {
+  // Row checkbox (Hide selected): ticking it must not open the alert.
+  const selectCell = e.target.closest && e.target.closest("[data-select-cell]");
+  if (selectCell) {
+    e.stopPropagation();
+    const box = selectCell.querySelector("input[data-select]");
+    if (box && e.target !== box) box.checked = !box.checked;
+    if (box) toggleAlertSelected(box.getAttribute("data-select"), box.checked);
+    return;
+  }
   const timeline = e.target.getAttribute && e.target.getAttribute("data-timeline");
   if (timeline) {
     e.stopPropagation();
@@ -822,6 +846,287 @@ document.getElementById("alertRows").addEventListener("click", async (e) => {
   const tr = e.target.closest("tr[data-id]");
   if (tr) openAlert(tr.getAttribute("data-id"));
 });
+
+/* ══════════════ hidden alerts ══════════════
+ * Hiding keeps every byte on the server and leaves the alert out of every view,
+ * the client portal, exports and reports (src/storage/hidden_store.py). The
+ * server applies the filter; here the Alerts table is reloaded after each change
+ * so the list, its count and the sidebar badge follow. */
+
+const HIDE_REASON_MAX = 500;   // src/api/hidden_alerts.py MAX_REASON_LENGTH
+
+async function loadHidden() {
+  try {
+    const res = await api("/alerts/hidden");
+    state.hidden = new Map(((res && res.hidden) || []).map((h) => [h.correlation_id, h]));
+  } catch (e) { /* non-fatal: the button keeps the last known count */ }
+  renderHiddenControls();
+}
+
+/** "Hidden alerts (n)" and "Hide selected (n)" labels. */
+function renderHiddenControls() {
+  for (const id of [...state.selected]) if (!state.jobs.has(id)) state.selected.delete(id);
+  const hiddenBtn = document.getElementById("alertsHidden");
+  if (hiddenBtn) hiddenBtn.textContent = t("btn_hidden_alerts", fmtCount(state.hidden.size));
+  const selBtn = document.getElementById("alertsHideSelected");
+  if (selBtn) {
+    selBtn.style.display = state.selected.size ? "" : "none";
+    selBtn.textContent = t("btn_hide_selected", fmtCount(state.selected.size));
+  }
+}
+
+function toggleAlertSelected(id, on) {
+  if (!id) return;
+  if (on) state.selected.add(id); else state.selected.delete(id);
+  const all = document.getElementById("alertsSelectAll");
+  const boxes = [...document.querySelectorAll("#alertRows input[data-select]")];
+  if (all) all.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+  renderHiddenControls();
+}
+
+/** Message for a failed hide/unhide request, shown next to the button. */
+function hideErrorText(e) {
+  if (e && e.message === "unauthorized") return t("hide_err_unauthorized");
+  if (e && e.name === "TypeError") return t("hide_err_network");   // fetch() never reached the server
+  return tBackendText((e && e.message) || t("unknown_error"));
+}
+
+/** After a hide/unhide: Alerts list + count + sidebar badge, the stats, the hidden list. */
+async function refreshAfterVisibilityChange() {
+  try { await loadJobs(); } catch (e) { /* the table keeps what it had */ }
+  renderAlerts();
+  loadStats();
+  await loadHidden();
+}
+
+async function hideAlerts(ids, reason) {
+  const res = await api("/alerts/hide", {
+    method: "POST", body: JSON.stringify({ correlation_ids: ids, reason: reason || null }),
+  });
+  for (const id of ids) { state.jobs.delete(id); state.selected.delete(id); }
+  renderAlerts();
+  await refreshAfterVisibilityChange();
+  return res;
+}
+
+async function unhideAlerts(ids) {
+  const res = await api("/alerts/unhide", { method: "POST", body: JSON.stringify({ correlation_ids: ids }) });
+  for (const id of ids) state.hidden.delete(id);
+  await refreshAfterVisibilityChange();
+  return res;
+}
+
+function toastHidden(ids) {
+  toast(t("toast_alert_hidden", ids.length), false, {
+    label: t("toast_undo"),
+    onClick: async () => {
+      try { await unhideAlerts(ids); toast(t("toast_alert_unhidden", ids.length)); }
+      catch (e) { toast(t("unhide_failed") + hideErrorText(e), true); }
+    },
+  });
+}
+
+/** Confirmation with an optional reason; shared by the detail panel and "Hide selected". */
+function hideFormHtml() {
+  return `<div class="hide-form" data-hide-form>
+    <p class="muted" style="margin:0 0 10px;font-size:12px">${esc(t("hide_confirm_body"))}</p>
+    <label for="hideReason">${esc(t("hide_reason_label"))}</label>
+    <input id="hideReason" maxlength="${HIDE_REASON_MAX}" placeholder="${esc(t("hide_reason_placeholder"))}">
+    <div class="pset-err" id="hideErr" role="alert"></div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button class="small danger" id="hideConfirm">${esc(t("hide_confirm"))}</button>
+      <button class="small" id="hideCancel">${esc(t("hide_cancel"))}</button>
+    </div>
+  </div>`;
+}
+
+function wireHideForm(root, ids, onCancel) {
+  const confirm = root.querySelector("#hideConfirm");
+  const cancel = root.querySelector("#hideCancel");
+  const reasonIn = root.querySelector("#hideReason");
+  const err = root.querySelector("#hideErr");
+  if (!confirm || !cancel || !reasonIn || !err) return;
+  cancel.onclick = onCancel;
+  reasonIn.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); confirm.click(); } };
+  confirm.onclick = async () => {
+    err.textContent = "";
+    err.classList.remove("show");
+    confirm.disabled = cancel.disabled = true;
+    confirm.textContent = t("hide_hiding");
+    try {
+      await hideAlerts(ids, reasonIn.value.trim().slice(0, HIDE_REASON_MAX));
+    } catch (e) {
+      err.textContent = t("hide_failed") + hideErrorText(e);
+      err.classList.add("show");
+      confirm.disabled = cancel.disabled = false;
+      confirm.textContent = t("hide_confirm");
+      return;
+    }
+    closeModal();
+    toastHidden(ids);
+  };
+}
+
+/** Hide / Unhide block at the top of the alert detail panel. */
+function alertActionsHtml(id) {
+  const hidden = state.hidden.has(id);
+  return `<div class="alert-actions">
+    <div class="row" style="gap:8px">
+      ${hidden
+        ? `<span class="srcbadge" style="margin-left:0">${esc(t("hidden_badge"))}</span>
+           <button class="small" id="alertUnhide">${esc(t("btn_unhide_alert"))}</button>`
+        : `<button class="small danger" id="alertHide">${esc(t("btn_hide_alert"))}</button>`}
+    </div>
+    <div class="pset-err" id="alertActionErr" role="alert"></div>
+    ${hidden ? "" : `<div id="alertHideForm" style="display:none;margin-top:10px">${hideFormHtml()}</div>`}
+  </div>`;
+}
+
+function wireAlertActions(id) {
+  const hideBtn = document.getElementById("alertHide");
+  const form = document.getElementById("alertHideForm");
+  if (hideBtn && form) {
+    hideBtn.onclick = () => {
+      form.style.display = "";
+      hideBtn.disabled = true;
+      document.getElementById("hideReason").focus();
+    };
+    wireHideForm(form, [id], () => { form.style.display = "none"; hideBtn.disabled = false; hideBtn.focus(); });
+  }
+  const unhideBtn = document.getElementById("alertUnhide");
+  if (unhideBtn) unhideBtn.onclick = async () => {
+    const err = document.getElementById("alertActionErr");
+    unhideBtn.disabled = true;
+    try {
+      await unhideAlerts([id]);
+    } catch (e) {
+      err.textContent = t("unhide_failed") + hideErrorText(e);
+      err.classList.add("show");
+      unhideBtn.disabled = false;
+      return;
+    }
+    closeModal();
+    toast(t("toast_alert_unhidden", 1));
+  };
+}
+
+document.getElementById("alertsSelectAll").onchange = (e) => {
+  for (const box of document.querySelectorAll("#alertRows input[data-select]")) {
+    box.checked = e.target.checked;
+    if (e.target.checked) state.selected.add(box.getAttribute("data-select"));
+    else state.selected.delete(box.getAttribute("data-select"));
+  }
+  renderHiddenControls();
+};
+
+document.getElementById("alertsHideSelected").onclick = () => {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  showModal(t("hide_confirm_title", ids.length), hideFormHtml());
+  const box = document.getElementById("modalBox");
+  wireHideForm(box, ids, closeModal);
+  document.getElementById("hideReason").focus();
+};
+
+/* ── Hidden alerts panel ── */
+const hiddenPanelSel = new Set();
+
+function hiddenRowHtml(h) {
+  const id = esc(h.correlation_id);
+  const endpoint = knownValue(h.endpoint_name);
+  return `<tr>
+    <td><input type="checkbox" data-hidden-select="${id}"${hiddenPanelSel.has(h.correlation_id) ? " checked" : ""} aria-label="${esc(t("hidden_select_row", h.correlation_id))}"></td>
+    <td class="mono" style="overflow-wrap:anywhere">${id}</td>
+    <td>${knownValue(h.detection_name) ? esc(h.detection_name) : DASH}</td>
+    <td>${endpoint ? esc(endpoint) : DASH}</td>
+    <td class="reason">${h.reason ? esc(h.reason) : DASH}</td>
+    <td>${h.hidden_by ? esc(h.hidden_by) : DASH}</td>
+    <td class="muted" style="white-space:nowrap">${h.hidden_at ? esc(fmtDateTime(h.hidden_at * 1000)) : DASH}</td>
+    <td><button class="small" data-hidden-unhide="${id}">${esc(t("btn_unhide_alert"))}</button></td>
+  </tr>`;
+}
+
+function hiddenPanelOpen() {
+  return state.reopenModal === openHiddenAlerts && document.getElementById("overlay").classList.contains("show");
+}
+
+function renderHiddenPanel() {
+  const body = document.querySelector("#modalBox .body");
+  if (!body || !hiddenPanelOpen()) return;
+  const rows = [...state.hidden.values()];
+  for (const id of [...hiddenPanelSel]) if (!state.hidden.has(id)) hiddenPanelSel.delete(id);
+  body.innerHTML = `
+    <p class="muted" style="margin:0 0 12px;font-size:12px">${esc(t("hidden_intro"))}</p>
+    <div class="pset-err" id="hiddenErr" role="alert"></div>
+    ${rows.length ? `
+    <div class="row" style="gap:8px;margin-bottom:10px">
+      <button class="small" id="hiddenUnhideSelected"${hiddenPanelSel.size ? "" : " disabled"}>${esc(t("btn_unhide_selected", fmtCount(hiddenPanelSel.size)))}</button>
+    </div>
+    <div class="scroll"><table class="hidden-table">
+      <thead><tr>
+        <th class="sel"><input type="checkbox" id="hiddenSelectAll"${rows.every((h) => hiddenPanelSel.has(h.correlation_id)) ? " checked" : ""} aria-label="${esc(t("hidden_select_all"))}"></th>
+        <th>${esc(t("th_correlation_id"))}</th><th>${esc(t("th_detection"))}</th><th>${esc(t("th_endpoint"))}</th>
+        <th>${esc(t("th_hidden_reason"))}</th><th>${esc(t("th_hidden_by"))}</th><th>${esc(t("th_hidden_at"))}</th><th></th>
+      </tr></thead>
+      <tbody>${rows.map(hiddenRowHtml).join("")}</tbody>
+    </table></div>` : `<div class="empty">${esc(t("hidden_empty"))}</div>`}`;
+}
+
+/** Checkbox states + "Unhide selected (n)" without re-rendering (keeps focus). */
+function syncHiddenSelection() {
+  const box = document.getElementById("modalBox");
+  for (const cb of box.querySelectorAll("input[data-hidden-select]")) {
+    cb.checked = hiddenPanelSel.has(cb.getAttribute("data-hidden-select"));
+  }
+  const all = document.getElementById("hiddenSelectAll");
+  if (all) all.checked = state.hidden.size > 0 && [...state.hidden.keys()].every((id) => hiddenPanelSel.has(id));
+  const btn = document.getElementById("hiddenUnhideSelected");
+  if (btn) {
+    btn.disabled = !hiddenPanelSel.size;
+    btn.textContent = t("btn_unhide_selected", fmtCount(hiddenPanelSel.size));
+  }
+}
+
+async function unhideFromPanel(ids, btn) {
+  const err = document.getElementById("hiddenErr");
+  if (btn) btn.disabled = true;
+  try {
+    await unhideAlerts(ids);
+  } catch (e) {
+    if (err) { err.textContent = t("unhide_failed") + hideErrorText(e); err.classList.add("show"); }
+    if (btn) btn.disabled = false;
+    return;
+  }
+  for (const id of ids) hiddenPanelSel.delete(id);
+  toast(t("toast_alert_unhidden", ids.length));
+  renderHiddenPanel();
+}
+
+async function openHiddenAlerts() {
+  showModal(t("hidden_title"), `<p class="muted">${esc(t("hidden_loading"))}</p>`);
+  state.reopenModal = openHiddenAlerts;
+  const box = document.getElementById("modalBox");
+  box.onclick = (e) => {
+    if (!hiddenPanelOpen()) return;
+    const one = e.target.closest && e.target.closest("[data-hidden-unhide]");
+    if (one) { unhideFromPanel([one.getAttribute("data-hidden-unhide")], one); return; }
+    if (e.target.id === "hiddenUnhideSelected" && hiddenPanelSel.size) unhideFromPanel([...hiddenPanelSel], e.target);
+  };
+  box.onchange = (e) => {
+    if (!hiddenPanelOpen()) return;
+    if (e.target.id === "hiddenSelectAll") {
+      for (const id of state.hidden.keys()) { if (e.target.checked) hiddenPanelSel.add(id); else hiddenPanelSel.delete(id); }
+    } else if (e.target.hasAttribute && e.target.hasAttribute("data-hidden-select")) {
+      const id = e.target.getAttribute("data-hidden-select");
+      if (e.target.checked) hiddenPanelSel.add(id); else hiddenPanelSel.delete(id);
+    } else return;
+    syncHiddenSelection();
+  };
+  await loadHidden();
+  renderHiddenPanel();
+}
+
+document.getElementById("alertsHidden").onclick = openHiddenAlerts;
 
 /* ══════════════ emails ══════════════ */
 
@@ -1885,7 +2190,7 @@ async function openAlert(id) {
   const job = data.job, r = data.result;
   const a = r && r.normalized_alert;
 
-  let html = `<div class="kv">
+  let html = alertActionsHtml(id) + `<div class="kv">
       <div>${esc(t("kv_correlation_id2"))}</div><div class="mono">${esc(job.correlation_id)}</div>
       <div>${esc(t("kv_status2"))}</div><div>${badge(job.status)}</div>
       <div>${esc(t("kv_source"))}</div><div>${badge(job.source)}</div>
@@ -1924,6 +2229,7 @@ async function openAlert(id) {
   showModal(t("modal_alert_detail"), html);
   state.openAlertId = id;
   state.reopenModal = () => openAlert(id);
+  wireAlertActions(id);
   loadRecommendations(id);
 }
 
@@ -3693,6 +3999,9 @@ function renderApiDocs() {
     ["POST", "/dashboard/api/alerts/{cid}/recommendations", t("route_rec_create")],
     ["POST", "/dashboard/api/recommendations/{id}/retract", t("route_rec_retract")],
     ["GET", "/dashboard/api/recommendations/counts", t("route_rec_counts")],
+    ["GET", "/dashboard/api/alerts/hidden", t("route_hidden_list")],
+    ["POST", "/dashboard/api/alerts/hide", t("route_hide")],
+    ["POST", "/dashboard/api/alerts/unhide", t("route_unhide")],
     ["GET", "/dashboard/api/portal-settings", t("route_portal_settings")],
     ["PUT", "/dashboard/api/portal-settings/{key}", t("route_portal_settings_update")],
     ["DELETE", "/dashboard/api/portal-settings/{key}", t("route_portal_settings_reset")],
@@ -3796,6 +4105,9 @@ function connectWs() {
 
 function handleEvent(msg) {
   const d = msg.data;
+  // A hidden alert's live updates (e.g. a retry) must not put it back in the table.
+  if ((msg.type === "job_status_changed" || msg.type === "alert_completed")
+      && d && state.hidden.has(d.correlation_id)) return;
   if (msg.type === "job_status_changed") {
     const prev = state.jobs.get(d.correlation_id) || {};
     upsertJob({ ...prev, correlation_id: d.correlation_id, status: d.status,
@@ -3867,14 +4179,19 @@ function handleEvent(msg) {
 
 /* ══════════════ boot ══════════════ */
 
+/** The Alerts table's rows: the newest 500 jobs (hidden ones are left out by the server). */
+async function loadJobs() {
+  const jobs = await api("/jobs?limit=500");
+  state.jobs.clear();
+  for (const row of jobs.jobs) upsertJob(jobFromRow(row));
+  await loadRiskLevels();
+}
+
 async function boot() {
   renderApiDocs();
   try {
-    const [jobs, emails] = await Promise.all([api("/jobs?limit=500"), api("/emails")]);
-    state.jobs.clear();
-    for (const row of jobs.jobs) upsertJob(jobFromRow(row));
+    const [, emails] = await Promise.all([loadJobs(), api("/emails"), loadHidden()]);
     state.emails = emails.emails;
-    await loadRiskLevels();
     renderAlerts();
     renderEmails();
   } catch (e) { return; }

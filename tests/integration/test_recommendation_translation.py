@@ -7,6 +7,7 @@ API, client portal, dashboard export, client export, weekly report).
 import io
 import json
 import time
+from datetime import datetime, timezone
 
 import openpyxl
 import pytest
@@ -24,6 +25,7 @@ from src.storage import ai_trace_store, recommendation_store
 from test_client_api import seed
 
 NOW = time.time()
+RECEIVED_AT = NOW - 600   # the seeded alert's receive time
 CID = "trans-alert-1"
 REC = ("Isolate FINANCE-PC-09 from the network and run a full scan.\n"
        "- Block 185.220.101.5 and https://bad.example/payload.exe on the firewall\n"
@@ -63,7 +65,7 @@ def translation_on(monkeypatch, ai_responder):
 
 @pytest.fixture
 async def alert():
-    await seed(CID, NOW - 600, risk="MEDIUM")
+    await seed(CID, RECEIVED_AT, risk="MEDIUM")
 
 
 @pytest.fixture
@@ -199,7 +201,9 @@ async def test_portal_and_exports_carry_the_japanese_text(client, alert, auth, t
              for c in row if isinstance(c, str)]
     assert any(c.endswith(EXPECTED_JA) for c in cells) and not any(REC in c for c in cells)
 
-    content = await weekly_report.build_content(weekly_report.current_period(), always_build_file=True)
+    # The week holding the alert, not the week of "now" (the suite can cross Monday 00:00 JST).
+    period = weekly_report.current_period(datetime.fromtimestamp(RECEIVED_AT, timezone.utc))
+    content = await weekly_report.build_content(period, always_build_file=True)
     cells = [c for row in openpyxl.load_workbook(io.BytesIO(content.xlsx)).active.iter_rows(values_only=True)
              for c in row if isinstance(c, str)]
     assert any(EXPECTED_JA in c for c in cells) and not any(REC in c for c in cells)
