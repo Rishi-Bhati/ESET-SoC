@@ -13,6 +13,7 @@ from src.utils import events
 from src.storage.database import init_db
 from src.storage import job_store, deduplication, alert_index_store
 from src.services import syslog_runtime, email_dispatcher, pipeline_capacity, secrets, weekly_report
+from src.services import recommendation_translation
 from src.services.ai.factory import PROVIDER_SETTINGS, ai_provider_configured, supported_providers
 from src.services import portal_guard
 from src.api.router import api_router
@@ -232,13 +233,17 @@ async def lifespan(app: FastAPI):
     # iteration and does nothing while the report is disabled.
     app.state.weekly_report_task = asyncio.create_task(weekly_report.run_scheduler_loop())
 
+    # Japanese translations of engineer recommendations: existing ones on start-up,
+    # then anything missing or failed every interval. Does nothing while disabled.
+    app.state.translation_task = asyncio.create_task(recommendation_translation.run_translation_loop())
+
     try:
         yield
     finally:
         # --- Shutdown ---
         background = (
             app.state.recovery_task, app.state.dispatch_task, app.state.dedup_cleanup_task,
-            app.state.weekly_report_task,
+            app.state.weekly_report_task, app.state.translation_task,
         )
         for task in background:
             task.cancel()

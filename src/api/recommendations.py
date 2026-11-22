@@ -4,12 +4,12 @@ import re
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from src.api.dashboard import _check_access
 from src.config import settings
-from src.services import recommendation_notifier
+from src.services import recommendation_notifier, recommendation_translation
 from src.storage import job_store, recommendation_store
 from src.utils import events
 
@@ -112,7 +112,7 @@ async def list_alert_recommendations(request: Request, correlation_id: str) -> d
 
 @router.post("/alerts/{correlation_id}/recommendations", status_code=201)
 async def create_alert_recommendation(
-    request: Request, correlation_id: str, payload: RecommendationCreate
+    request: Request, correlation_id: str, payload: RecommendationCreate, background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     """
     Adds a recommendation to an alert, and — when recommendation_email_enabled is
@@ -141,6 +141,9 @@ async def create_alert_recommendation(
     if notification["queued"]:
         recommendation["notification_email_id"] = notification["email_id"]
         recommendation_notifier.dispatch_soon()
+    # Japanese translation for Japanese mode (services/recommendation_translation.py),
+    # after the response so adding a recommendation never waits for the AI provider.
+    background_tasks.add_task(recommendation_translation.run_once)
     return {"recommendation": recommendation, "notification": notification}
 
 

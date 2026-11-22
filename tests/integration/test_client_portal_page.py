@@ -91,11 +91,12 @@ def test_client_js_escapes_rendered_data():
         if not safe.match(expr):
             unsafe.append(expr)
     assert unsafe == []
-    for token in ["${a.detection_name}", "${a.endpoint_name}", "${r.body}", "${r.author}",
-                  "${a.ai_summary_excerpt}", "${flat.raw_alert_json}"]:
+    for token in ["${a.detection_name}", "${a.endpoint_name}", "${r.body}", "${r.body_ja}", "${r.author}",
+                  "${shown.text}", "${a.ai_summary_excerpt}", "${flat.raw_alert_json}"]:
         assert token not in js, f"unescaped interpolation: {token}"
-    # Recommendation text and the raw alert go through esc() and keep their line breaks via CSS.
-    assert 'class="pre">${esc(r.body)}' in js
+    # Recommendation text (original or Japanese, picked by recommendationText) and the
+    # raw alert go through esc() and keep their line breaks via CSS.
+    assert 'class="pre">${esc(shown.text)}' in js
     assert "${esc(prettyJson(flat.raw_alert_json))}" in js
     assert "white-space:pre-wrap" in (CLIENT_DIR / "client.css").read_text(encoding="utf-8")
 

@@ -165,14 +165,17 @@ def sentinel_bundle() -> tuple[AlertBundle, dict[str, str], list[str]]:
         {"id": secret("rec_id_1"), "correlation_id": "cid-0001", "body": "ALLOWED_REC_SECOND",
          "author": "eng.b", "created_at": CREATED_AT + 7200, "retracted_at": None, "retracted_by": None,
          "retract_reason": None, "notification_email_id": secret("rec_email_1")},
+        # Translated: the client sees the Japanese text (services/recommendation_translation.py).
         {"id": secret("rec_id_2"), "correlation_id": "cid-0001", "body": "ALLOWED_REC_FIRST",
          "author": "eng.a", "created_at": CREATED_AT + 3600, "retracted_at": None, "retracted_by": None,
-         "retract_reason": None, "notification_email_id": None},
+         "retract_reason": None, "notification_email_id": None,
+         "body_ja": "ALLOWED_REC_FIRST_JA 隔離してください", "body_ja_status": "done"},
         # A retracted one must never reach a client even if a bundle wrongly carries it.
         {"id": secret("rec_id_3"), "correlation_id": "cid-0001", "body": secret("retracted_body"),
          "author": secret("retracted_author"), "created_at": CREATED_AT + 5000,
          "retracted_at": CREATED_AT + 5100, "retracted_by": secret("retracted_by"),
-         "retract_reason": secret("retract_reason"), "notification_email_id": None},
+         "retract_reason": secret("retract_reason"), "notification_email_id": None,
+         "body_ja": secret("retracted_body_ja"), "body_ja_status": "done"},
     ]
 
     expected = {
@@ -190,8 +193,10 @@ def sentinel_bundle() -> tuple[AlertBundle, dict[str, str], list[str]]:
                                      "2. ALLOWED_AI_recommended_initial_actions_ja_2",
         "ai_confirmation_items_ja": "1. ALLOWED_AI_additional_confirmation_items_ja_1\n"
                                     "2. ALLOWED_AI_additional_confirmation_items_ja_2",
-        "engineer_recommendations": "[2026-09-20 12:05 JST] eng.a: ALLOWED_REC_FIRST\n"
-                                    "[2026-09-20 13:05 JST] eng.b: ALLOWED_REC_SECOND",
+        # Japanese like the other content fields; one without a translation yet is the
+        # original, marked as such.
+        "engineer_recommendations": "[2026-09-20 12:05 JST] eng.a: ALLOWED_REC_FIRST_JA 隔離してください\n"
+                                    "[2026-09-20 13:05 JST] eng.b: 【未翻訳】ALLOWED_REC_SECOND",
     }
     for name in NORMALIZED_ALLOWED:
         if name not in ("alert_id", "severity"):

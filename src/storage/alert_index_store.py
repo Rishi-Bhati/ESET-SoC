@@ -20,6 +20,7 @@ from typing import Any, Collection
 import structlog
 from src.config import settings
 from src.models.pipeline_result import PipelineResult
+from src.storage import hidden_store
 from src.storage.database import db_session
 
 logger = structlog.get_logger(__name__)
@@ -214,8 +215,9 @@ def _where(
     risk_levels: Collection[str] | None, received_from: float | None,
     received_to: float | None, statuses: Collection[str],
 ) -> tuple[str, list[Any]] | None:
-    """WHERE clause + params, or None when the filters can match nothing (empty IN list)."""
-    clauses: list[str] = []
+    """WHERE clause + params, or None when the filters can match nothing (empty IN list).
+    Hidden alerts (storage/hidden_store.py) never match."""
+    clauses: list[str] = [hidden_store.NOT_HIDDEN_SQL]
     params: list[Any] = []
     status_list = sorted({str(s).upper() for s in statuses})
     if not status_list:

@@ -73,8 +73,9 @@ def test_d3_keys_are_not_defined_twice_per_table():
 
 def test_recommendation_data_is_escaped_and_prewrapped():
     js = (STATIC / "dashboard.js").read_text(encoding="utf-8")
-    assert "esc(rec.body)" in js
-    assert "${rec.body}" not in js
+    # The shown text is the original or its Japanese translation (recommendationBody).
+    assert "esc(shown.text)" in js and "esc(shown.note)" in js
+    assert "${rec.body}" not in js and "${rec.body_ja}" not in js and "${shown.text}" not in js
     assert "esc(rec.author" in js
     assert 'esc(t("rec_retracted_reason", rec.retract_reason))' in js
     assert "white-space:pre-wrap" in js

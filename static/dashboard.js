@@ -1704,8 +1704,24 @@ function recAuthorRemember(value) {
   try { localStorage.setItem(REC_AUTHOR_KEY, value); } catch (e) { /* storage blocked */ }
 }
 
+/* The recommendation text for the current language. Japanese mode shows the stored
+ * translation (body_ja, made by src/services/recommendation_translation.py) in
+ * place of the original; English mode always shows the original as written.
+ * Without a translation yet, Japanese mode shows the original with a note saying
+ * so, never silently. */
+function recommendationBody(rec) {
+  if (state_lang.current !== "ja") return { text: rec.body, note: "" };
+  if (rec.body_ja_status === "done" && rec.body_ja) return { text: rec.body_ja, note: "" };
+  return {
+    text: rec.body,
+    note: t(rec.body_ja_status === "failed" ? "rec_translation_unavailable" : "rec_translation_pending"),
+  };
+}
+
 function recommendationItemHtml(rec) {
   const retracted = !!rec.retracted_at;
+  const shown = recommendationBody(rec);
+  const noteHtml = shown.note ? `<div class="rec-meta muted">${esc(shown.note)}</div>` : "";
   const id = esc(rec.id);
   const when = rec.created_at ? esc(fmtDateTime(rec.created_at * 1000)) : "";
   return `<div class="rec-item${retracted ? " retracted" : ""}" data-rec-id="${id}">
@@ -1714,7 +1730,8 @@ function recommendationItemHtml(rec) {
       <span class="muted">${when}</span>
       ${retracted ? `<span class="srcbadge" style="margin-left:0">${esc(t("rec_retracted_by", rec.retracted_by || "—"))}</span>` : ""}
     </div>
-    <div class="rec-body" style="white-space:pre-wrap">${esc(rec.body)}</div>
+    <div class="rec-body" style="white-space:pre-wrap">${esc(shown.text)}</div>
+    ${noteHtml}
     ${retracted
       ? (rec.retract_reason ? `<div class="rec-meta">${esc(t("rec_retracted_reason", rec.retract_reason))}</div>` : "")
       : `<div class="row" style="margin-top:7px">
@@ -3802,7 +3819,7 @@ function handleEvent(msg) {
     if (state.view === "overview") loadStats();
     if (state.view === "ai" && d.ai_output) loadAiContent();
 
-  } else if (msg.type === "recommendation_added") {
+  } else if (msg.type === "recommendation_added" || msg.type === "recommendation_translated") {
     if (state.openAlertId && state.openAlertId === d.correlation_id
         && document.getElementById("overlay").classList.contains("show")) {
       loadRecommendations(state.openAlertId);
