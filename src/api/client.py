@@ -31,7 +31,7 @@ from src.services.client_fields import (
     DEFAULT_FIELDS, GROUP_LABELS, REGISTRY, WEEKLY_FIELDS, field_catalog,
 )
 from src.services.client_workbook import build_workbook
-from src.storage import alert_index_store, runtime_settings
+from src.storage import alert_index_store, hidden_store, runtime_settings
 from src.utils.jst_time import JST, jst_day_start_epoch, jst_range_epoch
 
 logger = structlog.get_logger(__name__)
@@ -203,15 +203,18 @@ async def alert_stats(days: int = Query(30, ge=1, le=366)) -> dict[str, Any]:
 async def alert_detail(alert_id: str = Path(..., max_length=256)) -> dict[str, Any]:
     if not re.fullmatch(_ID_PATTERN, alert_id):
         raise _bad("Invalid alert id")
-    bundle = await alert_catalog.load_bundle(alert_id)
+    bundle = None if await hidden_store.is_hidden(alert_id) else await alert_catalog.load_bundle(alert_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     grouped: dict[str, dict[str, Any]] = {g: {} for g in GROUP_LABELS}
     for key, spec in REGISTRY.items():
         grouped.setdefault(spec.group, {})[key] = _field(bundle, key)
     recommendations = [
-        {"id": r.get("id"), "body": r.get("body"), "author": r.get("author"),
-         "created_at": _to_int_or_none(r.get("created_at"))}
+        {"id": r.get("id"), "body": r.get("body"),
+         # Japanese translation for Japanese mode, once one exists (else null; the
+         # page then shows body). services/recommendation_translation.py
+         "body_ja": r.get("body_ja") if r.get("body_ja_status") == "done" else None,
+         "author": r.get("author"), "created_at": _to_int_or_none(r.get("created_at"))}
         for r in bundle.recommendations if not r.get("retracted_at")
     ]
     return {

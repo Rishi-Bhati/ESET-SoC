@@ -48,21 +48,41 @@ def jst_text(value: datetime | None, seconds: bool = True) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S" if seconds else "%Y-%m-%d %H:%M")
 
 
-def recommendation_line(rec: dict[str, Any]) -> str:
-    """One engineer recommendation as '[YYYY-MM-DD HH:MM JST] author: body'."""
+# Marks the original text in a Japanese output when no translation exists yet
+# (services/recommendation_translation.py), so English is never presented as if
+# it were the Japanese version.
+UNTRANSLATED_PREFIX = "【未翻訳】"
+
+
+def recommendation_body(rec: dict[str, Any], ja: bool = False) -> str:
+    """The recommendation text: the original, or (ja) its Japanese translation,
+    falling back to the original marked as untranslated."""
+    body = rec.get("body") or ""
+    if not ja:
+        return body
+    body_ja = rec.get("body_ja")
+    if rec.get("body_ja_status") == "done" and body_ja:
+        return body_ja
+    return f"{UNTRANSLATED_PREFIX}{body}" if body else ""
+
+
+def recommendation_line(rec: dict[str, Any], ja: bool = False) -> str:
+    """One engineer recommendation as '[YYYY-MM-DD HH:MM JST] author: body'
+    (body in Japanese when ja; see recommendation_body)."""
     when = jst_text(epoch_jst(rec.get("created_at")), seconds=False)
     stamp = f"[{when} JST] " if when else ""
-    return f"{stamp}{rec.get('author') or ''}: {rec.get('body') or ''}"
+    return f"{stamp}{rec.get('author') or ''}: {recommendation_body(rec, ja)}"
 
 
-def recommendations_text(recs: Sequence[dict[str, Any]] | None, active_only: bool = True) -> str:
+def recommendations_text(recs: Sequence[dict[str, Any]] | None, active_only: bool = True,
+                         ja: bool = False) -> str:
     """Recommendations one per line, oldest first (newest last). Retracted ones
-    are skipped unless active_only is False."""
+    are skipped unless active_only is False. ja: the Japanese text of each."""
     chosen = [r for r in (recs or []) if isinstance(r, dict)
               and not (active_only and r.get("retracted_at") is not None)]
     chosen.sort(key=lambda r: (r.get("created_at") if isinstance(r.get("created_at"), (int, float)) else 0,
                                str(r.get("id") or "")))
-    return "\n".join(recommendation_line(r) for r in chosen)
+    return "\n".join(recommendation_line(r, ja) for r in chosen)
 
 
 # ---------------------------------------------------------------- writing

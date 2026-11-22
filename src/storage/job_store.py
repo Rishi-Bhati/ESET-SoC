@@ -2,6 +2,7 @@ import json
 import time
 from typing import Any
 import structlog
+from src.storage import hidden_store
 from src.storage.database import db_session
 from src.utils import events
 
@@ -80,17 +81,19 @@ async def get_job(correlation_id: str) -> dict[str, Any] | None:
 async def list_jobs(
     limit: int = 50, offset: int = 0, status: str | None = None,
     created_after: float | None = None, created_before: float | None = None,
+    include_hidden: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Retrieves recent jobs ordered by most-recently-updated first, for the dashboard's
-    live activity table. Optionally filtered by status.
+    live activity table. Optionally filtered by status. Hidden alerts
+    (storage/hidden_store.py) are left out unless include_hidden.
     """
     query = """
         SELECT correlation_id, source, status, raw_payload, created_at, updated_at, error
         FROM jobs
     """
     params: list[Any] = []
-    filters: list[str] = []
+    filters: list[str] = [] if include_hidden else [hidden_store.NOT_HIDDEN_SQL]
     if status:
         filters.append("status = ?")
         params.append(status)

@@ -489,6 +489,28 @@ never exposed.
   when that is blank. Retracting a recommendation that was emailed sends a
   withdrawal notice; the retraction reason is never included
   (`src/services/recommendation_notifier.py`).
+- **Japanese translation** (`RECOMMENDATION_TRANSLATION_ENABLED`, on by default):
+  each recommendation is translated into Japanese by the configured AI provider
+  and stored as `body_ja` next to the original, which is never changed
+  (`src/services/recommendation_translation.py`). In Japanese mode, the dashboard
+  and the client portal show the translation in the recommendation's place, and
+  English mode shows the original. The dashboard export has an
+  `engineer_recommendations_ja` column beside `engineer_recommendations`, and
+  `body_ja` beside `body` on the Recommendations sheet. The client export and the
+  weekly report carry the Japanese text, like their other content.
+  - **When it runs:** right after a recommendation is added, then every
+    `RECOMMENDATION_TRANSLATION_INTERVAL_SECONDS` (default 300). Each pass picks up
+    recommendations from before this feature, failed attempts (up to 5 each), and
+    any added while no AI provider was configured.
+  - **Identifiers are protected:** URLs, IPs, e-mail addresses, paths, registry
+    keys, hashes, `DOMAIN\user` and `code` are replaced with placeholders before
+    sending and restored exactly afterwards. A translation that changes a
+    placeholder is rejected and retried.
+  - **Already-Japanese text** is copied without an API call.
+  - **Until a translation exists**, Japanese mode shows the original with a note,
+    and Japanese exports show it marked 【未翻訳】.
+  - **Audit:** every call is recorded in AI Visibility (component
+    `recommendations.translate`).
 
 ### Weekly report
 

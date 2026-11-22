@@ -209,7 +209,8 @@ async def test_detail_returns_grouped_registry_fields_and_only_active_recommenda
     assert flat["alert_id"] == "d1" and flat["risk_level"] == "HIGH"
     assert flat["detection_name"] == "Det-d1" and flat["ai_alert_summary_ja"] == "summary of d1"
     assert data["recommendations"] == [
-        {"id": keep["id"], "body": "Isolate host", "author": "eng.a", "created_at": keep["created_at"]}]
+        {"id": keep["id"], "body": "Isolate host", "body_ja": None, "author": "eng.a",
+         "created_at": keep["created_at"]}]
     assert "RETRACTED-BODY" not in res.text and "email-123" not in res.text and "retract" not in res.text
 
 

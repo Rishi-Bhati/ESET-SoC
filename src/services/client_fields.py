@@ -157,8 +157,11 @@ def _raw_alert_json(bundle: AlertBundle) -> str:
 def _engineer_recommendations(bundle: AlertBundle) -> str:
     # The bundle carries active recommendations only; retracted ones are filtered
     # again here so a wrongly-built bundle still cannot leak them.
+    # Japanese, like every other content field here (the ai_*_ja fields): the
+    # translation, or the original marked 【未翻訳】 until one exists
+    # (services/recommendation_translation.py).
     recs = getattr(bundle, "recommendations", None)
-    return recommendations_text(recs if isinstance(recs, list) else [], active_only=True)
+    return recommendations_text(recs if isinstance(recs, list) else [], active_only=True, ja=True)
 
 
 # ------------------------------------------------------------------ registry

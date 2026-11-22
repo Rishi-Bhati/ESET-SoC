@@ -40,7 +40,10 @@ from src.config import settings
 from src.models.ai_output import AIOutput, AIRunMetadata
 from src.models.normalized_alert import NormalizedAlert
 from src.models.threat_intel import ThreatIntelResult
-from src.prompts.system_prompts import PROMPT_VERSION, SYSTEM_PROMPT
+from src.models.ai_trace import AIDataCategory
+from src.prompts.system_prompts import (
+    PROMPT_VERSION, SYSTEM_PROMPT, TRANSLATION_PROMPT_VERSION, TRANSLATION_SYSTEM_PROMPT,
+)
 from src.services.ai import trace_recorder
 from src.services.ai.prompt_masking import mask_alert_for_prompt, mask_raw_payload_for_prompt
 from src.services.ai.redaction import redact_value
@@ -163,6 +166,26 @@ class ProviderResponse:
 class AIGenerationResult:
     output: AIOutput
     metadata: AIRunMetadata
+
+
+class TranslationError(RuntimeError):
+    """A recommendation translation could not be produced (message is safe to store/log)."""
+
+
+@dataclass
+class TranslationResult:
+    translations: list[str]
+    model: str
+    request_id: str | None = None
+
+
+# Strict structured-output schema for translate_to_japanese().
+TRANSLATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"translations": {"type": "array", "items": {"type": "string"}}},
+    "required": ["translations"],
+    "additionalProperties": False,
+}
 
 
 @dataclass
@@ -477,3 +500,96 @@ class BaseAIProvider(ABC):
             return None
         redacted, _ = redact_value(str(error)[:200], "retry_error")
         return str(redacted)
+
+    # ------------------------------------------------------------ translation
+
+    async def translate_to_japanese(self, texts: list[str], *, correlation_id: str) -> TranslationResult:
+        """
+        Translates engineer recommendations into Japanese (services/
+        recommendation_translation.py prepares the texts: identifiers are already
+        replaced with [[Pn]] placeholders). Same provider call, timeout, retry
+        policy and AI Visibility trace as generate(); one trace per call, filed
+        under the alert the recommendations belong to. Raises TranslationError.
+        Returns exactly one translation per input text, in order.
+        """
+        started = time.monotonic()
+        trace = await trace_recorder.start_trace(
+            correlation_id=correlation_id, component="recommendations.translate",
+            action="translate_recommendations_to_japanese", provider=self.provider_name, model=self.model,
+            objective="Translate engineer recommendations from English into Japanese for the client, "
+                      "keeping every instruction and technical value unchanged.",
+        )
+        payload = {"texts": list(texts)}
+        await trace_recorder.record_input(
+            trace,
+            data_categories=[
+                AIDataCategory(
+                    category="Company data (free text)", field=f"engineer_recommendations[{i}]",
+                    origin="Recommendation typed by an engineer in the dashboard; URLs, IPs, paths, "
+                           "hashes, accounts and code replaced with placeholders before sending",
+                    value_preview=str(redact_value(text[:160], "recommendation")[0]),
+                )
+                for i, text in enumerate(texts)
+            ],
+            raw_input=payload,
+            context_notes=["Identifiers are replaced with [[Pn]] placeholders before the request and "
+                           "restored afterwards, so they are never sent to the provider."],
+        )
+        request = ProviderRequest(
+            system_prompt=TRANSLATION_SYSTEM_PROMPT.strip(),
+            user_prompt=json.dumps(payload, ensure_ascii=False),
+            json_schema=TRANSLATION_SCHEMA,
+            schema_name="recommendation_translation",
+            max_output_tokens=settings.ai_max_output_tokens,
+        )
+        max_attempts = max(1, min(settings.ai_max_attempts, MAX_ATTEMPTS_CEILING))
+        await trace_recorder.record_config(trace, {
+            **self.describe(), "max_output_tokens": request.max_output_tokens,
+            "timeout_seconds_per_attempt": settings.ai_timeout_seconds, "max_attempts": max_attempts,
+            "response_format": "json_schema (strict)",
+            "system_instructions_version": TRANSLATION_PROMPT_VERSION,
+            "system_instructions_text": request.system_prompt,
+        })
+        ext_call = await trace_recorder.record_external_call_start(
+            trace, service=self.service_label, domain=self.api_domain,
+            purpose="Translate engineer recommendations into Japanese",
+            initiated_by="recommendation_translation",
+            data_sent_category="Recommendation text with technical identifiers replaced by placeholders",
+        )
+
+        async def attempt() -> ProviderResponse:
+            return await asyncio.wait_for(self._invoke(request), timeout=settings.ai_timeout_seconds)
+
+        try:
+            response = await AsyncRetrying(
+                stop=stop_after_attempt(max_attempts), wait=RETRY_WAIT,
+                retry=retry_if_exception(self._is_retryable), reraise=True,
+            )(attempt)
+            data = json.loads(response.text)
+            translations = data.get("translations") if isinstance(data, dict) else None
+            if (not isinstance(translations, list) or len(translations) != len(texts)
+                    or not all(isinstance(t, str) and t.strip() for t in translations)):
+                raise AIOutputRejected(
+                    f"expected {len(texts)} non-empty translations, got "
+                    f"{len(translations) if isinstance(translations, list) else 'none'}")
+            await trace_recorder.record_external_call_end(
+                trace, ext_call, status="OK", data_returned_category="Structured JSON: Japanese translations")
+            await trace_recorder.record_output(trace, {"translations": translations}, usage=response.usage)
+            await trace_recorder.complete_trace(
+                trace, status="SUCCESS",
+                risk="SENSITIVE_DATA_DETECTED" if (trace and trace.security_findings) else "SAFE")
+            logger.info("recommendation_translation_success", provider=self.provider_name, count=len(texts),
+                        request_id=response.request_id,
+                        duration_ms=round((time.monotonic() - started) * 1000, 1))
+            return TranslationResult(translations=[t.strip("\n") for t in translations],
+                                     model=response.served_model or self.model, request_id=response.request_id)
+        except Exception as exc:
+            error_type, safe_message, _ = self._describe_error(exc)
+            if isinstance(exc, AIOutputRejected):
+                error_type, safe_message = "OutputRejected", str(exc)
+            logger.warning("recommendation_translation_failed", provider=self.provider_name,
+                           error_type=error_type, error=safe_message)
+            await trace_recorder.record_external_call_end(trace, ext_call, status="ERROR")
+            await trace_recorder.complete_trace(trace, status="ERROR", risk="ERROR",
+                                                error=f"{error_type}: {safe_message}")
+            raise TranslationError(f"{error_type}: {safe_message}") from None

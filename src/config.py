@@ -179,6 +179,14 @@ class Settings(BaseSettings):
     # is ON; the exact field policy still needs client sign-off before production.
     ai_masking_enabled: bool = Field(True, validation_alias="AI_MASKING_ENABLED")
 
+    # Japanese translation of engineer recommendations through the configured AI
+    # provider (src/services/recommendation_translation.py). Shown instead of the
+    # original text in Japanese mode; the original is never changed. The loop also
+    # picks up existing and failed translations every interval.
+    recommendation_translation_enabled: bool = Field(True, validation_alias="RECOMMENDATION_TRANSLATION_ENABLED")
+    recommendation_translation_interval_seconds: int = Field(
+        300, ge=30, le=86400, validation_alias="RECOMMENDATION_TRANSLATION_INTERVAL_SECONDS")
+
     # --- Ingest Limits ---
     # Defense-in-depth cap on inbound webhook body size (bytes). A Content-Length
     # header above this is rejected with 413 before the body is parsed.

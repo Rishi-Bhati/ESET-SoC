@@ -1617,6 +1617,16 @@ function kvRowsHtml(source, keys, labelFor) {
     `<dt>${esc(labelFor(k))}</dt><dd class="pre">${valueHtml(k, source[k])}</dd>`).join("");
 }
 
+/* The engineer's advice in the page's language: Japanese mode shows the Japanese
+ * translation (body_ja, made by the server: src/services/recommendation_translation.py),
+ * English mode the original as written. Without a translation yet, Japanese mode
+ * shows the original with a note, never silently. */
+function recommendationText(r) {
+  if (state.lang !== "ja") return { text: r.body, note: "" };
+  if (r.body_ja) return { text: r.body_ja, note: "" };
+  return { text: r.body, note: t("rec_untranslated") };
+}
+
 function renderDetail() {
   const helpDetailFactsHtml = helpBtnHtml("help_detail_facts");
   const helpDetailAiMoreHtml = helpBtnHtml("help_detail_ai_more");
@@ -1645,11 +1655,16 @@ function renderDetail() {
   // 2. The engineer's advice: the one thing a client may need to act on.
   const recs = Array.isArray(data.recommendations) ? data.recommendations : [];
   const recsHtml = recs.length
-    ? recs.map((r) => `
+    ? recs.map((r) => {
+        const shown = recommendationText(r);
+        const noteHtml = shown.note ? `<div class="rec-meta"><span>${esc(shown.note)}</span></div>` : "";
+        return `
         <article class="rec">
-          <div class="pre">${esc(r.body)}</div>
+          <div class="pre">${esc(shown.text)}</div>
+          ${noteHtml}
           <div class="rec-meta"><span>${esc(r.author || "—")}</span><span>${esc(fmtWhen(r.created_at))}</span></div>
-        </article>`).join("")
+        </article>`;
+      }).join("")
     : `<p class="muted">${esc(t("recs_empty"))}</p>`;
 
   // 3. Key facts, plain labels, only those present.

@@ -7,7 +7,10 @@ Clients only ever see active (non-retracted) ones.
 Record shape (a plain dict):
     id, correlation_id, body, author, created_at,
     retracted_at, retracted_by, retract_reason  (None while active),
-    notification_email_id                        (None until a notification is queued)
+    notification_email_id                        (None until a notification is queued),
+    body_ja, body_ja_status                      (Japanese translation of body and its
+                                                  state; services/recommendation_translation.py.
+                                                  body itself is never changed)
 """
 import time
 import uuid
@@ -23,7 +26,7 @@ MAX_REASON_LENGTH = 1000
 
 _COLUMNS = (
     "id, correlation_id, body, author, created_at, retracted_at, retracted_by, "
-    "retract_reason, notification_email_id"
+    "retract_reason, notification_email_id, body_ja, body_ja_status"
 )
 
 
@@ -38,6 +41,8 @@ def _row(row: Any) -> dict[str, Any]:
         "retracted_by": row[6],
         "retract_reason": row[7],
         "notification_email_id": row[8],
+        "body_ja": row[9],
+        "body_ja_status": row[10],
     }
 
 
@@ -77,6 +82,7 @@ async def create(correlation_id: str, body: str, author: str) -> dict[str, Any]:
         "id": rec_id, "correlation_id": correlation_id, "body": body, "author": author,
         "created_at": now, "retracted_at": None, "retracted_by": None,
         "retract_reason": None, "notification_email_id": None,
+        "body_ja": None, "body_ja_status": None,
     }
 
 
@@ -197,5 +203,34 @@ async def set_notification_email_id(rec_id: str, email_id: str) -> None:
         await conn.execute(
             "UPDATE alert_recommendations SET notification_email_id = ? WHERE id = ?",
             (email_id, rec_id),
+        )
+        await conn.commit()
+
+
+# ------------------------------------------------------------- translation
+
+async def needing_translation(limit: int, max_attempts: int) -> list[dict[str, Any]]:
+    """Recommendations without a Japanese translation yet (never tried, failed, or
+    tried while no AI provider was configured), oldest first, retracted ones
+    included so the audit export is complete. Gives up after max_attempts."""
+    query = (
+        f"SELECT {_COLUMNS} FROM alert_recommendations "
+        "WHERE (body_ja_status IS NULL OR body_ja_status IN ('failed', 'unavailable')) "
+        "AND COALESCE(body_ja_attempts, 0) < ? ORDER BY created_at ASC, id ASC LIMIT ?"
+    )
+    async with db_session() as conn:
+        async with conn.execute(query, (max_attempts, limit)) as cursor:
+            return [_row(r) async for r in cursor]
+
+
+async def set_translation(rec_id: str, *, status: str, body_ja: str | None = None,
+                          model: str | None = None, count_attempt: bool = True) -> None:
+    """Records a translation outcome. Only body_ja* columns change; body never does."""
+    async with db_session() as conn:
+        await conn.execute(
+            "UPDATE alert_recommendations SET body_ja = COALESCE(?, body_ja), body_ja_status = ?, "
+            "body_ja_attempts = COALESCE(body_ja_attempts, 0) + ?, body_ja_at = ?, "
+            "body_ja_model = COALESCE(?, body_ja_model) WHERE id = ?",
+            (body_ja, status, 1 if count_attempt else 0, time.time(), model, rec_id),
         )
         await conn.commit()

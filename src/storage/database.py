@@ -262,6 +262,17 @@ async def init_db() -> None:
                 notification_email_id TEXT
             )
         """)
+        # Japanese translation of each recommendation (services/recommendation_translation.py).
+        # `body` is never changed; body_ja is shown instead of it in Japanese mode.
+        #   body_ja_status: NULL = not attempted yet, 'done', 'failed' (retried later),
+        #                   'unavailable' (no AI provider configured; retried later)
+        await _add_missing_columns(conn, "alert_recommendations", {
+            "body_ja": "TEXT",
+            "body_ja_status": "TEXT",
+            "body_ja_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "body_ja_at": "REAL",
+            "body_ja_model": "TEXT",
+        })
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_alert_recommendations_alert "
             "ON alert_recommendations(correlation_id, created_at)"
@@ -287,6 +298,17 @@ async def init_db() -> None:
                 resend_count INTEGER DEFAULT 0,
                 attempts INTEGER DEFAULT 0,
                 error TEXT
+            )
+        """)
+
+        # Alerts hidden from every view and report without deleting them
+        # (storage/hidden_store.py). Removing a row brings the alert back.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_alerts (
+                correlation_id TEXT PRIMARY KEY,
+                hidden_at REAL NOT NULL,
+                hidden_by TEXT,
+                reason TEXT
             )
         """)
 

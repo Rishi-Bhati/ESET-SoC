@@ -41,9 +41,9 @@ from openpyxl import Workbook
 
 from src.config import settings
 from src.services.xlsx_writer import (
-    DATETIME_FORMAT, EXCEL_CELL_MAX, SheetWriter, epoch_jst, iso_jst, recommendations_text,
+    DATETIME_FORMAT, EXCEL_CELL_MAX, SheetWriter, epoch_jst, iso_jst, recommendation_body, recommendations_text,
 )
-from src.storage import delivery_store, job_store, recommendation_store
+from src.storage import delivery_store, hidden_store, job_store, recommendation_store
 from src.utils.jst_time import JST
 
 logger = structlog.get_logger(__name__)
@@ -68,10 +68,10 @@ _LEADING_COLUMNS = (
     "job.source", "normalized_alert.occurred_at (JST)", "normalized_alert.occurred_at (as received)",
     "received_at (JST)", "processed_at (JST)", "job.created_at (JST)", "job.updated_at (JST)",
     "job.error", "error", "risk_rationale", "risk_factors", "notifications", "email_deliveries",
-    "engineer_recommendations",
+    "engineer_recommendations", "engineer_recommendations_ja",
 )
 _RECOMMENDATION_COLUMNS = [
-    "correlation_id", "recommendation_id", "status", "created_at (JST)", "author", "body",
+    "correlation_id", "recommendation_id", "status", "created_at (JST)", "author", "body", "body_ja",
     "retracted_at (JST)", "retracted_by", "retract_reason", "notification_email_id",
 ]
 _TRAILING_COLUMNS = ("raw_request (JSON)",)
@@ -159,6 +159,10 @@ def _alert_row(job: dict[str, Any] | None, result: dict[str, Any] | None,
     # Active ones, exactly as the client portal shows them; the full history,
     # retractions included, is on the Recommendations sheet.
     row["engineer_recommendations"] = recommendations_text(recommendations, active_only=True)
+    # Japanese text of the same recommendations, beside the original as the AI's
+    # *_ja / *_en fields are (services/recommendation_translation.py). Lines with no
+    # translation yet carry the original marked 【未翻訳】.
+    row["engineer_recommendations_ja"] = recommendations_text(recommendations, active_only=True, ja=True)
     row["raw_request (JSON)"] = json.dumps(_original_request(job, result), ensure_ascii=False, default=str)
     return row
 
@@ -227,8 +231,10 @@ def _result_ids_on_disk() -> list[str]:
     )
 
 
-def _collect(jobs: list[dict[str, Any]], deliveries: list[dict[str, Any]]) -> list[tuple]:
-    """(job, result, deliveries) per alert: every job, then any result file without one."""
+def _collect(jobs: list[dict[str, Any]], deliveries: list[dict[str, Any]],
+             hidden: Collection[str] = frozenset()) -> list[tuple]:
+    """(job, result, deliveries) per alert: every job, then any result file without one.
+    Result files of hidden alerts (storage/hidden_store.py) are skipped."""
     deliveries_by_cid: dict[str, list[dict[str, Any]]] = {}
     for d in deliveries:
         deliveries_by_cid.setdefault(d["correlation_id"], []).append(d)
@@ -241,7 +247,7 @@ def _collect(jobs: list[dict[str, Any]], deliveries: list[dict[str, Any]]) -> li
         seen.add(cid)
         alerts.append((job, _read_result(cid), deliveries_by_cid.get(cid, [])))
     for cid in _result_ids_on_disk():
-        if cid in seen:
+        if cid in seen or cid in hidden:
             continue
         result = _read_result(cid)
         if result is None:
@@ -261,6 +267,7 @@ def _recommendation_rows(recommendations: list[dict[str, Any]]) -> list[dict[str
             "created_at (JST)": epoch_jst(r.get("created_at")),
             "author": r.get("author"),
             "body": r.get("body"),
+            "body_ja": recommendation_body(r, ja=True) if r.get("body") else None,
             "retracted_at (JST)": epoch_jst(r.get("retracted_at")),
             "retracted_by": r.get("retracted_by"),
             "retract_reason": r.get("retract_reason"),
@@ -303,7 +310,7 @@ def column_group(column: str) -> str:
         return "errors"
     if column == "raw_request (JSON)":
         return "raw"
-    if column == "engineer_recommendations":
+    if column in ("engineer_recommendations", "engineer_recommendations_ja"):
         return "recommendations"
     if column in ("notifications", "email_deliveries"):
         return "notifications"
@@ -573,7 +580,9 @@ def _build_workbook(alerts: list[tuple],
                    "alert_recommendations table; " + ("filtered history" if options.filtered else "complete history")
                    + ", one row per correlation_id"),
         ("Recommendations", "Alerts.engineer_recommendations lists the active ones (what the client "
-                            "sees); the Recommendations sheet lists all, retracted included"),
+                            "sees) as written, engineer_recommendations_ja the same in Japanese "
+                            "(marked 【未翻訳】 where no translation exists yet); the Recommendations "
+                            "sheet lists all, retracted included, with body and body_ja"),
         ("Times", "Columns marked (JST) are Japan Standard Time (UTC+09:00)"),
     ):
         info.append([label, value])
@@ -592,11 +601,12 @@ async def export_alerts_xlsx(options: ExportOptions | None = None) -> tuple[byte
     column and sheet, as .xlsx (the original export). With options: filtered,
     sorted, chosen column groups and sheets, .xlsx or .csv (Alerts sheet only)."""
     options = options or ExportOptions()
-    jobs = await job_store.list_all_jobs()
+    hidden = await hidden_store.hidden_ids()
+    jobs = [j for j in await job_store.list_all_jobs() if j["correlation_id"] not in hidden]
     deliveries = await delivery_store.list_all_deliveries()
     recommendations = await recommendation_store.list_all(include_retracted=True)
     # File reads and workbook assembly are blocking; keep them off the event loop.
-    alerts = await asyncio.to_thread(_collect, jobs, deliveries)
+    alerts = await asyncio.to_thread(_collect, jobs, deliveries, hidden)
     total = len(alerts)
     if options.filtered or options.sort != "received_desc":
         active: dict[str, int] = {}

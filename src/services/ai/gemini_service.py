@@ -70,12 +70,18 @@ class GeminiAIService(BaseAIProvider):
     async def _invoke(self, request: ProviderRequest) -> ProviderResponse:
         await self._configure()
         genai = self._genai
-        # Gemini reads the pinned risk level from its own schema dialect.
-        pinned = request.json_schema["properties"]["risk_level"]["enum"]
+        properties = request.json_schema.get("properties", {})
+        if "risk_level" in properties:
+            # Alert generation: Gemini reads the pinned risk level from its own schema dialect.
+            schema = build_gemini_schema(AIOutput, pin={"risk_level": properties["risk_level"]["enum"]})
+        else:
+            # Any other request (recommendation translation): its own schema, minus the
+            # strict-mode keyword Gemini's schema dialect does not accept.
+            schema = {k: v for k, v in request.json_schema.items() if k != "additionalProperties"}
         model = genai.GenerativeModel(self.model, system_instruction=request.system_prompt)
         config = genai.types.GenerationConfig(
             response_mime_type="application/json",
-            response_schema=build_gemini_schema(AIOutput, pin={"risk_level": pinned}),
+            response_schema=schema,
             temperature=0.1,
             max_output_tokens=request.max_output_tokens,
         )

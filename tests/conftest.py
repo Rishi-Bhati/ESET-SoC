@@ -72,6 +72,7 @@ async def clean_database() -> AsyncGenerator[None, None]:
         await conn.execute("DELETE FROM alert_index")
         await conn.execute("DELETE FROM alert_recommendations")
         await conn.execute("DELETE FROM weekly_reports")
+        await conn.execute("DELETE FROM hidden_alerts")
         await conn.commit()
     yield
 
@@ -86,6 +87,8 @@ def prevent_live_side_effects(monkeypatch):
     """Tests never inherit live delivery/intel flags from a developer's .env."""
     monkeypatch.setattr(settings, "email_delivery_enabled", False)
     monkeypatch.setattr(settings, "use_mock_threat_intel", True)
+    # Recommendation translation tests switch it on themselves (test_recommendation_translation.py).
+    monkeypatch.setattr(settings, "recommendation_translation_enabled", False)
 
 @pytest.fixture(autouse=True)
 def mock_ai_provider(monkeypatch):

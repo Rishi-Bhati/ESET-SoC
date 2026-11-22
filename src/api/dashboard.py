@@ -12,7 +12,7 @@ from pydantic import BaseModel, field_validator
 import structlog
 from src.config import settings
 from src.models.normalized_alert import NormalizedAlert
-from src.storage import job_store, settings_store, delivery_store
+from src.storage import job_store, settings_store, delivery_store, hidden_store
 from src.services import email_outbox, email_dispatcher
 from src.services.email_delivery import get_provider
 from src.services import pipeline_capacity
@@ -115,6 +115,8 @@ async def get_alerts(request: Request) -> dict[str, Any]:
     except Exception as e:
         logger.warning("dashboard_alerts_read_failed", error=str(e))
         records = []
+    hidden = await hidden_store.hidden_ids()
+    records = [r for r in records if r.get("correlation_id") not in hidden]
     for record in records:
         if "detection_name" not in record and "endpoint_name" not in record:
             record.update(_labels_from_result(record.get("correlation_id", "")))
@@ -251,10 +253,11 @@ async def get_emails(request: Request) -> dict[str, Any]:
     return {"emails": list(reversed(emails))}
 
 
-def _read_results(limit: int) -> list[dict[str, Any]]:
+def _read_results(limit: int, hidden: set[str] | frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """
     Loads the most recent pipeline result files, newest first, using index.json
-    for ordering so we never have to stat every file in the directory.
+    for ordering so we never have to stat every file in the directory. Alerts in
+    `hidden` (storage/hidden_store.py) are skipped.
     """
     index_path = os.path.join(settings.output_dir, "index.json")
     if not os.path.exists(index_path):
@@ -269,6 +272,8 @@ def _read_results(limit: int) -> list[dict[str, Any]]:
     for record in reversed(records):
         if len(results) >= limit:
             break
+        if record.get("correlation_id") in hidden:
+            continue
         path = os.path.join(settings.output_dir, f"{record['correlation_id']}.json")
         if not os.path.exists(path):
             continue
@@ -296,7 +301,7 @@ async def get_ai_content(request: Request, limit: int = 25) -> dict[str, Any]:
     limit = max(1, min(limit, 100))
 
     items = []
-    for result in _read_results(limit * 3):
+    for result in _read_results(limit * 3, await hidden_store.hidden_ids()):
         if not result.get("ai_output"):
             continue
         alert = _reported_alert_fields(result.get("normalized_alert") or {})
